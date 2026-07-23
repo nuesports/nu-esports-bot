@@ -12,3 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/ruff-action@v3
+        with:
+          # Pinned: unpinned grabs latest ruff, and a release adding default
+          # rules silently breaks CI across the whole codebase (0.16.0 did).
+          version: "0.15.22"
