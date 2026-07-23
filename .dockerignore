@@ -1,0 +1,13 @@
+# Keep the Windows virtualenv and dev cruft out of the build context.
+# The image builds its own env via `uv sync`; a copied-in .venv breaks it.
+.venv/
+venv/
+.git/
+.github/
+__pycache__/
+**/__pycache__/
+*.pyc
+.ruff_cache/
+.pytest_cache/
+.vscode/
+*.md
