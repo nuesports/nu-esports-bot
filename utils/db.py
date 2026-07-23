@@ -43,8 +43,6 @@ async def cursor():
         except Exception as e:
             await conn.rollback()
             raise e
-        finally:
-            await conn.close()
 
 
 async def fetch_one(sql, parameters=None):
