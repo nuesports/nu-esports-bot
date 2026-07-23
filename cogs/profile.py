@@ -614,15 +614,16 @@ class Profile(commands.Cog):
             title=f"{tag} {target.display_name}'s Elo",
             color=discord.Color.from_rgb(78, 42, 132),
         )
-        if not rows:
+        elo_by_game = {game: (value, games_played) for game, value, games_played in rows}
+        for game in GAME_CHOICES:
+            if game in elo_by_game:
+                value, games_played = elo_by_game[game]
+                embed.add_field(name=game.title(), value=f"{value:.0f} elo ({games_played} games)", inline=True)
+
+        # covers no rows at all, and rows for games no longer in GAME_CHOICES
+        if not embed.fields:
             embed.description = "No elo on record for any game yet."
-        else:
-            elo_by_game = {game: (value, games_played) for game, value, games_played in rows}
-            for game in GAME_CHOICES:
-                if game in elo_by_game:
-                    value, games_played = elo_by_game[game]
-                    embed.add_field(name=game.title(), value=f"{value:.0f} elo ({games_played} games)", inline=True)
-        
+
         await ctx.followup.send(embed=embed, ephemeral=True)
 
 class ProfilePaginator(discord.ui.View):
