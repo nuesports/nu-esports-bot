@@ -30,7 +30,7 @@ def format_entry(guild: discord.Guild, rank: int, discordid: int, wins: int, los
     tag = tag or "⭐"
     return f"{rank}. {tag} *{name}* — **{wins}W** / **{losses}L**"
 
-def build_leaderboard_pages(guild: discord.Guild, game: str, rows: list[tuple], caller_id: int) -> list[discord.Embed]:
+def build_leaderboard_pages(guild: discord.Guild, game: str, rows: list[tuple], caller_id: int) -> list[discord.Embed] | None:
     """Build one embed per page of 10 leaderboard entries, ordered by elo but never showing it.
 
     The caller's own line is always visible: pinned at the bottom of a page while their real rank
@@ -98,7 +98,7 @@ class GameSelectView(discord.ui.View):
         """Block anyone but whoever ran /leaderboard from switching games."""
         if interaction.user.id != self.requester_id:
             await interaction.response.send_message(
-                "This isn't your interaction call to flip through!", ephemeral=True
+                "This isn't your leaderboard call to flip through!", ephemeral=True
             )
             return False
         return True
@@ -106,6 +106,7 @@ class GameSelectView(discord.ui.View):
     async def on_select(self, interaction: discord.Interaction) -> None:
         """Rebuild the leaderboard for the newly chosen game."""
         game = self.select.values[0]
+        self.stop()
 
         rows = await fetch_leaderboard_rows(game)
         pages = build_leaderboard_pages(self.guild, game, rows, self.requester_id)
@@ -142,6 +143,7 @@ class EmptyLeaderboardView(discord.ui.View):
     @discord.ui.button(label="Change Game", style=discord.ButtonStyle.primary)
     async def change_game(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
         """Swap to a dropdown for picking a different game's leaderboard."""
+        self.stop()
         await interaction.response.edit_message(content=None, view=GameSelectView(requester_id=self.requester_id, guild=self.guild))
 
 class LeaderboardPaginator(discord.ui.View):
@@ -159,7 +161,7 @@ class LeaderboardPaginator(discord.ui.View):
         """Block anyone but whoever ran /leaderboard from flipping through it."""
         if interaction.user.id != self.requester_id:
             await interaction.response.send_message(
-                "This isn't your interaction to flip through!", ephemeral=True,
+                "This isn't your leaderboard call to flip through!", ephemeral=True,
             )
             return False
         return True
@@ -186,6 +188,7 @@ class LeaderboardPaginator(discord.ui.View):
     @discord.ui.button(label="Change Game", style=discord.ButtonStyle.primary, row=1)
     async def change_game(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
         """Swap to a dropdown for picking a different game's leaderboard."""
+        self.stop()
         await interaction.response.edit_message(view=GameSelectView(requester_id=self.requester_id, guild=self.guild))
 
     async def on_timeout(self) -> None:
