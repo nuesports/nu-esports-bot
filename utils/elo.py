@@ -1,7 +1,7 @@
 from utils import config
 
-ELO_K = 40  # max elo swing for a single game
-ELO_D = 500 # how much a rating gap affects win probability (bigger = flatter)
+ELO_K = 60   # max elo swing for a single game, per player
+ELO_D = 1000 # how much a rating gap affects win probability (bigger = flatter)
 
 def decode_rank_value(game: str, rank_value: int | None) -> tuple[str, int | None] | None:
     """Reverse profile.py's compute_rank_value back into (tier, division)
@@ -47,19 +47,19 @@ def compute_rank_points(game: str, tier: str, division: int | None) -> float:
 def seed_elo(game: str, rank_value: int | None) -> float:
     """Pick a starting elo for a player with no elo row yet
 
-    Uses their current rank if they have one; falls back to this game's lowest
-    tier if they've never set a rank (safest assumption: unproven, not average)."""
+    Uses their current rank if they have one, else the game's `default_tier`.
+    Has to be deterministic since seeds get saved to profile_elo."""
     decoded = decode_rank_value(game, rank_value)
     if decoded is None:
         tiers = config.game_data[game]["tiers"]
         no_division_tiers = config.game_data[game]["no_division_tiers"]
         ascending = config.game_data[game]["divisions_ascend"]
-        lowest_tier = tiers[0]
-        if lowest_tier in no_division_tiers:
+        tier = config.game_data[game].get("default_tier", tiers[0])
+        if tier in no_division_tiers:
             division = None
         else:
             division = 1 if ascending else config.game_data[game]["divisions"]
-        return compute_rank_points(game, lowest_tier, division)
+        return compute_rank_points(game, tier, division)
     tier, division = decoded
     return compute_rank_points(game, tier, division)
 
@@ -81,8 +81,11 @@ def compute_elo_deltas(
     result_a = 1 if a_won else 0
     result_b = 1 - result_a
 
-    team_delta_a = K * (result_a - e_a)
-    team_delta_b = K * (result_b - e_b)
+    # K is per player, so scale by team size, else 6v6 moves less than 5v5
+    scale = (len(team_a) + len(team_b)) / 2
+
+    team_delta_a = K * scale * (result_a - e_a)
+    team_delta_b = K * scale * (result_b - e_b)
 
     deltas: dict[int, float] = {}
     for team, opp_avg, result, team_delta in (

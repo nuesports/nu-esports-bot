@@ -88,7 +88,7 @@ From here, make and activate a virtual environment with your favorite tool ([ven
 Then, install the required packages with:
 
 ```bash
-pip install -r requirements.txt
+uv sync --frozen
 ```
 
 Additionally, you will also need a Postgres database to connect to. There are multiple ways to set this up:

@@ -141,6 +141,9 @@ def balance_teams(game: str,
     
     Returns (team_a, team_b, assignments), where assignments maps member id ->  lane/role.
     """
+    if not joined:
+        return [], [], {}
+
     requirements = list(ROLE_REQUIREMENTS[game].items())
     random.shuffle(requirements)
 
@@ -329,6 +332,18 @@ async def get_team_elos(game: str, members: list[discord.Member]) -> dict[int, f
         )
 
     return elo_by_id
+
+async def get_unranked(game: str, members: list[discord.Member]) -> list[discord.Member]:
+    """Members with no rank set for this game, so their elo is just the default seed."""
+    ids = [m.id for m in members]
+
+    rows = await db.fetch_all(
+        "SELECT discordid FROM profile_stats WHERE discordid = ANY(%s) AND game = %s AND rank_value IS NOT NULL;",
+        (ids, game),
+    )
+    ranked = {discordid for (discordid,) in rows}
+
+    return [m for m in members if m.id not in ranked]
 
 async def apply_elo_changes(session: 'MatchmakingSession', team_a_won: bool) -> None:
     """Update profile_elo for every player in the match based on the declared winner."""
@@ -610,6 +625,10 @@ class AdminView(discord.ui.View):
     @discord.ui.button(label="Shuffle", style=discord.ButtonStyle.primary)
     async def shuffle(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
         """Fetch each player's rank/role data and re-balance the lobby into two teams."""
+        if not self.session.joined:
+            await interaction.response.send_message("Nobody's in the lobby yet!", ephemeral=True)
+            return
+
         if (len(self.session.joined) % 2) != 0:
             await interaction.response.send_message("You need an even amount of players to shuffle!", ephemeral=True)
             return
@@ -627,6 +646,15 @@ class AdminView(discord.ui.View):
         await self.session.message.edit(embed=generate_embed(self.session), view=LobbyView(self.session))
         await interaction.response.edit_message(embed=generate_embed(self.session), view=self)
         await refresh_admin_panels(self.session)
+
+        unranked = await get_unranked(self.session.game, self.session.joined)
+        if unranked:
+            names = ", ".join(m.display_name for m in unranked)
+            await interaction.followup.send(
+                f"⚠️ Warning: no rank set for {names}. They're seeded at the default, "
+                f"tell them to run `/profile rank` for a better shuffle.",
+                ephemeral=True,
+            )
 
     @discord.ui.button(label="Swap", style=discord.ButtonStyle.secondary)
     async def swap(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
