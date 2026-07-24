@@ -30,7 +30,7 @@ def format_entry(guild: discord.Guild, rank: int, discordid: int, wins: int, los
     tag = tag or "⭐"
     return f"{rank}. {tag} *{name}* — **{wins}W** / **{losses}L**"
 
-def build_leaderboard_pages(guild: discord.Guild, game: str, rows: list[tuple], caller_id: int) -> list[discord.Embed]:
+def build_leaderboard_pages(guild: discord.Guild, game: str, rows: list[tuple], caller_id: int) -> list[discord.Embed] | None:
     """Build one embed per page of 10 leaderboard entries, ordered by elo but never showing it.
 
     The caller's own line is always visible: pinned at the bottom of a page while their real rank
