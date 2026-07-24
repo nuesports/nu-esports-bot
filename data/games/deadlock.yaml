@@ -23,6 +23,10 @@ rank_points:
 divisions_ascend:
   true # lowest in a division is 1, highest is 6
 
+# Seed elo for players who never set a rank. Deliberately below the club's
+# average so a wrong guess corrects upward instead of stomping lobbies.
+default_tier: Arcanist
+
 role_requirements:
   {}
 

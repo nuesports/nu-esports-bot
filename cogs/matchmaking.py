@@ -31,7 +31,7 @@ def generate_embed(session: "MatchmakingSession") -> discord.Embed:
         description=f"({len(session.joined)}/{lobby_size})",
         color = discord.Color.from_rgb(78,42,132),
     )
-    rows_per_column = lobby_size // 2
+    rows_per_column = -(-lobby_size // 2) # ceiling, so an odd lobby_size still fits
     left_rows = ["-"] * rows_per_column
     right_rows = ["-"] * rows_per_column
     for i, member in enumerate(session.joined):
