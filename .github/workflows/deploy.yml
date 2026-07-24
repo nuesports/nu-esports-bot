@@ -1,0 +1,28 @@
+name: Deploy
+
+# Pushes to main redeploy the live stack. The host resets both repos to their
+# tracked branches and rebuilds, so whatever is on main here is what runs.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Never let two deploys build at once; a newer push supersedes an in-flight one.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Redeploy over SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          command_timeout: 20m
+          # The key is restricted to this one command on the host side
+          # (authorized_keys forced command), so this is what runs regardless.
+          script: /root/miku/deploy.sh
