@@ -602,7 +602,6 @@ class Profile(commands.Cog):
         
         paginator = ProfilePaginator(requester_id=ctx.author.id, pages=pages,start_index=start_index)
         message = await ctx.followup.send(embed=pages[start_index], view=paginator)
-        paginator.message = message
         await message.edit(embed=pages[start_index], view=paginator)
     
     @profile.command(
@@ -657,7 +656,7 @@ class Profile(commands.Cog):
 class ProfilePaginator(discord.ui.View):
     """Left/right paginator over a list of embeds, restricted to whoever ran the command."""
     def __init__(self, requester_id, pages, start_index=0):
-        super().__init__(timeout=120)
+        super().__init__(timeout=120, disable_on_timeout=True)
         self.requester_id = requester_id
         self.pages = pages
         self.index = start_index
@@ -691,12 +690,6 @@ class ProfilePaginator(discord.ui.View):
         self.index += 1
         self.update_buttons()
         await interaction.response.edit_message(embed=self.pages[self.index], view=self)
-    
-    async def on_timeout(self) -> None:
-        """Disable both buttons once the view times out, so it doesn't look interactive anymore."""
-        for child in self.children:
-            child.disabled = True
-        await self.message.edit(view=self)
 
 class RoleSelectView(discord.ui.View):
     """Multi-select dropdown for a player's roles in one game.
