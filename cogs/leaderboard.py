@@ -106,6 +106,7 @@ class GameSelectView(discord.ui.View):
     async def on_select(self, interaction: discord.Interaction) -> None:
         """Rebuild the leaderboard for the newly chosen game."""
         game = self.select.values[0]
+        self.stop()
 
         rows = await fetch_leaderboard_rows(game)
         pages = build_leaderboard_pages(self.guild, game, rows, self.requester_id)
@@ -142,6 +143,7 @@ class EmptyLeaderboardView(discord.ui.View):
     @discord.ui.button(label="Change Game", style=discord.ButtonStyle.primary)
     async def change_game(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
         """Swap to a dropdown for picking a different game's leaderboard."""
+        self.stop()
         await interaction.response.edit_message(content=None, view=GameSelectView(requester_id=self.requester_id, guild=self.guild))
 
 class LeaderboardPaginator(discord.ui.View):
@@ -186,6 +188,7 @@ class LeaderboardPaginator(discord.ui.View):
     @discord.ui.button(label="Change Game", style=discord.ButtonStyle.primary, row=1)
     async def change_game(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
         """Swap to a dropdown for picking a different game's leaderboard."""
+        self.stop()
         await interaction.response.edit_message(view=GameSelectView(requester_id=self.requester_id, guild=self.guild))
 
     async def on_timeout(self) -> None:
