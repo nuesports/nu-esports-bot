@@ -9,6 +9,10 @@ GUILD_ID = config.secrets["discord"]["guild_id"]
 GAME_CHOICES = list(config.game_data.keys())
 PAGE_SIZE = 10
 
+def leaderboard_label(game: str, role: str | None) -> str:
+    """Display label for a leaderboard: just the game, or "game role" for a per-role one."""
+    return f"{game.title()} {role}" if role else game.title()
+
 async def fetch_leaderboard_rows(game: str, role: str | None = None) -> list[tuple]:
     """Fetch every player's win/loss + tag for a game, ranked by elo (elo itself not selected).
 
@@ -87,7 +91,7 @@ def build_leaderboard_pages(guild: discord.Guild, game: str, rows: list[tuple], 
         page_start_rank = start + 1
         page_end_rank = start + len(chunk)
 
-        label = f"{game.title()} {role}" if role else game.title()
+        label = leaderboard_label(game, role)
 
         if caller_rank is None:
             lines.append(f"...\nYou haven't played {label} yet!")
@@ -189,7 +193,7 @@ class LeaderboardRoleSelectView(discord.ui.View):
 
         if pages is None:
             await interaction.response.edit_message(
-                content=f"No one currently in the server has played {self.game.title()} {role} yet!",
+                content=f"No one currently in the server has played {leaderboard_label(self.game, role)} yet!",
                 embed=None,
                 view=EmptyLeaderboardView(requester_id=self.requester_id, guild=self.guild),
             )
@@ -330,7 +334,7 @@ class Leaderboard(commands.Cog):
             role = None
 
         rows = await fetch_leaderboard_rows(game, role)
-        label = f"{game.title()} {role}" if role else game.title()
+        label = leaderboard_label(game, role)
 
         if not rows:
             await ctx.followup.send(f"No one's played {label} yet!")
