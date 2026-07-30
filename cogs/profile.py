@@ -895,6 +895,94 @@ class MainsModal(discord.ui.Modal):
             ephemeral=True
         )
 
+class RankSelectView(discord.ui.View):
+    """Tier -> division cascade for setting a player's rank in one game.
+
+    Starts with a tier dropdown. If the chosen tier has divisions, swaps to a division
+    dropdown in the same message; otherwise saves immediately with division=1.
+    """
+    def __init__(self, requester_id: int, game: str, on_done) -> None:
+        super().__init__(timeout=120)
+        self.requester_id = requester_id
+        self.game = game
+        self.on_done = on_done
+        self.tier = None
+
+        options = [discord.SelectOption(label=t, value=t) for t in get_tiers(game)]
+        self.select = discord.ui.Select(placeholder="Choose your tier", options=options)
+        self.select.callback = self.on_tier_select
+        self.add_item(self.select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.requester_id
+
+    async def on_tier_select(self, interaction: discord.Interaction) -> None:
+        self.tier = self.select.values[0]
+
+        if not tier_has_divisions(self.game, self.tier):
+            await self.save(interaction, division=1)
+            return
+
+        self.clear_items()
+        divisions = get_divisions(self.game)
+        options = [discord.SelectOption(label=str(d), value=str(d)) for d in range(1, divisions + 1)]
+        self.division_select = discord.ui.Select(placeholder="Choose your division", options=options)
+        self.division_select.callback = self.on_division_select
+        self.add_item(self.division_select)
+        await interaction.response.edit_message(content=f"Tier: {self.tier}. Now pick a division:", view=self)
+
+    async def on_division_select(self, interaction: discord.Interaction) -> None:
+        division = int(self.division_select.values[0])
+        await self.save(interaction, division)
+
+    async def save(self, interaction: discord.Interaction, division: int) -> None:
+        rank_value = compute_rank_value(self.game, self.tier, division)
+        rank_label = format_rank_label(self.game, self.tier, division)
+
+        sql = """
+            INSERT INTO profile_stats (discordid, game, rank_value, rank_label, updated_at)
+            VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (discordid, game)
+            DO UPDATE SET
+                rank_value = EXCLUDED.rank_value,
+                rank_label = EXCLUDED.rank_label,
+                updated_at = CURRENT_TIMESTAMP;
+        """
+        await db.perform_one(sql, (self.requester_id, self.game, rank_value, rank_label))
+        await self.on_done(interaction)
+
+class PrimarySelectView(discord.ui.View):
+    """Single-select dropdown for choosing a primary main from a player's own mains for one game."""
+    def __init__(self, requester_id: int, game: str, mains: list[str], current_primary: str | None, on_done) -> None:
+        super().__init__(timeout=120)
+        self.requester_id = requester_id
+        self.game = game
+        self.on_done = on_done
+
+        options = [
+            discord.SelectOption(label=m, value=m, default=(m == current_primary))
+            for m in mains
+        ]
+        self.select = discord.ui.Select(placeholder="Choose your primary main", options=options)
+        self.select.callback = self.on_select
+        self.add_item(self.select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.requester_id
+
+    async def on_select(self, interaction: discord.Interaction) -> None:
+        primary = self.select.values[0]
+
+        sql = """
+            INSERT INTO profile_primary_mains (discordid, game, prime)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (discordid, game)
+            DO UPDATE SET
+                prime = EXCLUDED.prime
+            """
+        await db.perform_one(sql, (self.requester_id, self.game, primary))
+        await self.on_done(interaction)
+
 class TagModal(discord.ui.Modal):
     """Single-field modal for setting a player's emoji tag."""
     def __init__(self, requester_id: int, current_tag: str | None, on_done) -> None:
@@ -1040,6 +1128,7 @@ class ProfileSetupView(discord.ui.View):
     async def build_embed(self) -> discord.Embed:
         """Fetch fresh data and build the embed for whichever page is currently active."""
         data = await fetch_profile_data(self.target.id)
+        self._data = data
         profile_row = data["profile_row"]
         tag = profile_row[3] if profile_row and profile_row[3] else "❓"
 
@@ -1067,6 +1156,8 @@ class ProfileSetupView(discord.ui.View):
 
         if self.index == 0:
             self.add_home_buttons()
+        else:
+            self.add_game_buttons(GAME_CHOICES[self.index - 1])
 
     def add_home_buttons(self) -> None:
         tag_btn = discord.ui.Button(label="Tag", style=discord.ButtonStyle.primary)
@@ -1085,6 +1176,26 @@ class ProfileSetupView(discord.ui.View):
         pic_btn.callback = self.on_edit_picture
         self.add_item(pic_btn)
 
+    def add_game_buttons(self, game: str) -> None:
+        rank_btn = discord.ui.Button(label="Rank", style=discord.ButtonStyle.primary)
+        rank_btn.callback = self.on_edit_rank
+        self.add_item(rank_btn)
+
+        if get_roles(game):
+            roles_btn = discord.ui.Button(label="Roles", style=discord.ButtonStyle.primary)
+            roles_btn.callback = self.on_edit_roles
+            self.add_item(roles_btn)
+
+        mains_btn = discord.ui.Button(label="Mains", style=discord.ButtonStyle.primary)
+        mains_btn.callback = self.on_edit_mains
+        self.add_item(mains_btn)
+
+        data = getattr(self, "_data", {})
+        has_mains = bool(data.get("mains_by_game", {}).get(game))
+        primary_btn = discord.ui.Button(label="Primary", style=discord.ButtonStyle.primary, disabled=not has_mains)
+        primary_btn.callback = self.on_edit_primary
+        self.add_item(primary_btn)
+
     async def on_back(self, interaction: discord.Interaction) -> None:
         self.index -= 1
         await self.refresh_page(interaction)
@@ -1101,7 +1212,7 @@ class ProfileSetupView(discord.ui.View):
         """
         embed = await self.build_embed()
         self.build_buttons()
-        await interaction.response.edit_message(embed=embed, view=self)
+        await interaction.response.edit_message(content=None, embed=embed, view=self)
 
     async def on_edit_tag(self, interaction: discord.Interaction) -> None:
         data = await fetch_profile_data(self.target.id)
@@ -1122,6 +1233,32 @@ class ProfileSetupView(discord.ui.View):
         data = await fetch_profile_data(self.target.id)
         current_url = data["profile_row"][1] if data["profile_row"] else None
         await interaction.response.send_modal(PictureModal(self.requester_id, "main", current_url, self.on_field_done))
+
+    async def on_edit_rank(self, interaction: discord.Interaction) -> None:
+        game = GAME_CHOICES[self.index - 1]
+        view = RankSelectView(requester_id=self.requester_id, game=game, on_done=self.on_field_done)
+        await interaction.response.edit_message(content=f"Pick your {game.title()} tier:", embed=None, view=view)
+
+    async def on_edit_roles(self, interaction: discord.Interaction) -> None:
+        game = GAME_CHOICES[self.index - 1]
+        data = await fetch_profile_data(self.target.id)
+        current_roles = data["roles_by_game"].get(game, [])
+        view = RoleSelectView(requester_id=self.requester_id, game=game, current_roles=current_roles, on_done=self.on_field_done)
+        await interaction.response.edit_message(content="Pick your role(s):", embed=None, view=view)
+
+    async def on_edit_mains(self, interaction: discord.Interaction) -> None:
+        game = GAME_CHOICES[self.index - 1]
+        data = await fetch_profile_data(self.target.id)
+        current_mains = data["mains_by_game"].get(game, [])
+        await interaction.response.send_modal(MainsModal(self.requester_id, game, current_mains, self.on_field_done))
+
+    async def on_edit_primary(self, interaction: discord.Interaction) -> None:
+        game = GAME_CHOICES[self.index - 1]
+        data = await fetch_profile_data(self.target.id)
+        mains = data["mains_by_game"].get(game, [])
+        current_primary = data["primary_by_game"].get(game)
+        view = PrimarySelectView(requester_id=self.requester_id, game=game, mains=mains, current_primary=current_primary, on_done=self.on_field_done)
+        await interaction.response.edit_message(content="Pick your primary main:", embed=None, view=view)
 
     async def on_field_done(self, interaction: discord.Interaction) -> None:
         """Called by field modals after a successful save; refresh this same page in place."""
