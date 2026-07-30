@@ -656,7 +656,7 @@ class Profile(commands.Cog):
             roles = roles_by_game.get(g, [])
             mains = mains_by_game.get(g, [])
             primary_main = primary_by_game.get(g)
-            role_ranks = role_ranks_by_game.get(g) if config.is_per_role_ranks(g) else None
+            role_ranks = role_ranks_by_game.get(g, {}) if config.is_per_role_ranks(g) else None
             tag = profile_row[3] if profile_row and profile_row[3] else "💬"
             pages.append(build_game_embed(target, g, row, roles, mains, primary_main, tag, i, total_pages, setup=False, role_ranks=role_ranks))
 
@@ -1256,7 +1256,7 @@ class ProfileSetupView(discord.ui.View):
         roles = data["roles_by_game"].get(game, [])
         mains = data["mains_by_game"].get(game, [])
         primary_main = data["primary_by_game"].get(game)
-        role_ranks = data["role_ranks_by_game"].get(game) if config.is_per_role_ranks(game) else None
+        role_ranks = data["role_ranks_by_game"].get(game, {}) if config.is_per_role_ranks(game) else None
         return build_game_embed(self.target, game, row, roles, mains, primary_main, tag, self.index + 1, self.total_pages, setup=True, role_ranks=role_ranks)
 
     def build_buttons(self) -> None:
