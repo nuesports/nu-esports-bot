@@ -63,7 +63,9 @@ jobs:
               closesText = `, closes issue ${formatList(links)}`;
             }
 
-            const message = `pr [${pr.number}](${pr.html_url}), ${pr.title}${closesText}. author [${pr.user.login}](${pr.user.html_url})`;
+            const escapeMarkdown = require("./.github/scripts/escape-markdown.js");
+            const author = pr.user ? `[${pr.user.login}](${pr.user.html_url})` : "unknown";
+            const message = `pr [${pr.number}](${pr.html_url}), ${escapeMarkdown(pr.title)}${closesText}. author ${author}`;
 
             const postDiscordMessage = require("./.github/scripts/post-discord-message.js");
             await postDiscordMessage(core, process.env.DISCORD_WEBHOOK, message);
@@ -83,7 +85,9 @@ jobs:
           script: |
             const issue = context.payload.issue;
 
-            const message = `issue [${issue.number}](${issue.html_url}), ${issue.title}. author [${issue.user.login}](${issue.user.html_url})`;
+            const escapeMarkdown = require("./.github/scripts/escape-markdown.js");
+            const author = issue.user ? `[${issue.user.login}](${issue.user.html_url})` : "unknown";
+            const message = `issue [${issue.number}](${issue.html_url}), ${escapeMarkdown(issue.title)}. author ${author}`;
 
             const postDiscordMessage = require("./.github/scripts/post-discord-message.js");
             await postDiscordMessage(core, process.env.DISCORD_WEBHOOK, message);
