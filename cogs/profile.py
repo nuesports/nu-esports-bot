@@ -193,7 +193,6 @@ def build_game_embed(
     losses = row[3] if row else "N/A"
     role_display = ", ".join(roles) if roles else "Not set"
     main_display = ", ".join(mains) if mains else "Not set"
-
     if not setup:
             embed = discord.Embed(
                     title=f"{tag} {target.display_name} - {game.title()}",
@@ -205,8 +204,11 @@ def build_game_embed(
                 color=discord.Color.from_rgb(78, 42, 132),
             )
     embed.add_field(name="Rank", value=rank_label, inline=True)
-    embed.add_field(name="Role", value=role_display, inline=True)
+    if get_roles(game):
+        embed.add_field(name="Role", value=role_display, inline=True)
     embed.add_field(name="Main", value=main_display, inline=True)
+    if not get_roles(game):
+        embed.add_field(name="​", value="​", inline=True)
     embed.add_field(name="Wins", value=f"{wins}", inline=True)
     embed.add_field(name="Losses", value=f"{losses}", inline=True)
 
