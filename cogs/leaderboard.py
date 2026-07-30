@@ -16,10 +16,16 @@ def leaderboard_label(game: str, role: str | None) -> str:
 async def fetch_leaderboard_rows(game: str, role: str | None = None) -> list[tuple]:
     """Fetch every player's win/loss + tag for a game, ranked by elo (elo itself not selected).
 
-    For per-role-ranks games, pass `role` to rank by that role's elo (profile_role_elo)
-    instead of the game-wide profile_elo."""
+    - `role` given: rank by that role's elo (profile_role_elo).
+    - `role` omitted on a per-role-ranks game: a "mixed" leaderboard -- each player's
+      single best role and its elo, ranked across all roles.
+    - `role` omitted otherwise: rank by the one game-wide elo (profile_elo).
+
+    Every row is (discordid, wins, losses, tag, role_or_none) -- the role slot is only
+    ever populated for the mixed leaderboard, to show which role each entry is from.
+    """
     if role is not None:
-        return await db.fetch_all(
+        rows = await db.fetch_all(
             """
             SELECT pre.discordid, COALESCE(ps.wins, 0) AS wins, COALESCE(ps.losses, 0) AS losses, p.tag
             FROM profile_role_elo pre
@@ -30,7 +36,28 @@ async def fetch_leaderboard_rows(game: str, role: str | None = None) -> list[tup
             """,
             (game, role),
         )
-    return await db.fetch_all(
+        return [(discordid, wins, losses, tag, None) for discordid, wins, losses, tag in rows]
+
+    if config.is_per_role_ranks(game):
+        rows = await db.fetch_all(
+            """
+            SELECT discordid, role, wins, losses, tag FROM (
+                SELECT DISTINCT ON (pre.discordid)
+                    pre.discordid, pre.role, pre.elo,
+                    COALESCE(ps.wins, 0) AS wins, COALESCE(ps.losses, 0) AS losses, p.tag
+                FROM profile_role_elo pre
+                LEFT JOIN profile_stats ps ON ps.discordid = pre.discordid AND ps.game = pre.game
+                LEFT JOIN profiles p ON p.discordid = pre.discordid
+                WHERE pre.game = %s
+                ORDER BY pre.discordid, pre.elo DESC
+            ) best_role
+            ORDER BY elo DESC;
+            """,
+            (game,),
+        )
+        return [(discordid, wins, losses, tag, entry_role) for discordid, entry_role, wins, losses, tag in rows]
+
+    rows = await db.fetch_all(
         """
         SELECT pe.discordid, COALESCE(ps.wins, 0) AS wins, COALESCE(ps.losses, 0) AS losses, p.tag
         FROM profile_elo pe
@@ -41,6 +68,7 @@ async def fetch_leaderboard_rows(game: str, role: str | None = None) -> list[tup
         """,
         (game,),
     )
+    return [(discordid, wins, losses, tag, None) for discordid, wins, losses, tag in rows]
 
 async def role_autocomplete(ctx: discord.AutocompleteContext) -> list[discord.OptionChoice]:
     """Suggest rankable roles once a per-role-ranks game has been picked."""
@@ -49,12 +77,16 @@ async def role_autocomplete(ctx: discord.AutocompleteContext) -> list[discord.Op
         return []
     return [discord.OptionChoice(r) for r in config.rankable_roles(game)]
 
-def format_entry(guild: discord.Guild, rank: int, discordid: int, wins: int, losses: int, tag: str | None) -> str:
-    """Format one leaderboard row: rank, tag (defaulting to a star), display name, and W/L record."""
+def format_entry(guild: discord.Guild, rank: int, discordid: int, wins: int, losses: int, tag: str | None, game: str, entry_role: str | None) -> str:
+    """Format one leaderboard row: rank, tag (defaulting to a star), display name, and W/L record.
+
+    `entry_role` is only set on a mixed (no-role) per-role leaderboard, and adds an
+    icon marking which role that player's shown elo was their best in."""
     member = guild.get_member(discordid)
     name = member.display_name if member else f"<@{discordid}>"
     tag = tag or "⭐"
-    return f"{rank}. {tag} *{name}* — **{wins}W** / **{losses}L**"
+    icon = f" {config.role_icon(game, entry_role)}" if entry_role else ""
+    return f"{rank}. {tag} *{name}* — **{wins}W** / **{losses}L**{icon}"
 
 def build_leaderboard_pages(guild: discord.Guild, game: str, rows: list[tuple], caller_id: int, role: str | None = None) -> list[discord.Embed] | None:
     """Build one embed per page of 10 leaderboard entries, ordered by elo but never showing it.
@@ -73,10 +105,10 @@ def build_leaderboard_pages(guild: discord.Guild, game: str, rows: list[tuple], 
 
     caller_rank = None
     caller_line = None
-    for rank, (discordid, wins, losses, tag) in enumerate(present_rows, start=1):
+    for rank, (discordid, wins, losses, tag, entry_role) in enumerate(present_rows, start=1):
         if discordid == caller_id:
             caller_rank = rank
-            caller_line = format_entry(guild, rank, discordid, wins, losses, tag)
+            caller_line = format_entry(guild, rank, discordid, wins, losses, tag, game, entry_role)
             break
 
     pages = []
@@ -84,8 +116,8 @@ def build_leaderboard_pages(guild: discord.Guild, game: str, rows: list[tuple], 
         start = page * PAGE_SIZE
         chunk = present_rows[start:start+ PAGE_SIZE]
         lines = [
-            format_entry(guild, start + i + 1, discordid, wins, losses, tag)
-            for i, (discordid, wins, losses, tag) in enumerate(chunk)
+            format_entry(guild, start + i + 1, discordid, wins, losses, tag, game, entry_role)
+            for i, (discordid, wins, losses, tag, entry_role) in enumerate(chunk)
         ]
 
         page_start_rank = start + 1
@@ -134,17 +166,11 @@ class GameSelectView(discord.ui.View):
         return True
     
     async def on_select(self, interaction: discord.Interaction) -> None:
-        """Rebuild the leaderboard for the newly chosen game, or ask for a role first
-        if it's a per-role-ranks game."""
+        """Rebuild the leaderboard for the newly chosen game. Per-role-ranks games
+        default to the mixed (best-role) leaderboard; a "Change Role" button lets
+        the player narrow to one role from there."""
         game = self.select.values[0]
         self.stop()
-
-        if config.is_per_role_ranks(game):
-            view = LeaderboardRoleSelectView(requester_id=self.requester_id, guild=self.guild, game=game)
-            await interaction.response.edit_message(
-                content=f"Pick a role for the {game.title()} leaderboard:", embed=None, view=view
-            )
-            return
 
         rows = await fetch_leaderboard_rows(game)
         pages = build_leaderboard_pages(self.guild, game, rows, self.requester_id)
@@ -165,13 +191,16 @@ class LeaderboardRoleSelectView(discord.ui.View):
     """Role picker shown before a per-role-ranks game's leaderboard, since elo (and so
     ranking) is tracked separately per role rather than once per game."""
 
+    _MIXED = "__mixed__"
+
     def __init__(self, requester_id: int, guild: discord.Guild, game: str):
         super().__init__(timeout=120)
         self.requester_id = requester_id
         self.guild = guild
         self.game = game
 
-        options = [discord.SelectOption(label=r, value=r) for r in config.rankable_roles(game)]
+        options = [discord.SelectOption(label="Mixed (best role)", value=self._MIXED)]
+        options += [discord.SelectOption(label=r, value=r) for r in config.rankable_roles(game)]
         self.select = discord.ui.Select(placeholder="Choose a role", options=options)
         self.select.callback = self.on_select
         self.add_item(self.select)
@@ -186,6 +215,7 @@ class LeaderboardRoleSelectView(discord.ui.View):
 
     async def on_select(self, interaction: discord.Interaction) -> None:
         role = self.select.values[0]
+        role = None if role == self._MIXED else role
         self.stop()
 
         rows = await fetch_leaderboard_rows(self.game, role)
@@ -239,7 +269,7 @@ class LeaderboardPaginator(discord.ui.View):
         self.index = 0
         self.update_buttons()
 
-        if role is not None:
+        if config.is_per_role_ranks(game):
             change_role_btn = discord.ui.Button(label="Change Role", style=discord.ButtonStyle.primary, row=1)
             change_role_btn.callback = self.on_change_role
             self.add_item(change_role_btn)
@@ -313,19 +343,19 @@ class Leaderboard(commands.Cog):
         ),
         role: discord.Option(
             str,
-            description="Role to rank by (required for per-role-rank games like Overwatch)",
+            description="Role to rank by (per-role-rank games only; omit for a mixed best-role leaderboard)",
             autocomplete=role_autocomplete,
             default=None,
         )
     ) -> None:
         """Show the top 10 players for a game, ranked by elo but displayed as win/loss
 
-        Per-role-ranks games (Overwatch) are ranked by the given role's elo instead of
-        one elo per game, since that's how rank/elo is tracked for them."""
+        Per-role-ranks games (Overwatch) rank by the given role's elo if one's given, or by
+        each player's single best role otherwise -- see fetch_leaderboard_rows."""
         await ctx.defer()
 
         if config.is_per_role_ranks(game):
-            if role not in config.rankable_roles(game):
+            if role is not None and role not in config.rankable_roles(game):
                 await ctx.followup.send(
                     f"Pick a role from the dropdown to see the {game.title()} leaderboard (e.g. Tank, Damage, Support)."
                 )
