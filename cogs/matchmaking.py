@@ -223,14 +223,23 @@ def balance_teams(game: str,
         chosen_ids = {m.id for m in candidates}
         remaining = [m for m in remaining if m.id not in chosen_ids]
 
-    # Only reachable if role_requirements doesn't fill every slot, which isn't the
-    # case for any game today, but stays game-agnostic. Rebuilds a per-player elo
-    # since `effective_elo` above only ever holds the last-processed role's values.
+    # Reachable whenever role_requirements doesn't fill every slot -- true for any
+    # non-full Overwatch lobby, since its roles only add up to exactly lobby_size/2.
+    def leftover_role(m: discord.Member) -> str:
+        """Role to record for a leftover player. Flex isn't an assignable lane in a
+        per-role-ranks game, so a Flex-only queue resolves to whichever rankable
+        role they have the best elo in instead -- Tank/Damage/Support always have
+        an elo row, Flex never does."""
+        preferred = roles_by_id[m.id][0]
+        rankable = ROLE_REQUIREMENTS[game]
+        if not per_role or preferred in rankable:
+            return preferred
+        return max(rankable, key=lambda r: elo_by_id[m.id].get(r, 0.0))
+
     def leftover_elo(m: discord.Member) -> float:
         if not per_role:
             return effective_elo[m.id]
-        role = roles_by_id[m.id][0] if roles_by_id[m.id] else next(iter(ROLE_REQUIREMENTS[game]))
-        return elo_by_id[m.id].get(role, 0.0)
+        return elo_by_id[m.id].get(leftover_role(m), 0.0)
 
     remaining_sorted = sorted(remaining, key=leftover_elo, reverse=True)
     for m in remaining_sorted:
@@ -242,7 +251,7 @@ def balance_teams(game: str,
         else:
             team_b.append(m)
             team_b_total += value
-        assignments[m.id] = roles_by_id[m.id][0]
+        assignments[m.id] = leftover_role(m)
 
     return team_a, team_b, assignments
 
