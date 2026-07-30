@@ -768,10 +768,11 @@ class RoleSelectView(discord.ui.View):
     On submit, this replaces the player's full role list for that game (delete then insert) 
     rather than diffing against what was there before.
     """
-    def __init__(self, requester_id: int, game: str, current_roles: list[str]) -> None:
+    def __init__(self, requester_id: int, game: str, current_roles: list[str], on_done=None) -> None:
         super().__init__(timeout=120)
         self.requester_id = requester_id
         self.game = game
+        self.on_done = on_done
 
         options = [
             discord.SelectOption(label=r, value=r, default=(r in current_roles))
@@ -804,10 +805,13 @@ class RoleSelectView(discord.ui.View):
                 [(self.requester_id, self.game, r) for r in chosen],
             )
         
-        await interaction.response.edit_message(
-            content=f"Roles updated: {', '.join(chosen) if chosen else 'None'}",
-            view=None,
-        )
+        if self.on_done:
+            await self.on_done(interaction)
+        else:
+            await interaction.response.edit_message(
+                content=f"Roles updated: {', '.join(chosen) if chosen else 'None'}",
+                view=None,
+            )
 
 class MainsModal(discord.ui.Modal):
     """Free-text modal for setting a player's mains, as a comma-separated list.
@@ -817,10 +821,11 @@ class MainsModal(discord.ui.Modal):
     On success, this replaces the player's full mains list for that game, 
     same delete-then-insert pattern as RoleSelectView.
     """
-    def __init__(self, requester_id: int, game: str, current_mains: list[str]) -> None:
+    def __init__(self, requester_id: int, game: str, current_mains: list[str], on_done=None) -> None:
         super().__init__(title=f"Set your {game.title()} mains")
         self.requester_id = requester_id
         self.game = game
+        self.on_done = on_done
         example_mains = ", ".join(random.sample(get_mains(game), 3))
         self.add_item(
             discord.ui.InputText(
@@ -874,13 +879,17 @@ class MainsModal(discord.ui.Modal):
                 """,
                 (self.requester_id, self.game, current_primary),
             )
+        if self.on_done:
+            await self.on_done(interaction)
+            return
+
         if len(resolved) == 1:
             await interaction.response.send_message(
                 f"Main updated to {resolved}.",
                 ephemeral=True
             )
             return
-        
+
         await interaction.response.send_message(
             f"Mains updated to {', '.join(resolved[:-1])} and {resolved[-1]}.",
             ephemeral=True
@@ -1078,14 +1087,18 @@ class ProfileSetupView(discord.ui.View):
 
     async def on_back(self, interaction: discord.Interaction) -> None:
         self.index -= 1
-        await self.refresh(interaction)
+        await self.refresh_page(interaction)
 
     async def on_forward(self, interaction: discord.Interaction) -> None:
         self.index += 1
-        await self.refresh(interaction)
+        await self.refresh_page(interaction)
 
-    async def refresh(self, interaction: discord.Interaction) -> None:
-        """Rebuild the embed and buttons for the current page, then edit the message in place."""
+    async def refresh_page(self, interaction: discord.Interaction) -> None:
+        """Rebuild the embed and buttons for the current page, then edit the message in place.
+
+        be careful cuz discord.ui.View already defines a sync `refresh(components)`, don't accidentally
+        shadow it with your own refresh()... like I did before changing it to this :P
+        """
         embed = await self.build_embed()
         self.build_buttons()
         await interaction.response.edit_message(embed=embed, view=self)
@@ -1112,7 +1125,7 @@ class ProfileSetupView(discord.ui.View):
 
     async def on_field_done(self, interaction: discord.Interaction) -> None:
         """Called by field modals after a successful save; refresh this same page in place."""
-        await self.refresh(interaction)
+        await self.refresh_page(interaction)
 
     async def on_timeout(self) -> None:
         for child in self.children:
