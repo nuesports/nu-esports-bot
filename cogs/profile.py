@@ -103,7 +103,49 @@ async def primary_autocomplete(ctx: discord.AutocompleteContext) -> list[discord
         (ctx.interaction.user.id, game),
     )
     return [discord.OptionChoice(r[0]) for r in rows]
-    
+
+async def fetch_profile_data(discordid: int) -> dict:
+    """Fetch and aggregate a member's full profile: bio/pictures, stats, roles, mains, and primary mains per game"""
+
+    profile_row = await db.fetch_one(
+        "SELECT bio, picture_url, thumbnail_url, tag FROM profiles WHERE discordid = %s;",
+        (discordid,)
+    )
+    stats_rows = await db.fetch_all(
+        "SELECT game, rank_label, wins, losses FROM profile_stats WHERE discordid = %s",
+        (discordid,)
+    )
+    role_rows = await db.fetch_all(
+        "SELECT game, role FROM profile_roles WHERE discordid = %s;",
+        (discordid,)
+    )
+    main_rows = await db.fetch_all(
+        "SELECT game, main FROM profile_mains WHERE discordid = %s;",
+        (discordid,)
+    )
+    primary_rows = await db.fetch_all(
+        "SELECT game, prime FROM profile_primary_mains WHERE discordid = %s;",
+        (discordid,)
+    )
+
+    stats_by_game = {row[0]: row for row in stats_rows}
+    roles_by_game = {}
+    for g, r in role_rows:
+        roles_by_game.setdefault(g, []).append(r)
+    mains_by_game = {}
+    for g, m in main_rows:
+        mains_by_game.setdefault(g, []).append(m)
+    primary_by_game = {g: p for g, p in primary_rows}
+
+    return {
+        "profile_row": profile_row,
+        "stats_by_game": stats_by_game,
+        "roles_by_game": roles_by_game,
+        "mains_by_game": mains_by_game,
+        "primary_by_game": primary_by_game,
+        "total_wins": sum(row[2] for row in stats_rows),
+        "total_losses": sum(row[3] for row in stats_rows),
+    }
 
 def build_home_embed(target: discord.Member, profile_row: tuple | None, total_pages: int, total_wins: int, total_losses: int, setup: bool) -> discord.Embed:
     """Build the first page of a profile: bio, win/loss record, and member-since date."""
@@ -560,37 +602,14 @@ class Profile(commands.Cog):
 
         target = user or ctx.author
 
-        profile_row = await db.fetch_one(
-            "SELECT bio, picture_url, thumbnail_url, tag FROM profiles WHERE discordid = %s;",
-            (target.id,)
-        )
-        stats_rows = await db.fetch_all(
-            "SELECT game, rank_label, wins, losses FROM profile_stats WHERE discordid = %s",
-            (target.id,)
-        )
-        role_rows = await db.fetch_all(
-            "SELECT game, role FROM profile_roles WHERE discordid = %s;",
-            (target.id,)
-        )
-        main_rows = await db.fetch_all(
-            "SELECT game, main FROM profile_mains WHERE discordid = %s;",
-            (target.id,)
-        )
-        primary_rows = await db.fetch_all(
-            "SELECT game, prime FROM profile_primary_mains WHERE discordid = %s;",
-            (target.id,)
-        )
-
-        stats_by_game = {row[0]: row for row in stats_rows}
-        roles_by_game = {}
-        for g, r in role_rows:
-            roles_by_game.setdefault(g, []).append(r)
-        mains_by_game = {}
-        for g, m in main_rows:
-            mains_by_game.setdefault(g, []).append(m)
-        primary_by_game = {g: p for g, p in primary_rows}
-        total_wins = sum(row[2] for row in stats_rows)
-        total_losses = sum(row[3] for row in stats_rows)
+        data = await fetch_profile_data(target.id)
+        profile_row = data["profile_row"]
+        stats_by_game = data["stats_by_game"]
+        roles_by_game = data["roles_by_game"]
+        mains_by_game = data["mains_by_game"]
+        primary_by_game = data["primary_by_game"]
+        total_wins = data["total_wins"]
+        total_losses = data["total_losses"]
 
         games_with_data = {
             g for g in GAME_CHOICES if g in stats_by_game or roles_by_game.get(g) or mains_by_game.get(g) or g in primary_by_game
@@ -668,6 +687,55 @@ class Profile(commands.Cog):
             embed.description = "No elo on record for any game yet."
 
         await ctx.followup.send(embed=embed, ephemeral=True)
+
+
+    
+        
+    async def _run_setup(self, ctx: discord.ApplicationContext) -> None:
+        """Interactive paginator editor for your own profile."""
+        await ctx.defer(ephemeral=True)
+
+        target = ctx.author
+
+        data = await fetch_profile_data(target.id)
+        profile_row = data["profile_row"]
+        stats_by_game = data["stats_by_game"]
+        roles_by_game = data["roles_by_game"]
+        mains_by_game = data["mains_by_game"]
+        primary_by_game = data["primary_by_game"]
+        total_wins = data["total_wins"]
+        total_losses = data["total_losses"]
+
+        total_pages = len(GAME_CHOICES) + 1
+        tag = profile_row[3] if profile_row and profile_row[3] else "❓"
+        pages = [build_home_embed(target, profile_row, total_pages, total_wins, total_losses, setup=True)]
+        for i, g in enumerate(GAME_CHOICES, start=2):
+            row = stats_by_game.get(g)
+            roles = roles_by_game.get(g, [])
+            mains = mains_by_game.get(g, [])
+            primary_main = primary_by_game.get(g)
+            pages.append(build_game_embed(target, g, row, roles, mains, primary_main, tag, i, total_pages, setup=True))
+
+        view = ProfileSetupView(requester_id=ctx.author.id, pages=pages)
+        message = await ctx.followup.send(embed=pages[0], view=view, ephemeral=True)
+        view.message = message
+
+    @profile.command(
+        name = "setup",
+        guild_ids = [GUILD_ID]
+    )
+    async def setup_cmd(self, ctx: discord.ApplicationContext) -> None:
+        """Interactive paginated setup for your profile."""
+        await self._run_setup(ctx)
+
+    @profile.command(
+        name = "edit",
+        guild_ids = [GUILD_ID]
+    )
+    async def edit_cmd(self, ctx: discord.ApplicationContext) -> None:
+        """Interactive paginated editor for your profile."""
+        await self._run_setup(ctx)
+
 
 class ProfilePaginator(discord.ui.View):
     """Left/right paginator over a list of embeds, restricted to whoever ran the command."""
@@ -837,6 +905,45 @@ class MainsModal(discord.ui.Modal):
             f"Mains updated to {', '.join(resolved[:-1])} and {resolved[-1]}.",
             ephemeral=True
         )
+
+class ProfileSetupView(discord.ui.View):
+    """Left/right paginator for /profile setup. Edit buttons layered on at a later step."""
+    def __init__(self, requester_id, pages, start_index=0):
+        super().__init__(timeout=120)
+        self.requester_id = requester_id
+        self.pages = pages
+        self.index = start_index
+        self.update_buttons()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message(
+                "This isnt your profile to set up!", ephemeral=True
+            )
+            return False
+        return True
+
+    def update_buttons(self) -> None:
+        self.back.disabled = (self.index == 0)
+        self.forward.disabled = (self.index == len(self.pages) - 1)
+
+    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
+    async def back(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+        self.index -= 1
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.pages[self.index], view=self)
+
+    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
+    async def forward(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+        self.index += 1
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.pages[self.index], view=self)
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+        await self.message.edit(view=self)
+
 
 def setup(bot: discord.Bot):
     bot.add_cog(Profile(bot))
