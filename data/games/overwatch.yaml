@@ -28,6 +28,9 @@ role_requirements:
   Damage: 2
   Support: 2
 
+# Ranks (and elo) are tracked separately per role instead of one per game.
+per_role_ranks: true
+
 characters: # Alphabetically
   - Ana
   - Anran
