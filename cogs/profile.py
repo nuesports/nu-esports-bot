@@ -696,6 +696,10 @@ class Profile(commands.Cog):
             "SELECT game, elo, games_played FROM profile_elo WHERE discordid = %s;",
             (target.id,)
         )
+        role_rows = await db.fetch_all(
+            "SELECT game, role, elo, games_played FROM profile_role_elo WHERE discordid = %s;",
+            (target.id,)
+        )
 
         tag_row = await db.fetch_one(
             "SELECT tag FROM profiles WHERE discordid = %s;",
@@ -708,8 +712,18 @@ class Profile(commands.Cog):
             color=discord.Color.from_rgb(78, 42, 132),
         )
         elo_by_game = {game: (value, games_played) for game, value, games_played in rows}
+        role_elo_by_game = {}
+        for game, role, value, games_played in role_rows:
+            role_elo_by_game.setdefault(game, {})[role] = (value, games_played)
+
         for game in GAME_CHOICES:
-            if game in elo_by_game:
+            if config.is_per_role_ranks(game):
+                roles = role_elo_by_game.get(game, {})
+                for role in config.rankable_roles(game):
+                    if role in roles:
+                        value, games_played = roles[role]
+                        embed.add_field(name=f"{game.title()} — {role}", value=f"{value:.0f} elo ({games_played} games)", inline=True)
+            elif game in elo_by_game:
                 value, games_played = elo_by_game[game]
                 embed.add_field(name=game.title(), value=f"{value:.0f} elo ({games_played} games)", inline=True)
 
