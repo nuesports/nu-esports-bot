@@ -127,6 +127,10 @@ async def fetch_profile_data(discordid: int) -> dict:
         "SELECT game, prime FROM profile_primary_mains WHERE discordid = %s;",
         (discordid,)
     )
+    role_rank_rows = await db.fetch_all(
+        "SELECT game, role, rank_label FROM profile_role_ranks WHERE discordid = %s;",
+        (discordid,)
+    )
 
     stats_by_game = {row[0]: row for row in stats_rows}
     roles_by_game = {}
@@ -136,6 +140,9 @@ async def fetch_profile_data(discordid: int) -> dict:
     for g, m in main_rows:
         mains_by_game.setdefault(g, []).append(m)
     primary_by_game = {g: p for g, p in primary_rows}
+    role_ranks_by_game = {}
+    for g, r, label in role_rank_rows:
+        role_ranks_by_game.setdefault(g, {})[r] = label
 
     return {
         "profile_row": profile_row,
@@ -143,6 +150,7 @@ async def fetch_profile_data(discordid: int) -> dict:
         "roles_by_game": roles_by_game,
         "mains_by_game": mains_by_game,
         "primary_by_game": primary_by_game,
+        "role_ranks_by_game": role_ranks_by_game,
         "total_wins": sum(row[2] for row in stats_rows),
         "total_losses": sum(row[3] for row in stats_rows),
     }
@@ -182,13 +190,21 @@ def build_game_embed(
                      mains: list[str], 
                      primary_main: str | None, 
                      tag: str, 
-                     page_number: int, 
+                     page_number: int,
                      total_pages: int,
-                     setup: bool) -> discord.Embed:
+                     setup: bool,
+                     role_ranks: dict[str, str] | None = None) -> discord.Embed:
     """Build one per-game page of a profile: rank, roles, mains, wins/losses.
-    
+
+    For per-role-ranks games, pass `role_ranks` (role -> rank_label) to render one
+    rank line per role instead of the single game-wide rank_label in `row`.
     Sets a champion splash_art thumbnail if primary_main is set. (League only right now)"""
-    rank_label = row[1] if row else "Not set"
+    if role_ranks is not None:
+        rank_label = "\n".join(
+            f"{r} — {role_ranks.get(r, 'Not set')}" for r in config.rankable_roles(game)
+        )
+    else:
+        rank_label = row[1] if row else "Not set"
     wins = row[2] if row else "N/A"
     losses = row[3] if row else "N/A"
     role_display = ", ".join(roles) if roles else "Not set"
@@ -368,8 +384,9 @@ class Profile(commands.Cog):
         tier: discord.Option(
             str,
             name="tier",
-            description="Your rank tier",
+            description="Your rank tier (ignored for games with per-role ranks)",
             autocomplete=tier_autocomplete,
+            default=None,
         ),
         division: discord.Option(
             str,
@@ -379,10 +396,18 @@ class Profile(commands.Cog):
             default="1",
         )
     ) -> None:
-        """Set your rank for a game, storing both a numeric value (for balancing) and a string (for display)."""
+        """Set your rank for a game, storing both a numeric value (for balancing) and a string (for display).
+
+        Games with per-role ranks (Overwatch) open a role->tier->division menu instead, since
+        one rank per game doesn't apply to them."""
         await ctx.defer(ephemeral=True)
 
-        if tier not in get_tiers(game):
+        if config.is_per_role_ranks(game):
+            view = RoleRankSelectView(requester_id=ctx.author.id, game=game)
+            await ctx.followup.send("Pick a role to set your rank for:", view=view, ephemeral=True)
+            return
+
+        if tier is None or tier not in get_tiers(game):
             await ctx.followup.send(
                 "Invalid tier. Please select from dropdown.", ephemeral=True
             )
@@ -610,11 +635,14 @@ class Profile(commands.Cog):
         roles_by_game = data["roles_by_game"]
         mains_by_game = data["mains_by_game"]
         primary_by_game = data["primary_by_game"]
+        role_ranks_by_game = data["role_ranks_by_game"]
         total_wins = data["total_wins"]
         total_losses = data["total_losses"]
 
         games_with_data = {
-            g for g in GAME_CHOICES if g in stats_by_game or roles_by_game.get(g) or mains_by_game.get(g) or g in primary_by_game
+            g for g in GAME_CHOICES
+            if g in stats_by_game or roles_by_game.get(g) or mains_by_game.get(g)
+            or g in primary_by_game or role_ranks_by_game.get(g)
         }
         if game is not None:
             games_with_data.add(game)
@@ -628,8 +656,9 @@ class Profile(commands.Cog):
             roles = roles_by_game.get(g, [])
             mains = mains_by_game.get(g, [])
             primary_main = primary_by_game.get(g)
+            role_ranks = role_ranks_by_game.get(g) if config.is_per_role_ranks(g) else None
             tag = profile_row[3] if profile_row and profile_row[3] else "💬"
-            pages.append(build_game_embed(target, g, row, roles, mains, primary_main, tag, i, total_pages, setup=False))
+            pages.append(build_game_embed(target, g, row, roles, mains, primary_main, tag, i, total_pages, setup=False, role_ranks=role_ranks))
 
         if game is not None:
             start_index = pages_games.index(game) +1
@@ -953,6 +982,77 @@ class RankSelectView(discord.ui.View):
         await db.perform_one(sql, (self.requester_id, self.game, rank_value, rank_label))
         await self.on_done(interaction)
 
+class RoleRankSelectView(discord.ui.View):
+    """Role -> tier -> division cascade for one role's rank in a per-role-ranks game.
+
+    Saves exactly one role per submission, same as RankSelectView saves one rank per
+    submission; setting a second role means invoking this view again.
+    """
+    def __init__(self, requester_id: int, game: str, on_done=None) -> None:
+        super().__init__(timeout=120)
+        self.requester_id = requester_id
+        self.game = game
+        self.on_done = on_done
+        self.role = None
+        self.tier = None
+
+        options = [discord.SelectOption(label=r, value=r) for r in config.rankable_roles(game)]
+        self.select = discord.ui.Select(placeholder="Choose a role", options=options)
+        self.select.callback = self.on_role_select
+        self.add_item(self.select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.requester_id
+
+    async def on_role_select(self, interaction: discord.Interaction) -> None:
+        self.role = self.select.values[0]
+
+        self.clear_items()
+        options = [discord.SelectOption(label=t, value=t) for t in get_tiers(self.game)]
+        self.tier_select = discord.ui.Select(placeholder=f"Choose your {self.role} tier", options=options)
+        self.tier_select.callback = self.on_tier_select
+        self.add_item(self.tier_select)
+        await interaction.response.edit_message(content=f"Role: {self.role}. Now pick a tier:", view=self)
+
+    async def on_tier_select(self, interaction: discord.Interaction) -> None:
+        self.tier = self.tier_select.values[0]
+
+        if not tier_has_divisions(self.game, self.tier):
+            await self.save(interaction, division=1)
+            return
+
+        self.clear_items()
+        divisions = get_divisions(self.game)
+        options = [discord.SelectOption(label=str(d), value=str(d)) for d in range(1, divisions + 1)]
+        self.division_select = discord.ui.Select(placeholder="Choose your division", options=options)
+        self.division_select.callback = self.on_division_select
+        self.add_item(self.division_select)
+        await interaction.response.edit_message(content=f"{self.role} — {self.tier}. Now pick a division:", view=self)
+
+    async def on_division_select(self, interaction: discord.Interaction) -> None:
+        division = int(self.division_select.values[0])
+        await self.save(interaction, division)
+
+    async def save(self, interaction: discord.Interaction, division: int) -> None:
+        rank_value = compute_rank_value(self.game, self.tier, division)
+        rank_label = format_rank_label(self.game, self.tier, division)
+
+        sql = """
+            INSERT INTO profile_role_ranks (discordid, game, role, rank_value, rank_label, updated_at)
+            VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (discordid, game, role)
+            DO UPDATE SET
+                rank_value = EXCLUDED.rank_value,
+                rank_label = EXCLUDED.rank_label,
+                updated_at = CURRENT_TIMESTAMP;
+        """
+        await db.perform_one(sql, (self.requester_id, self.game, self.role, rank_value, rank_label))
+
+        if self.on_done:
+            await self.on_done(interaction)
+        else:
+            await interaction.response.edit_message(content=f"{self.role} rank updated to {rank_label}.", view=None)
+
 class PrimarySelectView(discord.ui.View):
     """Single-select dropdown for choosing a primary main from a player's own mains for one game."""
     def __init__(self, requester_id: int, game: str, mains: list[str], current_primary: str | None, on_done) -> None:
@@ -1142,7 +1242,8 @@ class ProfileSetupView(discord.ui.View):
         roles = data["roles_by_game"].get(game, [])
         mains = data["mains_by_game"].get(game, [])
         primary_main = data["primary_by_game"].get(game)
-        return build_game_embed(self.target, game, row, roles, mains, primary_main, tag, self.index + 1, self.total_pages, setup=True)
+        role_ranks = data["role_ranks_by_game"].get(game) if config.is_per_role_ranks(game) else None
+        return build_game_embed(self.target, game, row, roles, mains, primary_main, tag, self.index + 1, self.total_pages, setup=True, role_ranks=role_ranks)
 
     def build_buttons(self) -> None:
         """Clear and rebuild every button: nav buttons plus this page's field-edit buttons."""
@@ -1238,8 +1339,12 @@ class ProfileSetupView(discord.ui.View):
 
     async def on_edit_rank(self, interaction: discord.Interaction) -> None:
         game = GAME_CHOICES[self.index - 1]
-        view = RankSelectView(requester_id=self.requester_id, game=game, on_done=self.on_field_done)
-        await interaction.response.edit_message(content=f"Pick your {game.title()} tier:", embed=None, view=view)
+        if config.is_per_role_ranks(game):
+            view = RoleRankSelectView(requester_id=self.requester_id, game=game, on_done=self.on_field_done)
+            await interaction.response.edit_message(content=f"Pick a role to set your {game.title()} rank:", embed=None, view=view)
+        else:
+            view = RankSelectView(requester_id=self.requester_id, game=game, on_done=self.on_field_done)
+            await interaction.response.edit_message(content=f"Pick your {game.title()} tier:", embed=None, view=view)
 
     async def on_edit_roles(self, interaction: discord.Interaction) -> None:
         game = GAME_CHOICES[self.index - 1]
