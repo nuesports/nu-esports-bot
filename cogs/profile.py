@@ -255,7 +255,7 @@ class Profile(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    profile = discord.SlashCommandGroup("profile", "Profile tools")
+    profile = discord.SlashCommandGroup("profile", "Profile tools", guild_ids=[GUILD_ID])
     set_grp = profile.create_subgroup("set", "Set something on your profile")
 
     @discord.slash_command(
