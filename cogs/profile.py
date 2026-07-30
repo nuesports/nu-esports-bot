@@ -242,6 +242,8 @@ class Profile(commands.Cog):
             color=discord.Color.from_rgb(78, 42, 132),
         )
         embed.add_field(name="/profile view [user] [game]", value="See your (or someone else's) profile: bio, rank, roles, mains, and win/loss record.", inline=False)
+        embed.add_field(name="/profile setup", value="Interactive paginated editor for your own profile — flip through pages with buttons that edit each field in place.", inline=False)
+        embed.add_field(name="/profile edit", value="Alias for `/profile setup`.", inline=False)
         embed.add_field(name="/profile set bio <bio>", value="Set your profile bio.", inline=False)
         embed.add_field(name="/profile set picture [url] [position]", value="Set your profile's main image or thumbnail via a direct image URL. Clears if left blank. Defaults to main image.", inline=False)
         embed.add_field(name="/profile set rank <game> <tier> [division]", value="Set your rank for a game. Defaults to `1`.", inline=False)
