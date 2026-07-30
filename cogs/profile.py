@@ -63,6 +63,19 @@ def format_rank_label(game: str, tier: str, division: int) -> str:
     """Format a tier+division as a human-readable string, e.g. "Gold 3" or "Challenger"."""
     return f"{tier} {division}" if tier_has_divisions(game, tier) else tier
 
+def validate_tier_division(game: str, tier: str | None, division: str) -> tuple[int, None] | tuple[None, str]:
+    """Validate a tier+division pair. Returns (division_int, None) on success, or
+    (None, error_message) to show the user on failure."""
+    if tier is None or tier not in get_tiers(game):
+        return None, "Invalid tier. Please select from dropdown."
+    try:
+        division_int = int(division)
+    except ValueError:
+        return None, "Invalid division. Please select from dropdown."
+    if division_int > get_divisions(game):
+        return None, "Invalid division. Please select from dropdown."
+    return division_int, None
+
 
 async def tier_autocomplete(ctx: discord.AutocompleteContext) -> list[discord.OptionChoice]:
     """Suggest valid tiers one the user has picked a game."""
@@ -384,7 +397,7 @@ class Profile(commands.Cog):
         tier: discord.Option(
             str,
             name="tier",
-            description="Your rank tier (ignored for games with per-role ranks)",
+            description="Your rank tier (for per-role-ranks games, skips straight to picking which role it's for)",
             autocomplete=tier_autocomplete,
             default=None,
         ),
@@ -398,32 +411,29 @@ class Profile(commands.Cog):
     ) -> None:
         """Set your rank for a game, storing both a numeric value (for balancing) and a string (for display).
 
-        Games with per-role ranks (Overwatch) open a role->tier->division menu instead, since
-        one rank per game doesn't apply to them."""
+        Games with per-role ranks (Overwatch) always need a role picked via menu, since one
+        rank per game doesn't apply to them -- but if tier/division were already given here,
+        that menu only asks for the role instead of re-asking for tier/division too."""
         await ctx.defer(ephemeral=True)
 
         if config.is_per_role_ranks(game):
+            if tier is not None:
+                division_int, error = validate_tier_division(game, tier, division)
+                if error:
+                    await ctx.followup.send(error, ephemeral=True)
+                    return
+                label = format_rank_label(game, tier, division_int)
+                view = RoleRankSelectView(requester_id=ctx.author.id, game=game, tier=tier, division=division_int)
+                await ctx.followup.send(f"Pick which role that {label} is for:", view=view, ephemeral=True)
+                return
+
             view = RoleRankSelectView(requester_id=ctx.author.id, game=game)
             await ctx.followup.send("Pick a role to set your rank for:", view=view, ephemeral=True)
             return
 
-        if tier is None or tier not in get_tiers(game):
-            await ctx.followup.send(
-                "Invalid tier. Please select from dropdown.", ephemeral=True
-            )
-            return
-
-        try:
-            division_int = int(division)
-            if division_int > get_divisions(game):
-                await ctx.followup.send(
-                    "Invalid division. Please select from dropdown.", ephemeral=True
-                )
-                return
-        except ValueError:
-            await ctx.followup.send(
-                "Invalid division. Please select from dropdown.", ephemeral=True
-            )
+        division_int, error = validate_tier_division(game, tier, division)
+        if error:
+            await ctx.followup.send(error, ephemeral=True)
             return
 
         rank_value = compute_rank_value(game, tier, division_int)
@@ -999,16 +1009,21 @@ class RankSelectView(discord.ui.View):
 class RoleRankSelectView(discord.ui.View):
     """Role -> tier -> division cascade for one role's rank in a per-role-ranks game.
 
+    If `tier`/`division` are already known (the caller passed them straight into
+    /profile set rank), only the role step is shown and save happens immediately
+    on picking it -- no point re-asking for a tier the player already gave.
+
     Saves exactly one role per submission, same as RankSelectView saves one rank per
     submission; setting a second role means invoking this view again.
     """
-    def __init__(self, requester_id: int, game: str, on_done=None) -> None:
+    def __init__(self, requester_id: int, game: str, on_done=None, tier: str | None = None, division: int | None = None) -> None:
         super().__init__(timeout=120)
         self.requester_id = requester_id
         self.game = game
         self.on_done = on_done
         self.role = None
-        self.tier = None
+        self.tier = tier
+        self.division = division
 
         options = [discord.SelectOption(label=r, value=r) for r in config.rankable_roles(game)]
         self.select = discord.ui.Select(placeholder="Choose a role", options=options)
@@ -1020,6 +1035,10 @@ class RoleRankSelectView(discord.ui.View):
 
     async def on_role_select(self, interaction: discord.Interaction) -> None:
         self.role = self.select.values[0]
+
+        if self.tier is not None:
+            await self.save(interaction, self.division)
+            return
 
         self.clear_items()
         options = [discord.SelectOption(label=t, value=t) for t in get_tiers(self.game)]
