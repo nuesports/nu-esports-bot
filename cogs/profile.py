@@ -105,17 +105,24 @@ async def primary_autocomplete(ctx: discord.AutocompleteContext) -> list[discord
     return [discord.OptionChoice(r[0]) for r in rows]
     
 
-def build_home_embed(target: discord.Member, profile_row: tuple | None, total_pages: int, total_wins: int, total_losses: int) -> discord.Embed:
-    """Build the first page of /profile view: bio, win/loss record, and member-since date."""
+def build_home_embed(target: discord.Member, profile_row: tuple | None, total_pages: int, total_wins: int, total_losses: int, setup: bool) -> discord.Embed:
+    """Build the first page of a profile: bio, win/loss record, and member-since date."""
     bio = profile_row[0] if profile_row and profile_row[0] else "No bio set."
     picture_url = profile_row[1] if profile_row and profile_row[1] else None
     thumbnail_url = profile_row[2] if profile_row and profile_row[2] else None
     tag = profile_row[3] if profile_row and profile_row[3] else "💬"
 
-    embed = discord.Embed(
-        title=f"{tag} {target.display_name}'s Profile",
-        color=discord.Color.from_rgb(78, 42, 132),
-    )
+    if not setup:
+        embed = discord.Embed(
+            title=f"{tag} {target.display_name}'s Profile",
+            color=discord.Color.from_rgb(78, 42, 132),
+        )
+    else:
+        embed = discord.Embed(
+                title=f"Editing {tag} {target.display_name}'s Profile...",
+                color=discord.Color.from_rgb(78, 42, 132),
+            )
+        
     embed.add_field(name="Bio", value=bio, inline=False)
     embed.add_field(name="Overall Record", value=f"{total_wins}W - {total_losses}L", inline=True)
     embed.add_field(name="Member Since", value=f"<t:{int(target.joined_at.timestamp())}:D>", inline=True)
@@ -125,7 +132,8 @@ def build_home_embed(target: discord.Member, profile_row: tuple | None, total_pa
     embed.set_footer(text=f"Page 1/{total_pages}")
     return embed
 
-def build_game_embed(target: discord.Member, 
+def build_game_embed(
+                     target: discord.Member, 
                      game: str, 
                      row: tuple | None, 
                      roles: list[str], 
@@ -133,8 +141,9 @@ def build_game_embed(target: discord.Member,
                      primary_main: str | None, 
                      tag: str, 
                      page_number: int, 
-                     total_pages: int) -> discord.Embed:
-    """Build one per-game page of /profile view: rank, roles, mains, wins/losses.
+                     total_pages: int,
+                     setup: bool) -> discord.Embed:
+    """Build one per-game page of a profile: rank, roles, mains, wins/losses.
     
     Sets a champion splash_art thumbnail if primary_main is set. (League only right now)"""
     rank_label = row[1] if row else "Not set"
@@ -143,10 +152,16 @@ def build_game_embed(target: discord.Member,
     role_display = ", ".join(roles) if roles else "Not set"
     main_display = ", ".join(mains) if mains else "Not set"
 
-    embed = discord.Embed(
-        title=f"{tag} {target.display_name} - {game.title()}",
-        color=discord.Color.from_rgb(78, 42, 132),
-    )
+    if not setup:
+            embed = discord.Embed(
+                    title=f"{tag} {target.display_name} - {game.title()}",
+                    color=discord.Color.from_rgb(78, 42, 132),
+                )
+    else:
+        embed = discord.Embed(
+                title=f"Editing {tag} {target.display_name} - {game.title()}...",
+                color=discord.Color.from_rgb(78, 42, 132),
+            )
     embed.add_field(name="Rank", value=rank_label, inline=True)
     embed.add_field(name="Role", value=role_display, inline=True)
     embed.add_field(name="Main", value=main_display, inline=True)
@@ -586,14 +601,14 @@ class Profile(commands.Cog):
         pages_games = [g for g in GAME_CHOICES if g in games_with_data]
 
         total_pages = len(pages_games) + 1
-        pages = [build_home_embed(target, profile_row, total_pages, total_wins, total_losses)]
+        pages = [build_home_embed(target, profile_row, total_pages, total_wins, total_losses, setup=False)]
         for i, g in enumerate(pages_games, start=2):
             row = stats_by_game.get(g)
             roles = roles_by_game.get(g, [])
             mains = mains_by_game.get(g, [])
             primary_main = primary_by_game.get(g)
             tag = profile_row[3] if profile_row and profile_row[3] else "💬"
-            pages.append(build_game_embed(target, g, row, roles, mains, primary_main, tag, i, total_pages))
+            pages.append(build_game_embed(target, g, row, roles, mains, primary_main, tag, i, total_pages, setup=False))
 
         if game is not None:
             start_index = pages_games.index(game) +1
