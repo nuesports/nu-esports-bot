@@ -692,32 +692,12 @@ class Profile(commands.Cog):
     
         
     async def _run_setup(self, ctx: discord.ApplicationContext) -> None:
-        """Interactive paginator editor for your own profile."""
+        """Shared implementation behind /profile setup and /profile edit."""
         await ctx.defer(ephemeral=True)
 
-        target = ctx.author
-
-        data = await fetch_profile_data(target.id)
-        profile_row = data["profile_row"]
-        stats_by_game = data["stats_by_game"]
-        roles_by_game = data["roles_by_game"]
-        mains_by_game = data["mains_by_game"]
-        primary_by_game = data["primary_by_game"]
-        total_wins = data["total_wins"]
-        total_losses = data["total_losses"]
-
-        total_pages = len(GAME_CHOICES) + 1
-        tag = profile_row[3] if profile_row and profile_row[3] else "❓"
-        pages = [build_home_embed(target, profile_row, total_pages, total_wins, total_losses, setup=True)]
-        for i, g in enumerate(GAME_CHOICES, start=2):
-            row = stats_by_game.get(g)
-            roles = roles_by_game.get(g, [])
-            mains = mains_by_game.get(g, [])
-            primary_main = primary_by_game.get(g)
-            pages.append(build_game_embed(target, g, row, roles, mains, primary_main, tag, i, total_pages, setup=True))
-
-        view = ProfileSetupView(requester_id=ctx.author.id, pages=pages)
-        message = await ctx.followup.send(embed=pages[0], view=view, ephemeral=True)
+        view = ProfileSetupView(requester_id=ctx.author.id, target=ctx.author)
+        embed = await view.build_embed()
+        message = await ctx.followup.send(embed=embed, view=view, ephemeral=True)
         view.message = message
 
     @profile.command(
@@ -906,14 +886,139 @@ class MainsModal(discord.ui.Modal):
             ephemeral=True
         )
 
+class TagModal(discord.ui.Modal):
+    """Single-field modal for setting a player's emoji tag."""
+    def __init__(self, requester_id: int, current_tag: str | None, on_done) -> None:
+        super().__init__(title="Set your tag")
+        self.requester_id = requester_id
+        self.on_done = on_done
+        self.add_item(
+            discord.ui.InputText(
+                label="Emoji tag",
+                placeholder="e.g. :star: or an emoji",
+                value=current_tag or "",
+                required=False
+            )
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        raw = self.children[0].value or ""
+        tag = None
+        if raw.strip():
+            tag = normalize_tag(raw, interaction.client)
+            if tag is None:
+                await interaction.response.send_message("That's not a valid emoji :<", ephemeral=True)
+                return
+
+        sql = """
+            INSERT INTO profiles (discordid, tag, updated_at)
+            VALUES (%s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (discordid)
+            DO UPDATE SET
+                tag = EXCLUDED.tag,
+                updated_at = CURRENT_TIMESTAMP;
+        """
+        await db.perform_one(sql, (self.requester_id, tag))
+        await self.on_done(interaction)
+
+class BioModal(discord.ui.Modal):
+    """Single-field modal for setting a player's bio."""
+    def __init__(self, requester_id: int, current_bio: str | None, on_done) -> None:
+        super().__init__(title="Set your bio")
+        self.requester_id = requester_id
+        self.on_done = on_done
+        self.add_item(
+            discord.ui.InputText(
+                label="Bio",
+                style=discord.InputTextStyle.long,
+                placeholder="About you!",
+                value=current_bio or "",
+                max_length=1024,
+                required=False
+            )
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        bio = self.children[0].value or ""
+
+        sql = """
+            INSERT INTO profiles (discordid, bio, updated_at)
+            VALUES (%s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (discordid)
+            DO UPDATE SET
+                bio = EXCLUDED.bio,
+                updated_at = CURRENT_TIMESTAMP;
+        """
+        await db.perform_one(sql, (self.requester_id, bio))
+        await self.on_done(interaction)
+
+class PictureModal(discord.ui.Modal):
+    """Single-field modal for setting a player's main picture or thumbnail URL, for one fixed position."""
+    def __init__(self, requester_id: int, position: str, current_url: str | None, on_done) -> None:
+        super().__init__(title=f"Set your {position} picture")
+        self.requester_id = requester_id
+        self.position = position
+        self.on_done = on_done
+        self.add_item(
+            discord.ui.InputText(
+                label="Image URL",
+                placeholder="https://example.com/image.png",
+                value=current_url or "",
+                required=False
+            )
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        url = self.children[0].value or None
+        path = urlsplit(url).path if url else ""
+
+        if url and not path.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")):
+            await interaction.response.send_message(
+                "URL must point directly to an image file (.png, .jpg, .gif, .webp, .svg).",
+                ephemeral=True
+            )
+            return
+
+        if self.position == "main":
+            sql = """
+                INSERT INTO profiles (discordid, picture_url, updated_at)
+                VALUES (%s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (discordid)
+                DO UPDATE SET
+                    picture_url = EXCLUDED.picture_url,
+                    updated_at = CURRENT_TIMESTAMP;
+            """
+        else:
+            sql = """
+                INSERT INTO profiles (discordid, thumbnail_url, updated_at)
+                VALUES (%s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (discordid)
+                DO UPDATE SET
+                    thumbnail_url = EXCLUDED.thumbnail_url,
+                    updated_at = CURRENT_TIMESTAMP;
+            """
+
+        await db.perform_one(sql, (self.requester_id, url))
+        await self.on_done(interaction)
+
 class ProfileSetupView(discord.ui.View):
-    """Left/right paginator for /profile setup. Edit buttons layered on at a later step."""
-    def __init__(self, requester_id, pages, start_index=0):
+    """Paginated profile editor: left/right buttons, plus edit buttons for whatever page is currently shown.
+
+    Unlike ProfilePaginator, this never holds a static list of embeds — every page is rebuilt
+    from a fresh DB fetch each time it's shown, so edits (and concurrent changes elsewhere) are
+    always reflected immediately.
+    """
+    def __init__(self, requester_id: int, target: discord.Member, start_index: int = 0) -> None:
         super().__init__(timeout=120)
         self.requester_id = requester_id
-        self.pages = pages
+        self.target = target
         self.index = start_index
-        self.update_buttons()
+        self.message = None
+        self.build_buttons()
+
+    @property
+    def total_pages(self) -> int:
+        return len(GAME_CHOICES) + 1
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.requester_id:
@@ -923,26 +1028,97 @@ class ProfileSetupView(discord.ui.View):
             return False
         return True
 
-    def update_buttons(self) -> None:
-        self.back.disabled = (self.index == 0)
-        self.forward.disabled = (self.index == len(self.pages) - 1)
+    async def build_embed(self) -> discord.Embed:
+        """Fetch fresh data and build the embed for whichever page is currently active."""
+        data = await fetch_profile_data(self.target.id)
+        profile_row = data["profile_row"]
+        tag = profile_row[3] if profile_row and profile_row[3] else "❓"
 
-    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
-    async def back(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+        if self.index == 0:
+            return build_home_embed(self.target, profile_row, self.total_pages, data["total_wins"], data["total_losses"], setup=True)
+
+        game = GAME_CHOICES[self.index - 1]
+        row = data["stats_by_game"].get(game)
+        roles = data["roles_by_game"].get(game, [])
+        mains = data["mains_by_game"].get(game, [])
+        primary_main = data["primary_by_game"].get(game)
+        return build_game_embed(self.target, game, row, roles, mains, primary_main, tag, self.index + 1, self.total_pages, setup=True)
+
+    def build_buttons(self) -> None:
+        """Clear and rebuild every button: nav buttons plus this page's field-edit buttons."""
+        self.clear_items()
+
+        back = discord.ui.Button(label="◀", style=discord.ButtonStyle.secondary, disabled=(self.index == 0))
+        back.callback = self.on_back
+        self.add_item(back)
+
+        forward = discord.ui.Button(label="▶", style=discord.ButtonStyle.secondary, disabled=(self.index == self.total_pages - 1))
+        forward.callback = self.on_forward
+        self.add_item(forward)
+
+        if self.index == 0:
+            self.add_home_buttons()
+
+    def add_home_buttons(self) -> None:
+        tag_btn = discord.ui.Button(label="Tag", style=discord.ButtonStyle.primary)
+        tag_btn.callback = self.on_edit_tag
+        self.add_item(tag_btn)
+
+        bio_btn = discord.ui.Button(label="Bio", style=discord.ButtonStyle.primary)
+        bio_btn.callback = self.on_edit_bio
+        self.add_item(bio_btn)
+
+        thumb_btn = discord.ui.Button(label="Thumbnail", style=discord.ButtonStyle.primary)
+        thumb_btn.callback = self.on_edit_thumbnail
+        self.add_item(thumb_btn)
+
+        pic_btn = discord.ui.Button(label="Picture", style=discord.ButtonStyle.primary)
+        pic_btn.callback = self.on_edit_picture
+        self.add_item(pic_btn)
+
+    async def on_back(self, interaction: discord.Interaction) -> None:
         self.index -= 1
-        self.update_buttons()
-        await interaction.response.edit_message(embed=self.pages[self.index], view=self)
+        await self.refresh(interaction)
 
-    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
-    async def forward(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+    async def on_forward(self, interaction: discord.Interaction) -> None:
         self.index += 1
-        self.update_buttons()
-        await interaction.response.edit_message(embed=self.pages[self.index], view=self)
+        await self.refresh(interaction)
+
+    async def refresh(self, interaction: discord.Interaction) -> None:
+        """Rebuild the embed and buttons for the current page, then edit the message in place."""
+        embed = await self.build_embed()
+        self.build_buttons()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def on_edit_tag(self, interaction: discord.Interaction) -> None:
+        data = await fetch_profile_data(self.target.id)
+        current_tag = data["profile_row"][3] if data["profile_row"] else None
+        await interaction.response.send_modal(TagModal(self.requester_id, current_tag, self.on_field_done))
+
+    async def on_edit_bio(self, interaction: discord.Interaction) -> None:
+        data = await fetch_profile_data(self.target.id)
+        current_bio = data["profile_row"][0] if data["profile_row"] else None
+        await interaction.response.send_modal(BioModal(self.requester_id, current_bio, self.on_field_done))
+
+    async def on_edit_thumbnail(self, interaction: discord.Interaction) -> None:
+        data = await fetch_profile_data(self.target.id)
+        current_url = data["profile_row"][2] if data["profile_row"] else None
+        await interaction.response.send_modal(PictureModal(self.requester_id, "thumbnail", current_url, self.on_field_done))
+
+    async def on_edit_picture(self, interaction: discord.Interaction) -> None:
+        data = await fetch_profile_data(self.target.id)
+        current_url = data["profile_row"][1] if data["profile_row"] else None
+        await interaction.response.send_modal(PictureModal(self.requester_id, "main", current_url, self.on_field_done))
+
+    async def on_field_done(self, interaction: discord.Interaction) -> None:
+        """Called by field modals after a successful save; refresh this same page in place."""
+        await self.refresh(interaction)
 
     async def on_timeout(self) -> None:
         for child in self.children:
             child.disabled = True
-        await self.message.edit(view=self)
+        if self.message:
+            await self.message.edit(view=self)
 
 
 def setup(bot: discord.Bot):
