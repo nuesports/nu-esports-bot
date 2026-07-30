@@ -58,3 +58,7 @@ def is_per_role_ranks(game: str) -> bool:
 def rankable_roles(game: str) -> list[str]:
     """Roles a player can set a rank for in a per-role-ranks game (role_requirements keys, excludes Flex)."""
     return list(game_data[game].get("role_requirements") or {})
+
+def role_icon(game: str, role: str) -> str:
+    """Emoji for a role, shown next to a player's name on a mixed per-role leaderboard entry."""
+    return game_data[game].get("role_icons", {}).get(role, "")

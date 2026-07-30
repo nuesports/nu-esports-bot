@@ -31,6 +31,13 @@ role_requirements:
 # Ranks (and elo) are tracked separately per role instead of one per game.
 per_role_ranks: true
 
+# Shown next to a player's name on the mixed (no-role) leaderboard, marking which
+# role their displayed (best) elo came from.
+role_icons:
+  Tank: 🛡️
+  Damage: ⚔️
+  Support: ➕
+
 characters: # Alphabetically
   - Ana
   - Anran
