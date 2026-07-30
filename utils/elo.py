@@ -47,6 +47,18 @@ def compute_rank_points(game: str, tier: str, division: int | None) -> float:
     progress = (division - 1) / divisions if ascending else (divisions - division) / divisions
     return base + gap * progress
 
+def _default_seed(game: str) -> float:
+    """Fallback seed for a player with no rank data at all: the game's `default_tier`."""
+    tiers = config.game_data[game]["tiers"]
+    no_division_tiers = config.game_data[game]["no_division_tiers"]
+    ascending = config.game_data[game]["divisions_ascend"]
+    tier = config.game_data[game].get("default_tier", tiers[0])
+    if tier in no_division_tiers:
+        division = None
+    else:
+        division = 1 if ascending else config.game_data[game]["divisions"]
+    return compute_rank_points(game, tier, division)
+
 def seed_elo(game: str, rank_value: int | None) -> float:
     """Pick a starting elo for a player with no elo row yet
 
@@ -54,17 +66,27 @@ def seed_elo(game: str, rank_value: int | None) -> float:
     Has to be deterministic since seeds get saved to profile_elo."""
     decoded = decode_rank_value(game, rank_value)
     if decoded is None:
-        tiers = config.game_data[game]["tiers"]
-        no_division_tiers = config.game_data[game]["no_division_tiers"]
-        ascending = config.game_data[game]["divisions_ascend"]
-        tier = config.game_data[game].get("default_tier", tiers[0])
-        if tier in no_division_tiers:
-            division = None
-        else:
-            division = 1 if ascending else config.game_data[game]["divisions"]
-        return compute_rank_points(game, tier, division)
+        return _default_seed(game)
     tier, division = decoded
     return compute_rank_points(game, tier, division)
+
+def seed_role_elo(game: str, own_rank_value: int | None, other_rank_values: list[int | None]) -> float:
+    """Starting elo for one role in a per-role-ranks game. Uses the player's own
+    rank for that role if set, otherwise averages whatever other roles they do
+    have a rank for, falling back to the game's `default_tier` seed if none."""
+    if own_rank_value is not None:
+        tier, division = decode_rank_value(game, own_rank_value)
+        return compute_rank_points(game, tier, division)
+
+    others = [v for v in other_rank_values if v is not None]
+    if others:
+        points = []
+        for v in others:
+            tier, division = decode_rank_value(game, v)
+            points.append(compute_rank_points(game, tier, division))
+        return sum(points) / len(points)
+
+    return _default_seed(game)
 
 def compute_elo_deltas(
     team_a: dict[int, float],
