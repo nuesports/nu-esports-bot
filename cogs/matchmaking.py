@@ -15,6 +15,7 @@ ROLE_REQUIREMENTS = {game: data.get("role_requirements") or {} for game, data in
 LOBBY_SIZE = {game: data.get("lobby_size", 10) for game, data in config.game_data.items()}
 RANK_JITTER = 200        # half-width of the jitter range for a player exactly at the lobby average
 JITTER_PULL_SCALE = 1500 # elo deviation from average that fully saturates the pull toward one side
+_GAME_WIDE_ELO = "__game__" # elo-dict key balance_teams uses for games without per-role ranks
 
 
 def generate_embed(session: "MatchmakingSession") -> discord.Embed:
@@ -135,9 +136,9 @@ async def get_game_shuffle_data(joined: list[discord.Member], game: str) -> tupl
 
     return elo_by_id, roles_by_id
 
-def balance_teams(game: str, 
-                  joined: list[discord.Member], 
-                  elo_by_id: dict[int, float], 
+def balance_teams(game: str,
+                  joined: list[discord.Member],
+                  elo_by_id: dict[int, float] | dict[int, dict[str, float]],
                   roles_by_id: dict[int, list[str]]
                   ) -> tuple[
                             list[discord.Member],
@@ -145,21 +146,32 @@ def balance_teams(game: str,
                             dict[int, str]
                             ]:
     """Split joined players into two balanced teams
-    
+
     Process each required role (in random order, so repeated shuffles vary) and greedily assign the needed number of players per team,
     preferring players who actually have that role, falling back to "Flex", then anyone left. Within roles, players are handed to teams
     with fewer members (tied broken by lower total rank), which matters because effective_rank can go negative when nobody has a rank set.
-    
+
     A small random "jitter" `RANK_JITTER` is added to each player's rank before comparing, so the lobby doesn't shuffle to the same result every time.
-    
+
+    `elo_by_id` is a single float per player for games without per-role ranks, or
+    {role: elo} per player for ones with -- see get_game_shuffle_data.
+
     Returns (team_a, team_b, assignments), where assignments maps member id ->  lane/role.
     """
     if not joined:
         return [], [], {}
 
     per_role = config.is_per_role_ranks(game)
+    rankable = ROLE_REQUIREMENTS[game]
 
-    requirements = list(ROLE_REQUIREMENTS[game].items())
+    # Normalize to one shape for the rest of this function: every player maps to
+    # {role_or_sentinel: elo}. Games without per-role ranks have exactly one elo
+    # per player, filed under the sentinel key, so every access below can just be
+    # elo_by_id[m.id][key] regardless of which kind of game this is.
+    if not per_role:
+        elo_by_id = {mid: {_GAME_WIDE_ELO: value} for mid, value in elo_by_id.items()}
+
+    requirements = list(rankable.items())
     random.shuffle(requirements)
 
     slots_per_team= len(joined) // 2
@@ -170,16 +182,15 @@ def balance_teams(game: str,
             selected.append((role, count))
             used += count
 
-    if per_role:
-        # Recomputed per role below, since a player's candidacy for Tank shouldn't
-        # be decided by their Support elo.
-        effective_elo = None
-    else:
-        avg_elo = sum(elo_by_id[m.id] for m in joined) / len(joined)
-        effective_elo = {
-            m.id: jittered_elo(elo_by_id[m.id], avg_elo)
-            for m in joined
-        }
+    # Jittered elo for one lookup key, cached so repeated requests for the same
+    # key -- every non-per-role lookup, or a role/leftover reusing an already-seen
+    # role -- reuse one random draw instead of redrawing jitter each time.
+    elo_cache: dict[str, dict[int, float]] = {}
+    def effective_elo_for(key: str) -> dict[int, float]:
+        if key not in elo_cache:
+            avg = sum(elo_by_id[m.id][key] for m in joined) / len(joined)
+            elo_cache[key] = {m.id: jittered_elo(elo_by_id[m.id][key], avg) for m in joined}
+        return elo_cache[key]
 
     remaining = list(joined)
     team_a, team_b = [], []
@@ -187,12 +198,10 @@ def balance_teams(game: str,
     assignments = {}
 
     for role, count in selected:
-        if per_role:
-            avg_elo_role = sum(elo_by_id[m.id][role] for m in joined) / len(joined)
-            effective_elo = {
-                m.id: jittered_elo(elo_by_id[m.id][role], avg_elo_role)
-                for m in joined
-            }
+        # Non-per-role games always look up the sentinel (one elo, reused for
+        # every bucket); per-role games look up that bucket's own role, since a
+        # player's candidacy for Tank shouldn't be decided by their Support elo.
+        effective_elo = effective_elo_for(role if per_role else _GAME_WIDE_ELO)
 
         needed_total = count * 2
         role_pool = [m for m in remaining if role in roles_by_id[m.id]]
@@ -223,27 +232,25 @@ def balance_teams(game: str,
         chosen_ids = {m.id for m in candidates}
         remaining = [m for m in remaining if m.id not in chosen_ids]
 
-    # Reachable whenever role_requirements doesn't fill every slot -- true for any
+    # Only reachable if role_requirements doesn't fill every slot -- true for any
     # non-full Overwatch lobby, since its roles only add up to exactly lobby_size/2.
-    def leftover_role(m: discord.Member) -> str:
-        """Role to record for a leftover player. Flex isn't an assignable lane in a
-        per-role-ranks game, so a Flex-only queue resolves to whichever rankable
-        role they have the best elo in instead -- Tank/Damage/Support always have
-        an elo row, Flex never does."""
+    def leftover_key(m: discord.Member) -> str:
+        """Elo lookup key for a leftover player. Non-per-role games always use the
+        sentinel. Flex isn't an assignable lane in a per-role-ranks game, so a
+        Flex-only queue resolves to whichever rankable role they have the best
+        elo in instead -- Tank/Damage/Support always have an elo entry, Flex
+        never does."""
+        if not per_role:
+            return _GAME_WIDE_ELO
         preferred = roles_by_id[m.id][0]
-        rankable = ROLE_REQUIREMENTS[game]
-        if not per_role or preferred in rankable:
+        if preferred in rankable:
             return preferred
         return max(rankable, key=lambda r: elo_by_id[m.id].get(r, 0.0))
 
-    def leftover_elo(m: discord.Member) -> float:
-        if not per_role:
-            return effective_elo[m.id]
-        return elo_by_id[m.id].get(leftover_role(m), 0.0)
-
-    remaining_sorted = sorted(remaining, key=leftover_elo, reverse=True)
+    remaining_sorted = sorted(remaining, key=lambda m: effective_elo_for(leftover_key(m))[m.id], reverse=True)
     for m in remaining_sorted:
-        value = leftover_elo(m)
+        key = leftover_key(m)
+        value = effective_elo_for(key)[m.id]
         if len(team_a) < len(team_b) or (len(team_a) == len(team_b) and team_a_total <= team_b_total):
             team_a.append(m)
             team_a_total += value
@@ -251,7 +258,9 @@ def balance_teams(game: str,
         else:
             team_b.append(m)
             team_b_total += value
-        assignments[m.id] = leftover_role(m)
+        # key is the sentinel for non-per-role games, not a real role -- keep the
+        # existing first-preference label for those, same as always.
+        assignments[m.id] = key if per_role else roles_by_id[m.id][0]
 
     return team_a, team_b, assignments
 
