@@ -535,10 +535,11 @@ class Profile(commands.Cog):
             color=discord.Color.from_rgb(78, 42, 132)
         )
 
-        primary = primary[0].upper() + primary[1:].lower()
-        if game == "league":
-            embed.set_image(url=f"https://ddragon.leagueoflegends.com/cdn/img/champion/splash/{primary}_0.jpg")
-        await ctx.followup.send(embed=embed, ephemeral=True)
+        image_path = get_character_image(game, primary)
+        file = image_attachment(image_path)
+        if image_path:
+            embed.set_image(url=f"attachment://{image_path.name}")
+        await ctx.followup.send(embed=embed, ephemeral=True, file=file)
 
     @set_grp.command(
             name = "tag",
