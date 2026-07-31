@@ -10,3 +10,7 @@ config.yaml
 # Real config file for Railway
 config.real.yaml
 secrets.yaml
+
+# Character portraits: folder structure is tracked (see .gitkeep), the
+# images themselves aren't
+assets/games/*/characters/*.webp
