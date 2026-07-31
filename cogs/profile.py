@@ -649,7 +649,6 @@ class Profile(commands.Cog):
         embed, image_path = pages[start_index]
         file = image_attachment(image_path)
         message = await ctx.followup.send(embed=embed, view=paginator, file=file)
-        paginator.message = message
         await message.edit(embed=embed, view=paginator)
     
     @profile.command(
@@ -711,8 +710,9 @@ class Profile(commands.Cog):
         view = ProfileSetupView(requester_id=ctx.author.id, target=ctx.author)
         embed, image_path = await view.build_embed()
         file = image_attachment(image_path)
-        message = await ctx.followup.send(embed=embed, view=view, ephemeral=True, file=file)
-        view.message = message
+        await ctx.followup.send(embed=embed, view=view, ephemeral=True, file=file)
+        # followup.send() doesn't set view.parent; disable_on_timeout needs it for ephemeral messages; without it on_timeout silently no-ops
+        view.parent = ctx.interaction
 
     @profile.command(
         name = "setup",
@@ -734,7 +734,7 @@ class Profile(commands.Cog):
 class ProfilePaginator(discord.ui.View):
     """Left/right paginator over a list of embeds, restricted to whoever ran the command."""
     def __init__(self, requester_id, pages, start_index=0):
-        super().__init__(timeout=120)
+        super().__init__(timeout=120, disable_on_timeout=True)
         self.requester_id = requester_id
         self.pages = pages
         self.index = start_index
@@ -772,12 +772,6 @@ class ProfilePaginator(discord.ui.View):
         embed, image_path = self.pages[self.index]
         file = image_attachment(image_path)
         await interaction.response.edit_message(embed=embed, view=self, file=file, attachments=[])
-    
-    async def on_timeout(self) -> None:
-        """Disable both buttons once the view times out, so it doesn't look interactive anymore."""
-        for child in self.children:
-            child.disabled = True
-        await self.message.edit(view=self)
 
 class RoleSelectView(discord.ui.View):
     """Multi-select dropdown for a player's roles in one game.
@@ -1124,11 +1118,10 @@ class ProfileSetupView(discord.ui.View):
     always reflected immediately.
     """
     def __init__(self, requester_id: int, target: discord.Member, start_index: int = 0) -> None:
-        super().__init__(timeout=120)
+        super().__init__(timeout=120, disable_on_timeout=True)
         self.requester_id = requester_id
         self.target = target
         self.index = start_index
-        self.message = None
         self.build_buttons()
 
     @property
@@ -1282,12 +1275,6 @@ class ProfileSetupView(discord.ui.View):
     async def on_field_done(self, interaction: discord.Interaction) -> None:
         """Called by field modals after a successful save; refresh this same page in place."""
         await self.refresh_page(interaction)
-
-    async def on_timeout(self) -> None:
-        for child in self.children:
-            child.disabled = True
-        if self.message:
-            await self.message.edit(view=self)
 
 
 def setup(bot: discord.Bot):
