@@ -1,0 +1,93 @@
+name: Discord Backlog Hooks
+
+# Notifies #pr-backlog and #issue-backlog whenever a PR or issue is opened.
+#
+# PRs use pull_request_target (not pull_request) so the webhook secret is
+# available even for PRs from forks. This is safe here because we never
+# check out or execute anything from the PR itself - actions/checkout below
+# checks out the base branch (this file), not the fork's head commit.
+on:
+  pull_request_target:
+    types: [opened]
+  issues:
+    types: [opened]
+
+jobs:
+  pr-backlog:
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Post to #pr-backlog
+        uses: actions/github-script@v7
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_PR_BACKLOG_WEBHOOK }}
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+
+            // Ask GitHub directly which issues this PR closes, rather than
+            // re-parsing "closes #N" ourselves - handles blockquotes, code
+            // blocks, and cross-repo references the way GitHub actually does.
+            const query = `
+              query($owner: String!, $repo: String!, $number: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $number) {
+                    closingIssuesReferences(first: 10) {
+                      nodes { number url }
+                    }
+                  }
+                }
+              }
+            `;
+            const result = await github.graphql(query, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              number: pr.number,
+            });
+            const closingIssues = result.repository.pullRequest.closingIssuesReferences.nodes;
+
+            const formatList = (items) => {
+              if (items.length === 1) return items[0];
+              if (items.length === 2) return `${items[0]} and ${items[1]}`;
+              return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
+            };
+
+            let closesText = "";
+            if (closingIssues.length > 0) {
+              const links = closingIssues.map((issue) => `[${issue.number}](${issue.url})`);
+              closesText = `, closes issue ${formatList(links)}`;
+            }
+
+            const escapeMarkdown = require("./.github/scripts/escape-markdown.js");
+            const author = pr.user ? `[${pr.user.login}](${pr.user.html_url})` : "unknown";
+            const message = `pr [${pr.number}](${pr.html_url}), ${escapeMarkdown(pr.title)}${closesText}. author ${author}`;
+
+            const postDiscordMessage = require("./.github/scripts/post-discord-message.js");
+            await postDiscordMessage(core, process.env.DISCORD_WEBHOOK, message);
+
+  issue-backlog:
+    if: github.event_name == 'issues'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Post to #issue-backlog
+        uses: actions/github-script@v7
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_ISSUE_BACKLOG_WEBHOOK }}
+        with:
+          script: |
+            const issue = context.payload.issue;
+
+            const escapeMarkdown = require("./.github/scripts/escape-markdown.js");
+            const author = issue.user ? `[${issue.user.login}](${issue.user.html_url})` : "unknown";
+            const message = `issue [${issue.number}](${issue.html_url}), ${escapeMarkdown(issue.title)}. author ${author}`;
+
+            const postDiscordMessage = require("./.github/scripts/post-discord-message.js");
+            await postDiscordMessage(core, process.env.DISCORD_WEBHOOK, message);
