@@ -710,8 +710,7 @@ class Profile(commands.Cog):
         view = ProfileSetupView(requester_id=ctx.author.id, target=ctx.author)
         embed, image_path = await view.build_embed()
         file = image_attachment(image_path)
-        message = await ctx.followup.send(embed=embed, view=view, ephemeral=True, file=file)
-        view.message = message
+        await ctx.followup.send(embed=embed, view=view, ephemeral=True, file=file)
 
     @profile.command(
         name = "setup",
@@ -1117,11 +1116,10 @@ class ProfileSetupView(discord.ui.View):
     always reflected immediately.
     """
     def __init__(self, requester_id: int, target: discord.Member, start_index: int = 0) -> None:
-        super().__init__(timeout=120)
+        super().__init__(timeout=120, disable_on_timeout=True)
         self.requester_id = requester_id
         self.target = target
         self.index = start_index
-        self.message = None
         self.build_buttons()
 
     @property
@@ -1275,12 +1273,6 @@ class ProfileSetupView(discord.ui.View):
     async def on_field_done(self, interaction: discord.Interaction) -> None:
         """Called by field modals after a successful save; refresh this same page in place."""
         await self.refresh_page(interaction)
-
-    async def on_timeout(self) -> None:
-        for child in self.children:
-            child.disabled = True
-        if self.message:
-            await self.message.edit(view=self)
 
 
 def setup(bot: discord.Bot):
