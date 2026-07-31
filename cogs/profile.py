@@ -31,6 +31,10 @@ def get_mains(game: str) -> list[str]:
     """Return the full character/agent/champion roster for a game."""
     return config.game_data[game]["characters"]
 
+def effective_primary(mains: list[str], primary: str | None) -> str | None:
+    """The primary to display: explicit if set, else the first main."""
+    return primary or (mains[0] if mains else None)
+
 def tier_has_divisions(game: str, tier: str) -> bool:
     """Return whether a given tier is divided (e.g. "Gold 3") rather than flat (e.g. "Challenger")."""
     return tier not in config.game_data[game]["no_division_tiers"]
@@ -632,7 +636,7 @@ class Profile(commands.Cog):
             row = stats_by_game.get(g)
             roles = roles_by_game.get(g, [])
             mains = mains_by_game.get(g, [])
-            primary_main = primary_by_game.get(g)
+            primary_main = effective_primary(mains, primary_by_game.get(g))
             tag = profile_row[3] if profile_row and profile_row[3] else "💬"
             pages.append(build_game_embed(target, g, row, roles, mains, primary_main, tag, i, total_pages, setup=False))
 
@@ -1153,7 +1157,7 @@ class ProfileSetupView(discord.ui.View):
         row = data["stats_by_game"].get(game)
         roles = data["roles_by_game"].get(game, [])
         mains = data["mains_by_game"].get(game, [])
-        primary_main = data["primary_by_game"].get(game)
+        primary_main = effective_primary(mains, data["primary_by_game"].get(game))
         return build_game_embed(self.target, game, row, roles, mains, primary_main, tag, self.index + 1, self.total_pages, setup=True)
 
     def build_buttons(self) -> None:
@@ -1205,8 +1209,8 @@ class ProfileSetupView(discord.ui.View):
         self.add_item(mains_btn)
 
         data = getattr(self, "_data", {})
-        has_mains = bool(data.get("mains_by_game", {}).get(game))
-        primary_btn = discord.ui.Button(label="Primary", style=discord.ButtonStyle.primary, disabled=not has_mains)
+        mains_count = len(data.get("mains_by_game", {}).get(game, []))
+        primary_btn = discord.ui.Button(label="Primary", style=discord.ButtonStyle.primary, disabled=mains_count <= 1)
         primary_btn.callback = self.on_edit_primary
         self.add_item(primary_btn)
 
