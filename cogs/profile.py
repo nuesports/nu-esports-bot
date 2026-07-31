@@ -8,7 +8,7 @@ from pathlib import Path
 
 from utils import config
 from utils import db
-from utils.images import get_character_image
+from utils.images import get_character_image, image_attachment
 
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
@@ -647,7 +647,7 @@ class Profile(commands.Cog):
 
         paginator = ProfilePaginator(requester_id=ctx.author.id, pages=pages, start_index=start_index)
         embed, image_path = pages[start_index]
-        file = discord.File(image_path, filename=image_path.name) if image_path else discord.utils.MISSING
+        file = image_attachment(image_path)
         message = await ctx.followup.send(embed=embed, view=paginator, file=file)
         paginator.message = message
         await message.edit(embed=embed, view=paginator)
@@ -710,7 +710,7 @@ class Profile(commands.Cog):
 
         view = ProfileSetupView(requester_id=ctx.author.id, target=ctx.author)
         embed, image_path = await view.build_embed()
-        file = discord.File(image_path, filename=image_path.name) if image_path else discord.utils.MISSING
+        file = image_attachment(image_path)
         message = await ctx.followup.send(embed=embed, view=view, ephemeral=True, file=file)
         view.message = message
 
@@ -761,7 +761,7 @@ class ProfilePaginator(discord.ui.View):
         self.index -= 1
         self.update_buttons()
         embed, image_path = self.pages[self.index]
-        file = discord.File(image_path, filename=image_path.name) if image_path else discord.utils.MISSING
+        file = image_attachment(image_path)
         await interaction.response.edit_message(embed=embed, view=self, file=file, attachments=[])
 
     @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
@@ -770,7 +770,7 @@ class ProfilePaginator(discord.ui.View):
         self.index += 1
         self.update_buttons()
         embed, image_path = self.pages[self.index]
-        file = discord.File(image_path, filename=image_path.name) if image_path else discord.utils.MISSING
+        file = image_attachment(image_path)
         await interaction.response.edit_message(embed=embed, view=self, file=file, attachments=[])
     
     async def on_timeout(self) -> None:
@@ -1230,7 +1230,7 @@ class ProfileSetupView(discord.ui.View):
         """
         embed, image_path = await self.build_embed()
         self.build_buttons()
-        file = discord.File(image_path, filename=image_path.name) if image_path else discord.utils.MISSING
+        file = image_attachment(image_path)
         await interaction.response.edit_message(content=None, embed=embed, view=self, file=file, attachments=[])
 
     async def on_edit_tag(self, interaction: discord.Interaction) -> None:
