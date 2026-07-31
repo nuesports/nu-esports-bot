@@ -187,9 +187,7 @@ def build_game_embed(
                      page_number: int, 
                      total_pages: int,
                      setup: bool) -> tuple[discord.Embed, "Path | None"]:
-    """Build one per-game page of a profile: rank, roles, mains, wins/losses.
-    
-    Sets a champion splash_art thumbnail if primary_main is set and an image exists."""
+    """Build one per-game profile page: rank, roles, mains, wins/losses, and a champion thumbnail if one exists."""
     rank_label = row[1] if row else "Not set"
     wins = row[2] if row else "N/A"
     losses = row[3] if row else "N/A"
@@ -205,19 +203,16 @@ def build_game_embed(
                 title=f"Editing {tag} {target.display_name} - {game.title()}...",
                 color=discord.Color.from_rgb(78, 42, 132),
             )
+    has_roles = bool(get_roles(game))
     embed.add_field(name="Rank", value=rank_label, inline=True)
-    if get_roles(game):
+    if has_roles:
         embed.add_field(name="Role", value=role_display, inline=True)
     embed.add_field(name="Main", value=main_display, inline=True)
-    if not get_roles(game):
+    if not has_roles:
         embed.add_field(name="​", value="​", inline=True)
     embed.add_field(name="Wins", value=f"{wins}", inline=True)
     embed.add_field(name="Losses", value=f"{losses}", inline=True)
 
-    # if primary_main:
-    #     primary_main = (primary_main[0].upper() + primary_main[1:].lower()).replace(" ", "")
-    #     if game == "league":
-    #         embed.set_thumbnail(url=f"https://static.bigbrain.gg/assets/lol/riot_static/16.13.1/img/champion/{primary_main}.webp")
     image_path = None
     if primary_main:
         image_path = get_character_image(game, primary_main)
