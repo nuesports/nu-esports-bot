@@ -711,6 +711,8 @@ class Profile(commands.Cog):
         embed, image_path = await view.build_embed()
         file = image_attachment(image_path)
         await ctx.followup.send(embed=embed, view=view, ephemeral=True, file=file)
+        # followup.send() doesn't set view.parent; disable_on_timeout needs it for ephemeral messages; without it on_timeout silently no-ops
+        view.parent = ctx.interaction
 
     @profile.command(
         name = "setup",
