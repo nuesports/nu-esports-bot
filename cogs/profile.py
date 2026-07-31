@@ -4,9 +4,11 @@ import re
 import random
 from discord.ext import commands
 from urllib.parse import urlsplit
+from pathlib import Path
 
 from utils import config
 from utils import db
+from utils.images import get_character_image
 
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
@@ -184,10 +186,10 @@ def build_game_embed(
                      tag: str, 
                      page_number: int, 
                      total_pages: int,
-                     setup: bool) -> discord.Embed:
+                     setup: bool) -> tuple[discord.Embed, "Path | None"]:
     """Build one per-game page of a profile: rank, roles, mains, wins/losses.
     
-    Sets a champion splash_art thumbnail if primary_main is set. (League only right now)"""
+    Sets a champion splash_art thumbnail if primary_main is set and an image exists."""
     rank_label = row[1] if row else "Not set"
     wins = row[2] if row else "N/A"
     losses = row[3] if row else "N/A"
@@ -212,12 +214,17 @@ def build_game_embed(
     embed.add_field(name="Wins", value=f"{wins}", inline=True)
     embed.add_field(name="Losses", value=f"{losses}", inline=True)
 
+    # if primary_main:
+    #     primary_main = (primary_main[0].upper() + primary_main[1:].lower()).replace(" ", "")
+    #     if game == "league":
+    #         embed.set_thumbnail(url=f"https://static.bigbrain.gg/assets/lol/riot_static/16.13.1/img/champion/{primary_main}.webp")
+    image_path = None
     if primary_main:
-        primary_main = (primary_main[0].upper() + primary_main[1:].lower()).replace(" ", "")
-        if game == "league":
-            embed.set_thumbnail(url=f"https://static.bigbrain.gg/assets/lol/riot_static/16.13.1/img/champion/{primary_main}.webp")
+        image_path = get_character_image(game, primary_main)
+        if image_path:
+            embed.set_thumbnail(url=f"attachment://{image_path.name}")
     embed.set_footer(text=f"Page {page_number}/{total_pages}")
-    return embed
+    return embed, image_path
 
 def is_game_head(member: discord.Member) -> bool:
     """Check if a member has a role with "game head" in its name (case-insensitive, substring match)"""
@@ -624,7 +631,7 @@ class Profile(commands.Cog):
         pages_games = [g for g in GAME_CHOICES if g in games_with_data]
 
         total_pages = len(pages_games) + 1
-        pages = [build_home_embed(target, profile_row, total_pages, total_wins, total_losses, setup=False)]
+        pages = [(build_home_embed(target, profile_row, total_pages, total_wins, total_losses, setup=False), None)]
         for i, g in enumerate(pages_games, start=2):
             row = stats_by_game.get(g)
             roles = roles_by_game.get(g, [])
@@ -637,11 +644,13 @@ class Profile(commands.Cog):
             start_index = pages_games.index(game) +1
         else:
             start_index = 0
-        
-        paginator = ProfilePaginator(requester_id=ctx.author.id, pages=pages,start_index=start_index)
-        message = await ctx.followup.send(embed=pages[start_index], view=paginator)
+
+        paginator = ProfilePaginator(requester_id=ctx.author.id, pages=pages, start_index=start_index)
+        embed, image_path = pages[start_index]
+        file = discord.File(image_path, filename=image_path.name) if image_path else discord.utils.MISSING
+        message = await ctx.followup.send(embed=embed, view=paginator, file=file)
         paginator.message = message
-        await message.edit(embed=pages[start_index], view=paginator)
+        await message.edit(embed=embed, view=paginator)
     
     @profile.command(
         name = "elo",
@@ -700,8 +709,9 @@ class Profile(commands.Cog):
         await ctx.defer(ephemeral=True)
 
         view = ProfileSetupView(requester_id=ctx.author.id, target=ctx.author)
-        embed = await view.build_embed()
-        message = await ctx.followup.send(embed=embed, view=view, ephemeral=True)
+        embed, image_path = await view.build_embed()
+        file = discord.File(image_path, filename=image_path.name) if image_path else discord.utils.MISSING
+        message = await ctx.followup.send(embed=embed, view=view, ephemeral=True, file=file)
         view.message = message
 
     @profile.command(
@@ -750,14 +760,18 @@ class ProfilePaginator(discord.ui.View):
         """Go to the previous page."""
         self.index -= 1
         self.update_buttons()
-        await interaction.response.edit_message(embed=self.pages[self.index], view=self)
+        embed, image_path = self.pages[self.index]
+        file = discord.File(image_path, filename=image_path.name) if image_path else discord.utils.MISSING
+        await interaction.response.edit_message(embed=embed, view=self, file=file, attachments=[])
 
     @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
     async def forward(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
         """Go to the next page."""
         self.index += 1
         self.update_buttons()
-        await interaction.response.edit_message(embed=self.pages[self.index], view=self)
+        embed, image_path = self.pages[self.index]
+        file = discord.File(image_path, filename=image_path.name) if image_path else discord.utils.MISSING
+        await interaction.response.edit_message(embed=embed, view=self, file=file, attachments=[])
     
     async def on_timeout(self) -> None:
         """Disable both buttons once the view times out, so it doesn't look interactive anymore."""
@@ -1129,7 +1143,7 @@ class ProfileSetupView(discord.ui.View):
             return False
         return True
 
-    async def build_embed(self) -> discord.Embed:
+    async def build_embed(self) -> tuple[discord.Embed, "Path | None"]:
         """Fetch fresh data and build the embed for whichever page is currently active."""
         data = await fetch_profile_data(self.target.id)
         self._data = data
@@ -1137,7 +1151,7 @@ class ProfileSetupView(discord.ui.View):
         tag = profile_row[3] if profile_row and profile_row[3] else "❓"
 
         if self.index == 0:
-            return build_home_embed(self.target, profile_row, self.total_pages, data["total_wins"], data["total_losses"], setup=True)
+            return build_home_embed(self.target, profile_row, self.total_pages, data["total_wins"], data["total_losses"], setup=True), None
 
         game = GAME_CHOICES[self.index - 1]
         row = data["stats_by_game"].get(game)
@@ -1214,9 +1228,10 @@ class ProfileSetupView(discord.ui.View):
         be careful cuz discord.ui.View already defines a sync `refresh(components)`, don't accidentally
         shadow it with your own refresh()... like I did before changing it to this :P
         """
-        embed = await self.build_embed()
+        embed, image_path = await self.build_embed()
         self.build_buttons()
-        await interaction.response.edit_message(content=None, embed=embed, view=self)
+        file = discord.File(image_path, filename=image_path.name) if image_path else discord.utils.MISSING
+        await interaction.response.edit_message(content=None, embed=embed, view=self, file=file, attachments=[])
 
     async def on_edit_tag(self, interaction: discord.Interaction) -> None:
         data = await fetch_profile_data(self.target.id)
