@@ -25,7 +25,7 @@ divisions_ascend:
 
 # Seed elo for players who never set a rank. Deliberately below the club's
 # average so a wrong guess corrects upward instead of stomping lobbies.
-default_tier: Arcanist
+default_tier: Sentinel
 
 role_requirements:
   {}
