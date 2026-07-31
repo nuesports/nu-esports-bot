@@ -1256,14 +1256,14 @@ class ProfileSetupView(discord.ui.View):
     async def on_edit_rank(self, interaction: discord.Interaction) -> None:
         game = GAME_CHOICES[self.index - 1]
         view = RankSelectView(requester_id=self.requester_id, game=game, on_done=self.on_field_done)
-        await interaction.response.edit_message(content=f"Pick your {game.title()} tier:", embed=None, view=view)
+        await interaction.response.edit_message(content=f"Pick your {game.title()} tier:", embed=None, view=view, attachments=[])
 
     async def on_edit_roles(self, interaction: discord.Interaction) -> None:
         game = GAME_CHOICES[self.index - 1]
         data = await fetch_profile_data(self.target.id)
         current_roles = data["roles_by_game"].get(game, [])
         view = RoleSelectView(requester_id=self.requester_id, game=game, current_roles=current_roles, on_done=self.on_field_done)
-        await interaction.response.edit_message(content="Pick your role(s):", embed=None, view=view)
+        await interaction.response.edit_message(content="Pick your role(s):", embed=None, view=view, attachments=[])
 
     async def on_edit_mains(self, interaction: discord.Interaction) -> None:
         game = GAME_CHOICES[self.index - 1]
@@ -1277,7 +1277,7 @@ class ProfileSetupView(discord.ui.View):
         mains = data["mains_by_game"].get(game, [])
         current_primary = data["primary_by_game"].get(game)
         view = PrimarySelectView(requester_id=self.requester_id, game=game, mains=mains, current_primary=current_primary, on_done=self.on_field_done)
-        await interaction.response.edit_message(content="Pick your primary main:", embed=None, view=view)
+        await interaction.response.edit_message(content="Pick your primary main:", embed=None, view=view, attachments=[])
 
     async def on_field_done(self, interaction: discord.Interaction) -> None:
         """Called by field modals after a successful save; refresh this same page in place."""
