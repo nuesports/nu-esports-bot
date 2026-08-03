@@ -33,3 +33,7 @@ gameheads:
 
 bot_devs:
   - #<user_id>
+
+github_backlog:
+  pr_channel: #<channel_id>
+  issue_channel: #<channel_id>
