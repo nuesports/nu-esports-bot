@@ -147,7 +147,7 @@ class GameSelectView(discord.ui.View):
     """Dropdown for switching the leaderboard to a different game, restricted to whoever ran /leaderboard."""
 
     def __init__(self, requester_id: int, guild: discord.Guild):
-        super().__init__(timeout=120)
+        super().__init__(timeout=120, disable_on_timeout=True)
         self.requester_id = requester_id
         self.guild = guild
 
@@ -231,13 +231,12 @@ class LeaderboardRoleSelectView(discord.ui.View):
 
         paginator = LeaderboardPaginator(requester_id=self.requester_id, pages=pages, guild=self.guild, game=self.game, role=role)
         await interaction.response.edit_message(content=None, embed=pages[0], view=paginator)
-        paginator.message = await interaction.original_response()
 
 class EmptyLeaderboardView(discord.ui.View):
     """Shown when a game's leaderboard has nobody on it, just a way to switch games."""
 
     def __init__(self, requester_id: int, guild: discord.Guild):
-        super().__init__(timeout=120)
+        super().__init__(timeout=120, disable_on_timeout=True)
         self.requester_id = requester_id
         self.guild = guild
 
@@ -260,7 +259,7 @@ class LeaderboardPaginator(discord.ui.View):
     """Left/right paginator over a leaderboard's pages of 10, restricted to whoever ran the command."""
 
     def __init__(self, requester_id: int, pages: list[discord.Embed], guild: discord.Guild, game: str, role: str | None = None):
-        super().__init__(timeout=120)
+        super().__init__(timeout=120, disable_on_timeout=True)
         self.requester_id = requester_id
         self.pages = pages
         self.guild = guild
@@ -315,12 +314,6 @@ class LeaderboardPaginator(discord.ui.View):
         await interaction.response.edit_message(
             content=f"Pick a role for the {self.game.title()} leaderboard:", embed=None, view=view
         )
-
-    async def on_timeout(self) -> None:
-        """Disable both buttons once the view times out, so it doesn't look interactive anymore."""
-        for child in self.children:
-            child.disabled = True
-        await self.message.edit(view=self)
 
 class Leaderboard(commands.Cog):
     """Cog housing the /leaderboard command: per-game rankings, ordered by elo but displayed by win/loss record."""
@@ -380,8 +373,7 @@ class Leaderboard(commands.Cog):
             return
 
         paginator = LeaderboardPaginator(requester_id=ctx.author.id, pages=pages, guild=ctx.guild, game=game, role=role)
-        message = await ctx.followup.send(embed=pages[0], view=paginator)
-        paginator.message = message
+        await ctx.followup.send(embed=pages[0], view=paginator)
 
 def setup(bot: discord.Bot) -> None:
     bot.add_cog(Leaderboard(bot))

@@ -4,9 +4,11 @@ import re
 import random
 from discord.ext import commands
 from urllib.parse import urlsplit
+from pathlib import Path
 
 from utils import config
 from utils import db
+from utils.images import get_character_image, image_attachment
 
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
@@ -28,6 +30,10 @@ def get_roles(game: str) -> list[str]:
 def get_mains(game: str) -> list[str]:
     """Return the full character/agent/champion roster for a game."""
     return config.game_data[game]["characters"]
+
+def effective_primary(mains: list[str], primary: str | None) -> str | None:
+    """The primary to display: explicit if set, else the first main."""
+    return primary or (mains[0] if mains else None)
 
 def tier_has_divisions(game: str, tier: str) -> bool:
     """Return whether a given tier is divided (e.g. "Gold 3") rather than flat (e.g. "Challenger")."""
@@ -206,12 +212,11 @@ def build_game_embed(
                      page_number: int,
                      total_pages: int,
                      setup: bool,
-                     role_ranks: dict[str, str] | None = None) -> discord.Embed:
-    """Build one per-game page of a profile: rank, roles, mains, wins/losses.
+                     role_ranks: dict[str, str] | None = None) -> tuple[discord.Embed, "Path | None"]:
+    """Build one per-game profile page: rank, roles, mains, wins/losses, and a champion thumbnail if one exists.
 
     For per-role-ranks games, pass `role_ranks` (role -> rank_label) to render one
-    rank line per role instead of the single game-wide rank_label in `row`.
-    Sets a champion splash_art thumbnail if primary_main is set. (League only right now)"""
+    rank line per role instead of the single game-wide rank_label in `row`."""
     if role_ranks is not None:
         rank_label = "\n".join(
             f"{r} — {role_ranks.get(r, 'Not set')}" for r in config.rankable_roles(game)
@@ -222,7 +227,6 @@ def build_game_embed(
     losses = row[3] if row else "N/A"
     role_display = ", ".join(roles) if roles else "Not set"
     main_display = ", ".join(mains) if mains else "Not set"
-
     if not setup:
             embed = discord.Embed(
                     title=f"{tag} {target.display_name} - {game.title()}",
@@ -233,18 +237,23 @@ def build_game_embed(
                 title=f"Editing {tag} {target.display_name} - {game.title()}...",
                 color=discord.Color.from_rgb(78, 42, 132),
             )
+    has_roles = bool(get_roles(game))
     embed.add_field(name="Rank", value=rank_label, inline=True)
-    embed.add_field(name="Role", value=role_display, inline=True)
+    if has_roles:
+        embed.add_field(name="Role", value=role_display, inline=True)
     embed.add_field(name="Main", value=main_display, inline=True)
+    if not has_roles:
+        embed.add_field(name="​", value="​", inline=True)
     embed.add_field(name="Wins", value=f"{wins}", inline=True)
     embed.add_field(name="Losses", value=f"{losses}", inline=True)
 
+    image_path = None
     if primary_main:
-        primary_main = (primary_main[0].upper() + primary_main[1:].lower()).replace(" ", "")
-        if game == "league":
-            embed.set_thumbnail(url=f"https://static.bigbrain.gg/assets/lol/riot_static/16.13.1/img/champion/{primary_main}.webp")
+        image_path = get_character_image(game, primary_main)
+        if image_path:
+            embed.set_thumbnail(url=f"attachment://{image_path.name}")
     embed.set_footer(text=f"Page {page_number}/{total_pages}")
-    return embed
+    return embed, image_path
 
 def is_game_head(member: discord.Member) -> bool:
     """Check if a member has a role with "game head" in its name (case-insensitive, substring match)"""
@@ -566,10 +575,11 @@ class Profile(commands.Cog):
             color=discord.Color.from_rgb(78, 42, 132)
         )
 
-        primary = primary[0].upper() + primary[1:].lower()
-        if game == "league":
-            embed.set_image(url=f"https://ddragon.leagueoflegends.com/cdn/img/champion/splash/{primary}_0.jpg")
-        await ctx.followup.send(embed=embed, ephemeral=True)
+        image_path = get_character_image(game, primary)
+        file = image_attachment(image_path)
+        if image_path:
+            embed.set_image(url=f"attachment://{image_path.name}")
+        await ctx.followup.send(embed=embed, ephemeral=True, file=file)
 
     @set_grp.command(
             name = "tag",
@@ -660,12 +670,12 @@ class Profile(commands.Cog):
         pages_games = [g for g in GAME_CHOICES if g in games_with_data]
 
         total_pages = len(pages_games) + 1
-        pages = [build_home_embed(target, profile_row, total_pages, total_wins, total_losses, setup=False)]
+        pages = [(build_home_embed(target, profile_row, total_pages, total_wins, total_losses, setup=False), None)]
         for i, g in enumerate(pages_games, start=2):
             row = stats_by_game.get(g)
             roles = roles_by_game.get(g, [])
             mains = mains_by_game.get(g, [])
-            primary_main = primary_by_game.get(g)
+            primary_main = effective_primary(mains, primary_by_game.get(g))
             role_ranks = role_ranks_by_game.get(g, {}) if config.is_per_role_ranks(g) else None
             tag = profile_row[3] if profile_row and profile_row[3] else "💬"
             pages.append(build_game_embed(target, g, row, roles, mains, primary_main, tag, i, total_pages, setup=False, role_ranks=role_ranks))
@@ -674,11 +684,12 @@ class Profile(commands.Cog):
             start_index = pages_games.index(game) +1
         else:
             start_index = 0
-        
-        paginator = ProfilePaginator(requester_id=ctx.author.id, pages=pages,start_index=start_index)
-        message = await ctx.followup.send(embed=pages[start_index], view=paginator)
-        paginator.message = message
-        await message.edit(embed=pages[start_index], view=paginator)
+
+        paginator = ProfilePaginator(requester_id=ctx.author.id, pages=pages, start_index=start_index)
+        embed, image_path = pages[start_index]
+        file = image_attachment(image_path)
+        message = await ctx.followup.send(embed=embed, view=paginator, file=file)
+        await message.edit(embed=embed, view=paginator)
     
     @profile.command(
         name = "elo",
@@ -751,9 +762,11 @@ class Profile(commands.Cog):
         await ctx.defer(ephemeral=True)
 
         view = ProfileSetupView(requester_id=ctx.author.id, target=ctx.author)
-        embed = await view.build_embed()
-        message = await ctx.followup.send(embed=embed, view=view, ephemeral=True)
-        view.message = message
+        embed, image_path = await view.build_embed()
+        file = image_attachment(image_path)
+        await ctx.followup.send(embed=embed, view=view, ephemeral=True, file=file)
+        # followup.send() doesn't set view.parent; disable_on_timeout needs it for ephemeral messages; without it on_timeout silently no-ops
+        view.parent = ctx.interaction
 
     @profile.command(
         name = "setup",
@@ -775,7 +788,7 @@ class Profile(commands.Cog):
 class ProfilePaginator(discord.ui.View):
     """Left/right paginator over a list of embeds, restricted to whoever ran the command."""
     def __init__(self, requester_id, pages, start_index=0):
-        super().__init__(timeout=120)
+        super().__init__(timeout=120, disable_on_timeout=True)
         self.requester_id = requester_id
         self.pages = pages
         self.index = start_index
@@ -801,20 +814,18 @@ class ProfilePaginator(discord.ui.View):
         """Go to the previous page."""
         self.index -= 1
         self.update_buttons()
-        await interaction.response.edit_message(embed=self.pages[self.index], view=self)
+        embed, image_path = self.pages[self.index]
+        file = image_attachment(image_path)
+        await interaction.response.edit_message(embed=embed, view=self, file=file, attachments=[])
 
     @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
     async def forward(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
         """Go to the next page."""
         self.index += 1
         self.update_buttons()
-        await interaction.response.edit_message(embed=self.pages[self.index], view=self)
-    
-    async def on_timeout(self) -> None:
-        """Disable both buttons once the view times out, so it doesn't look interactive anymore."""
-        for child in self.children:
-            child.disabled = True
-        await self.message.edit(view=self)
+        embed, image_path = self.pages[self.index]
+        file = image_attachment(image_path)
+        await interaction.response.edit_message(embed=embed, view=self, file=file, attachments=[])
 
 class RoleSelectView(discord.ui.View):
     """Multi-select dropdown for a player's roles in one game.
@@ -1241,11 +1252,10 @@ class ProfileSetupView(discord.ui.View):
     always reflected immediately.
     """
     def __init__(self, requester_id: int, target: discord.Member, start_index: int = 0) -> None:
-        super().__init__(timeout=120)
+        super().__init__(timeout=120, disable_on_timeout=True)
         self.requester_id = requester_id
         self.target = target
         self.index = start_index
-        self.message = None
         self.build_buttons()
 
     @property
@@ -1260,7 +1270,7 @@ class ProfileSetupView(discord.ui.View):
             return False
         return True
 
-    async def build_embed(self) -> discord.Embed:
+    async def build_embed(self) -> tuple[discord.Embed, "Path | None"]:
         """Fetch fresh data and build the embed for whichever page is currently active."""
         data = await fetch_profile_data(self.target.id)
         self._data = data
@@ -1268,13 +1278,13 @@ class ProfileSetupView(discord.ui.View):
         tag = profile_row[3] if profile_row and profile_row[3] else "❓"
 
         if self.index == 0:
-            return build_home_embed(self.target, profile_row, self.total_pages, data["total_wins"], data["total_losses"], setup=True)
+            return build_home_embed(self.target, profile_row, self.total_pages, data["total_wins"], data["total_losses"], setup=True), None
 
         game = GAME_CHOICES[self.index - 1]
         row = data["stats_by_game"].get(game)
         roles = data["roles_by_game"].get(game, [])
         mains = data["mains_by_game"].get(game, [])
-        primary_main = data["primary_by_game"].get(game)
+        primary_main = effective_primary(mains, data["primary_by_game"].get(game))
         role_ranks = data["role_ranks_by_game"].get(game, {}) if config.is_per_role_ranks(game) else None
         return build_game_embed(self.target, game, row, roles, mains, primary_main, tag, self.index + 1, self.total_pages, setup=True, role_ranks=role_ranks)
 
@@ -1327,8 +1337,8 @@ class ProfileSetupView(discord.ui.View):
         self.add_item(mains_btn)
 
         data = getattr(self, "_data", {})
-        has_mains = bool(data.get("mains_by_game", {}).get(game))
-        primary_btn = discord.ui.Button(label="Primary", style=discord.ButtonStyle.primary, disabled=not has_mains)
+        mains_count = len(data.get("mains_by_game", {}).get(game, []))
+        primary_btn = discord.ui.Button(label="Primary", style=discord.ButtonStyle.primary, disabled=mains_count <= 1)
         primary_btn.callback = self.on_edit_primary
         self.add_item(primary_btn)
 
@@ -1346,9 +1356,10 @@ class ProfileSetupView(discord.ui.View):
         be careful cuz discord.ui.View already defines a sync `refresh(components)`, don't accidentally
         shadow it with your own refresh()... like I did before changing it to this :P
         """
-        embed = await self.build_embed()
+        embed, image_path = await self.build_embed()
         self.build_buttons()
-        await interaction.response.edit_message(content=None, embed=embed, view=self)
+        file = image_attachment(image_path)
+        await interaction.response.edit_message(content=None, embed=embed, view=self, file=file, attachments=[])
 
     async def on_edit_tag(self, interaction: discord.Interaction) -> None:
         data = await fetch_profile_data(self.target.id)
@@ -1374,17 +1385,17 @@ class ProfileSetupView(discord.ui.View):
         game = GAME_CHOICES[self.index - 1]
         if config.is_per_role_ranks(game):
             view = RoleRankSelectView(requester_id=self.requester_id, game=game, on_done=self.on_field_done)
-            await interaction.response.edit_message(content=f"Pick a role to set your {game.title()} rank:", embed=None, view=view)
+            await interaction.response.edit_message(content=f"Pick a role to set your {game.title()} rank:", embed=None, view=view, attachments=[])
         else:
             view = RankSelectView(requester_id=self.requester_id, game=game, on_done=self.on_field_done)
-            await interaction.response.edit_message(content=f"Pick your {game.title()} tier:", embed=None, view=view)
+            await interaction.response.edit_message(content=f"Pick your {game.title()} tier:", embed=None, view=view, attachments=[])
 
     async def on_edit_roles(self, interaction: discord.Interaction) -> None:
         game = GAME_CHOICES[self.index - 1]
         data = await fetch_profile_data(self.target.id)
         current_roles = data["roles_by_game"].get(game, [])
         view = RoleSelectView(requester_id=self.requester_id, game=game, current_roles=current_roles, on_done=self.on_field_done)
-        await interaction.response.edit_message(content="Pick your role(s):", embed=None, view=view)
+        await interaction.response.edit_message(content="Pick your role(s):", embed=None, view=view, attachments=[])
 
     async def on_edit_mains(self, interaction: discord.Interaction) -> None:
         game = GAME_CHOICES[self.index - 1]
@@ -1396,19 +1407,13 @@ class ProfileSetupView(discord.ui.View):
         game = GAME_CHOICES[self.index - 1]
         data = await fetch_profile_data(self.target.id)
         mains = data["mains_by_game"].get(game, [])
-        current_primary = data["primary_by_game"].get(game)
+        current_primary = effective_primary(mains, data["primary_by_game"].get(game))
         view = PrimarySelectView(requester_id=self.requester_id, game=game, mains=mains, current_primary=current_primary, on_done=self.on_field_done)
-        await interaction.response.edit_message(content="Pick your primary main:", embed=None, view=view)
+        await interaction.response.edit_message(content="Pick your primary main:", embed=None, view=view, attachments=[])
 
     async def on_field_done(self, interaction: discord.Interaction) -> None:
         """Called by field modals after a successful save; refresh this same page in place."""
         await self.refresh_page(interaction)
-
-    async def on_timeout(self) -> None:
-        for child in self.children:
-            child.disabled = True
-        if self.message:
-            await self.message.edit(view=self)
 
 
 def setup(bot: discord.Bot):

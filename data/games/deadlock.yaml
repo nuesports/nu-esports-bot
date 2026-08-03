@@ -1,5 +1,5 @@
 roles: []
-tiers: [Initiate, Seeker, Alchemist, Arcanist, Ritualist, Emissary, Archon, Oracle, Phantom, Ascendant, Eternus]
+tiers: [Initiate, Seeker, Acolyte, Sentinel, Mystic, Ritualist, Emissary, Oracle, Phantom, Ascendant, Eternus]
 divisions: 6
 no_division_tiers: [] # Tiers that aren't divisioned, like Challenger in League
 lobby_size: 12
@@ -10,11 +10,11 @@ lobby_size: 12
 rank_points:
   Initiate: 0
   Seeker: 300
-  Alchemist: 600
-  Arcanist: 900
-  Ritualist: 1300
-  Emissary: 1700
-  Archon: 2300
+  Acolyte: 600
+  Sentinel: 900
+  Mystic: 1300
+  Ritualist: 1700
+  Emissary: 2300
   Oracle: 3100
   Phantom: 3800
   Ascendant: 4600
@@ -25,7 +25,7 @@ divisions_ascend:
 
 # Seed elo for players who never set a rank. Deliberately below the club's
 # average so a wrong guess corrects upward instead of stomping lobbies.
-default_tier: Arcanist
+default_tier: Sentinel
 
 role_requirements:
   {}
