@@ -283,7 +283,7 @@ class Profile(commands.Cog):
         embed.add_field(name="📝 /profile edit", value="Edit your profile page-by-page.", inline=True)
         embed.add_field(name="🖊️ /profile set", value="Set a specific part of your profile.", inline=True)
         embed.add_field(name="🏆 /leaderboard", value="View the leaderboard of a game, based on elo", inline=True)
-        embed.set_footer(text="❓ Questions? Suggestions? #LMK me @liilac__")
+        embed.set_footer(text="❓ Questions? Suggestions? #LMK @liilac__")
         await ctx.respond(embed=embed, ephemeral=True)
 
     @set_grp.command(
