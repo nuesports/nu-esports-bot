@@ -84,9 +84,9 @@ def generate_match_embed(session: "MatchmakingSession") -> discord.Embed:
     
     Players are grouped by team and ordered by role (via ROLE_REQUIREMENTS), not join order.
     """
+    title_suffix = session.map if session.map else "Teams"
     embed = discord.Embed(
-        title=f"{session.game.title()} Lobby — Teams",
-        description=f"Map: {session.map}" if session.map else None,
+        title=f"{session.game.title()} Lobby — {title_suffix}",
         color=discord.Color.from_rgb(78, 42, 132),
     )
     has_roles = bool(ROLE_REQUIREMENTS[session.game])
