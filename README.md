@@ -92,8 +92,9 @@ docker compose restart bot                                       # after a plain
 ```
 
 If you want this as your personal default so you don't have to type `-f -f` every
-time, set `COMPOSE_FILE=compose.yaml:compose.dev.yaml` in your own local `.env`
-(gitignored, doesn't affect anyone else).
+time, set `COMPOSE_FILE` in your own local `.env` (gitignored, doesn't affect anyone
+else) -- `compose.yaml:compose.dev.yaml` on Linux/macOS, `compose.yaml;compose.dev.yaml`
+on Windows (Compose uses `;` there since `:` is already part of drive-letter paths).
 
 ### Running Locally
 
