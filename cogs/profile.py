@@ -279,18 +279,11 @@ class Profile(commands.Cog):
             description="Everything you can do with /profile:",
             color=discord.Color.from_rgb(78, 42, 132),
         )
-        embed.add_field(name="/profile view [user] [game]", value="See your (or someone else's) profile: bio, rank, roles, mains, and win/loss record.", inline=False)
-        embed.add_field(name="/profile setup", value="Interactive paginated editor for your own profile — flip through pages with buttons that edit each field in place.", inline=False)
-        embed.add_field(name="/profile edit", value="Alias for `/profile setup`.", inline=False)
-        embed.add_field(name="/profile set bio <bio>", value="Set your profile bio.", inline=False)
-        embed.add_field(name="/profile set picture [url] [position]", value="Set your profile's main image or thumbnail via a direct image URL. Clears if left blank. Defaults to main image.", inline=False)
-        embed.add_field(name="/profile set rank <game> <tier> [division]", value="Set your rank for a game. Defaults to `1`.", inline=False)
-        embed.add_field(name="/profile set role <game>", value="Open a menu to pick your role(s) for a game.", inline=False)
-        embed.add_field(name="/profile set main <game>", value="Open a menu to set your mains for a game.", inline=False)
-        embed.add_field(name="/profile set primary <game> <primary>", value="Choose which of your mains shows as your profile thumbnail/splash art.", inline=False)
-        embed.add_field(name="/profile set tag [tag]", value="Set the emoji shown next to your name on your profile and in lobbies. Clears if left blank.", inline=False)
-        embed.add_field(name="/profile elo [user]", value="Show a player's elo per game. Defaults to caller. For game head use only.", inline=False)
-        embed.set_footer(text="🗝️ Key: /command <mandatory-arguments> [optional-arguments]")
+        embed.add_field(name="🔍 /profile view", value="See your (or someone else's) profile.", inline=True)
+        embed.add_field(name="📝 /profile edit", value="Edit your profile page-by-page.", inline=True)
+        embed.add_field(name="🖊️ /profile set", value="Set a specific part of your profile.", inline=True)
+        embed.add_field(name="🏆 /leaderboard", value="View the leaderboard of a game, based on elo", inline=True)
+        embed.set_footer(text="❓ Questions? Suggestions? #LMK me @liilac__")
         await ctx.respond(embed=embed, ephemeral=True)
 
     @set_grp.command(
