@@ -258,9 +258,8 @@ def balance_teams(game: str,
         else:
             team_b.append(m)
             team_b_total += value
-        # key is the sentinel for non-per-role games, not a real role -- keep the
-        # existing first-preference label for those, same as always.
-        assignments[m.id] = key if per_role else roles_by_id[m.id][0]
+        # leftover players beyond the defined roles are always Flex, not a doubled-up role
+        assignments[m.id] = key if per_role else "Flex"
 
     return team_a, team_b, assignments
 
