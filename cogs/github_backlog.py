@@ -14,14 +14,23 @@ from aiohttp import web
 
 from utils import config, db
 
-SPECIAL_CHARS = re.compile(r"[\\`*_~|>\[\]()]")
+MASKED_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+LEADING_HEADING = re.compile(r"^#{1,3}\s*")
+FORMATTING_CHARS = re.compile(r"[\\`*_~|>\[\]#]")
+
+COLOR_OPEN_ISSUE = discord.Color.from_rgb(237, 66, 69)
+COLOR_OPEN_PR = discord.Color.from_rgb(59, 130, 246)
+COLOR_DONE = discord.Color.from_rgb(48, 199, 107)
 
 
-def escape_markdown(text: str) -> str:
-    """Neutralize Discord markdown in untrusted PR/issue titles/bodies (masked
-    links, bold/code spans, blockquotes, etc.)."""
-    collapsed = text.replace("\r\n", " ").replace("\n", " ")
-    return SPECIAL_CHARS.sub(lambda m: "\\" + m.group(0), collapsed)
+def strip_markdown(text: str) -> str:
+    """Strip Discord/GitHub markdown syntax down to plain text -- untrusted PR/issue
+    titles/bodies otherwise render as headings, bold blocks, masked links, etc.
+    (Discord embeds render '#'/'##' as actual large headings, not just message content.)"""
+    collapsed = text.replace("\r\n", " ").replace("\n", " ").strip()
+    collapsed = LEADING_HEADING.sub("", collapsed)
+    collapsed = MASKED_LINK.sub(r"\1", collapsed)
+    return FORMATTING_CHARS.sub("", collapsed).strip()
 
 
 def verify_signature(secret: str, body: bytes, signature_header: str | None) -> bool:
@@ -41,27 +50,27 @@ def opengraph_image_url(repo: str, kind: str, number: int) -> str:
 
 
 def first_body_line(body: str | None) -> str:
-    """First non-blank line of a PR/issue body, markdown-escaped -- still untrusted text."""
+    """First non-blank line of a PR/issue body, stripped to plain text."""
     for line in (body or "").splitlines():
         stripped = line.strip()
         if stripped:
-            return escape_markdown(stripped)
-    return "*No description provided.*"
+            return strip_markdown(stripped)
+    return "No description provided."
 
 
 def build_notification_embed(
     kind: str, number: int, repo: str, title: str, body: str | None, url: str,
-    footer_label: str, username: str,
+    footer_verb: str, username: str, color: discord.Color,
 ) -> discord.Embed:
     type_word = "PR" if kind == "pr" else "Issue"
     embed = discord.Embed(
-        title=f"{type_word} {number} - {escape_markdown(title)}",
+        title=f"{type_word} {number} - {strip_markdown(title)}",
         description=first_body_line(body),
         url=url,
-        color=discord.Color.from_rgb(78, 42, 132),
+        color=color,
     )
     embed.set_image(url=opengraph_image_url(repo, kind, number))
-    embed.set_footer(text=f"{footer_label} - {username}")
+    embed.set_footer(text=f"{footer_verb} {username}")
     return embed
 
 
@@ -123,7 +132,7 @@ class GithubBacklog(commands.Cog):
             author = pr["user"]
             embed = build_notification_embed(
                 "pr", number, repo, pr["title"], pr.get("body"), pr["html_url"],
-                footer_label="Author", username=author["login"],
+                footer_verb="Authored by", username=author["login"], color=COLOR_OPEN_PR,
             )
             await self.post_and_pin(self.pr_channel_id, repo, number, "pr", embed)
         elif action == "closed" and pr.get("merged"):
@@ -132,7 +141,7 @@ class GithubBacklog(commands.Cog):
             username = merged_by["login"] if merged_by else "unknown"
             embed = build_notification_embed(
                 "pr", number, repo, pr["title"], pr.get("body"), pr["html_url"],
-                footer_label="Merged by", username=username,
+                footer_verb="Merged by", username=username, color=COLOR_DONE,
             )
             await self.send_embed(self.pr_channel_id, embed)
 
@@ -146,11 +155,17 @@ class GithubBacklog(commands.Cog):
             author = issue["user"]
             embed = build_notification_embed(
                 "issue", number, repo, issue["title"], issue.get("body"), issue["html_url"],
-                footer_label="Author", username=author["login"],
+                footer_verb="Authored by", username=author["login"], color=COLOR_OPEN_ISSUE,
             )
             await self.post_and_pin(self.issue_channel_id, repo, number, "issue", embed)
         elif action == "closed":
             await self.unpin(repo, number, "issue")
+            closer = payload.get("sender") or issue["user"]
+            embed = build_notification_embed(
+                "issue", number, repo, issue["title"], issue.get("body"), issue["html_url"],
+                footer_verb="Closed by", username=closer["login"], color=COLOR_DONE,
+            )
+            await self.send_embed(self.issue_channel_id, embed)
 
 
 def create_app(backlog: GithubBacklog) -> web.Application:
