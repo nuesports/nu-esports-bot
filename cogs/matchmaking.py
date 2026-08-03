@@ -15,6 +15,7 @@ ROLE_REQUIREMENTS = {game: data.get("role_requirements") or {} for game, data in
 LOBBY_SIZE = {game: data.get("lobby_size", 10) for game, data in config.game_data.items()}
 RANK_JITTER = 200        # half-width of the jitter range for a player exactly at the lobby average
 JITTER_PULL_SCALE = 1500 # elo deviation from average that fully saturates the pull toward one side
+_GAME_WIDE_ELO = "__game__" # elo-dict key balance_teams uses for games without per-role ranks
 
 
 def generate_embed(session: "MatchmakingSession") -> discord.Embed:
@@ -104,16 +105,22 @@ def generate_match_embed(session: "MatchmakingSession") -> discord.Embed:
 
 
 async def get_game_shuffle_data(joined: list[discord.Member], game: str) -> tuple[
-                                                                                dict[int, float], 
+                                                                                dict[int, float] | dict[int, dict[str, float]],
                                                                                 dict[int, list[str]]
                                                                                 ]:
-    """Fetch each joined player's rank and roles for a game, filling in defaults for missing data.
-    
-    Players with no rank on file get the average rank of everyone who does (or 0 if nobody is set). Players with no role default to ["Flex"]
-    
-    Returns (rank_by_id, roles_by_id), both keyed by discord member id.
+    """Fetch each joined player's elo and roles for a game, filling in defaults for missing data.
+
+    Players missing an elo row get one seeded from their rank (see get_team_elos/
+    get_team_role_elos), or the game's default_tier if they have no rank either.
+    Players with no role default to ["Flex"].
+
+    Returns (elo_by_id, roles_by_id), both keyed by discord member id. For per_role_ranks
+    games, elo_by_id maps to {role: elo} per member instead of a single float.
     """
-    elo_by_id = await get_team_elos(game, joined)
+    if config.is_per_role_ranks(game):
+        elo_by_id = await get_team_role_elos(game, joined)
+    else:
+        elo_by_id = await get_team_elos(game, joined)
 
     ids = [m.id for m in joined]
     role_rows = await db.fetch_all(
@@ -129,9 +136,9 @@ async def get_game_shuffle_data(joined: list[discord.Member], game: str) -> tupl
 
     return elo_by_id, roles_by_id
 
-def balance_teams(game: str, 
-                  joined: list[discord.Member], 
-                  elo_by_id: dict[int, float], 
+def balance_teams(game: str,
+                  joined: list[discord.Member],
+                  elo_by_id: dict[int, float] | dict[int, dict[str, float]],
                   roles_by_id: dict[int, list[str]]
                   ) -> tuple[
                             list[discord.Member],
@@ -139,19 +146,32 @@ def balance_teams(game: str,
                             dict[int, str]
                             ]:
     """Split joined players into two balanced teams
-    
+
     Process each required role (in random order, so repeated shuffles vary) and greedily assign the needed number of players per team,
     preferring players who actually have that role, falling back to "Flex", then anyone left. Within roles, players are handed to teams
     with fewer members (tied broken by lower total rank), which matters because effective_rank can go negative when nobody has a rank set.
-    
+
     A small random "jitter" `RANK_JITTER` is added to each player's rank before comparing, so the lobby doesn't shuffle to the same result every time.
-    
+
+    `elo_by_id` is a single float per player for games without per-role ranks, or
+    {role: elo} per player for ones with -- see get_game_shuffle_data.
+
     Returns (team_a, team_b, assignments), where assignments maps member id ->  lane/role.
     """
     if not joined:
         return [], [], {}
 
-    requirements = list(ROLE_REQUIREMENTS[game].items())
+    per_role = config.is_per_role_ranks(game)
+    rankable = ROLE_REQUIREMENTS[game]
+
+    # Normalize to one shape for the rest of this function: every player maps to
+    # {role_or_sentinel: elo}. Games without per-role ranks have exactly one elo
+    # per player, filed under the sentinel key, so every access below can just be
+    # elo_by_id[m.id][key] regardless of which kind of game this is.
+    if not per_role:
+        elo_by_id = {mid: {_GAME_WIDE_ELO: value} for mid, value in elo_by_id.items()}
+
+    requirements = list(rankable.items())
     random.shuffle(requirements)
 
     slots_per_team= len(joined) // 2
@@ -162,11 +182,15 @@ def balance_teams(game: str,
             selected.append((role, count))
             used += count
 
-    avg_elo = sum(elo_by_id[m.id] for m in joined) / len(joined)
-    effective_elo = {
-        m.id: jittered_elo(elo_by_id[m.id], avg_elo)
-        for m in joined
-    }
+    # Jittered elo for one lookup key, cached so repeated requests for the same
+    # key -- every non-per-role lookup, or a role/leftover reusing an already-seen
+    # role -- reuse one random draw instead of redrawing jitter each time.
+    elo_cache: dict[str, dict[int, float]] = {}
+    def effective_elo_for(key: str) -> dict[int, float]:
+        if key not in elo_cache:
+            avg = sum(elo_by_id[m.id][key] for m in joined) / len(joined)
+            elo_cache[key] = {m.id: jittered_elo(elo_by_id[m.id][key], avg) for m in joined}
+        return elo_cache[key]
 
     remaining = list(joined)
     team_a, team_b = [], []
@@ -174,6 +198,11 @@ def balance_teams(game: str,
     assignments = {}
 
     for role, count in selected:
+        # Non-per-role games always look up the sentinel (one elo, reused for
+        # every bucket); per-role games look up that bucket's own role, since a
+        # player's candidacy for Tank shouldn't be decided by their Support elo.
+        effective_elo = effective_elo_for(role if per_role else _GAME_WIDE_ELO)
+
         needed_total = count * 2
         role_pool = [m for m in remaining if role in roles_by_id[m.id]]
         role_pool_ids = {m.id for m in role_pool}
@@ -190,7 +219,7 @@ def balance_teams(game: str,
             candidates += [m for m in remaining if m.id not in candidate_ids][:needed]
 
         candidates = sorted(candidates, key=lambda m: effective_elo[m.id], reverse=True)[:needed_total]
-        
+
         for m in candidates:
             if len(team_a) < len(team_b) or (len(team_a) == len(team_b) and team_a_total <= team_b_total):
                 team_a.append(m)
@@ -203,16 +232,35 @@ def balance_teams(game: str,
         chosen_ids = {m.id for m in candidates}
         remaining = [m for m in remaining if m.id not in chosen_ids]
 
-    remaining_sorted = sorted(remaining, key=lambda m: effective_elo[m.id], reverse=True)
+    # Only reachable if role_requirements doesn't fill every slot -- true for any
+    # non-full Overwatch lobby, since its roles only add up to exactly lobby_size/2.
+    def leftover_key(m: discord.Member) -> str:
+        """Elo lookup key for a leftover player. Non-per-role games always use the
+        sentinel. Flex isn't an assignable lane in a per-role-ranks game, so a
+        Flex-only queue resolves to whichever rankable role they have the best
+        elo in instead -- Tank/Damage/Support always have an elo entry, Flex
+        never does."""
+        if not per_role:
+            return _GAME_WIDE_ELO
+        preferred = roles_by_id[m.id][0]
+        if preferred in rankable:
+            return preferred
+        return max(rankable, key=lambda r: elo_by_id[m.id].get(r, 0.0))
+
+    remaining_sorted = sorted(remaining, key=lambda m: effective_elo_for(leftover_key(m))[m.id], reverse=True)
     for m in remaining_sorted:
+        key = leftover_key(m)
+        value = effective_elo_for(key)[m.id]
         if len(team_a) < len(team_b) or (len(team_a) == len(team_b) and team_a_total <= team_b_total):
             team_a.append(m)
-            team_a_total += effective_elo[m.id]
+            team_a_total += value
 
         else:
             team_b.append(m)
-            team_b_total += effective_elo[m.id]
-        assignments[m.id] = roles_by_id[m.id][0]
+            team_b_total += value
+        # key is the sentinel for non-per-role games, not a real role -- keep the
+        # existing first-preference label for those, same as always.
+        assignments[m.id] = key if per_role else roles_by_id[m.id][0]
 
     return team_a, team_b, assignments
 
@@ -340,9 +388,71 @@ async def get_team_elos(game: str, members: list[discord.Member]) -> dict[int, f
 
     return elo_by_id
 
-async def get_unranked(game: str, members: list[discord.Member]) -> list[discord.Member]:
-    """Members with no rank set for this game, so their elo is just the default seed."""
+async def get_team_role_elos(game: str, members: list[discord.Member]) -> dict[int, dict[str, float]]:
+    """Per-role analogue of get_team_elos, for games with per_role_ranks.
+
+    Returns {member_id: {role: elo}} covering every rankable role, seeding+persisting
+    any (member, role) pair that doesn't have an elo row yet from that player's
+    profile_role_ranks (falling back to their other set roles, or the game's default)."""
     ids = [m.id for m in members]
+    roles = config.rankable_roles(game)
+
+    elo_rows = await db.fetch_all(
+        "SELECT discordid, role, elo FROM profile_role_elo WHERE discordid = ANY(%s) AND game = %s;",
+        (ids, game),
+    )
+    elo_by_id: dict[int, dict[str, float]] = {}
+    for discordid, role, value in elo_rows:
+        elo_by_id.setdefault(discordid, {})[role] = float(value)
+
+    rank_rows = await db.fetch_all(
+        "SELECT discordid, role, rank_value FROM profile_role_ranks WHERE discordid = ANY(%s) AND game = %s;",
+        (ids, game),
+    )
+    rank_by_id: dict[int, dict[str, int]] = {}
+    for discordid, role, rank_value in rank_rows:
+        rank_by_id.setdefault(discordid, {})[role] = rank_value
+
+    seeded = []
+    for discordid in ids:
+        have = elo_by_id.setdefault(discordid, {})
+        ranks = rank_by_id.get(discordid, {})
+        for role in roles:
+            if role not in have:
+                own = ranks.get(role)
+                others = [v for r, v in ranks.items() if r != role]
+                value = elo.seed_role_elo(game, own, others)
+                have[role] = value
+                seeded.append((discordid, game, role, value))
+
+    if seeded:
+        await db.perform_many(
+            """
+            INSERT INTO profile_role_elo (discordid, game, role, elo)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (discordid, game, role) DO NOTHING
+            """,
+            seeded,
+        )
+
+    return elo_by_id
+
+async def get_unranked(game: str, members: list[discord.Member], role_assignments: dict[int, str] | None = None) -> list[discord.Member]:
+    """Members with no rank set for this game, so their elo is just the default seed.
+
+    For per_role_ranks games, checks the rank of each member's *assigned* role instead
+    of "any rank for the game" -- role_assignments should be balance_teams's output."""
+    ids = [m.id for m in members]
+
+    if config.is_per_role_ranks(game):
+        if not role_assignments:
+            return []
+        rows = await db.fetch_all(
+            "SELECT discordid, role FROM profile_role_ranks WHERE discordid = ANY(%s) AND game = %s AND rank_value IS NOT NULL;",
+            (ids, game),
+        )
+        ranked_pairs = {(discordid, role) for discordid, role in rows}
+        return [m for m in members if (m.id, role_assignments.get(m.id)) not in ranked_pairs]
 
     rows = await db.fetch_all(
         "SELECT discordid FROM profile_stats WHERE discordid = ANY(%s) AND game = %s AND rank_value IS NOT NULL;",
@@ -353,7 +463,26 @@ async def get_unranked(game: str, members: list[discord.Member]) -> list[discord
     return [m for m in members if m.id not in ranked]
 
 async def apply_elo_changes(session: 'MatchmakingSession', team_a_won: bool) -> None:
-    """Update profile_elo for every player in the match based on the declared winner."""
+    """Update profile_elo (or profile_role_elo, for per_role_ranks games) for every
+    player in the match based on the declared winner."""
+    if config.is_per_role_ranks(session.game):
+        team_a_role_elo = await get_team_role_elos(session.game, session.team_a)
+        team_b_role_elo = await get_team_role_elos(session.game, session.team_b)
+        team_a_elo = {m.id: team_a_role_elo[m.id][session.role_assignments[m.id]] for m in session.team_a}
+        team_b_elo = {m.id: team_b_role_elo[m.id][session.role_assignments[m.id]] for m in session.team_b}
+
+        deltas = elo.compute_elo_deltas(team_a_elo, team_b_elo, team_a_won)
+
+        await db.perform_many(
+            """
+            UPDATE profile_role_elo
+            SET elo = elo + %s, games_played = games_played + 1, updated_at = CURRENT_TIMESTAMP
+            WHERE discordid = %s AND game = %s AND role = %s;
+            """,
+            [(delta, discordid, session.game, session.role_assignments[discordid]) for discordid, delta in deltas.items()],
+        )
+        return
+
     team_a_elo = await get_team_elos(session.game, session.team_a)
     team_b_elo = await get_team_elos(session.game, session.team_b)
 
@@ -654,7 +783,7 @@ class AdminView(discord.ui.View):
         await interaction.response.edit_message(embed=generate_embed(self.session), view=self)
         await refresh_admin_panels(self.session)
 
-        unranked = await get_unranked(self.session.game, self.session.joined)
+        unranked = await get_unranked(self.session.game, self.session.joined, self.session.role_assignments)
         if unranked:
             names = ", ".join(m.display_name for m in unranked)
             await interaction.followup.send(

@@ -69,6 +69,19 @@ def format_rank_label(game: str, tier: str, division: int) -> str:
     """Format a tier+division as a human-readable string, e.g. "Gold 3" or "Challenger"."""
     return f"{tier} {division}" if tier_has_divisions(game, tier) else tier
 
+def validate_tier_division(game: str, tier: str | None, division: str) -> tuple[int, None] | tuple[None, str]:
+    """Validate a tier+division pair. Returns (division_int, None) on success, or
+    (None, error_message) to show the user on failure."""
+    if tier is None or tier not in get_tiers(game):
+        return None, "Invalid tier. Please select from dropdown."
+    try:
+        division_int = int(division)
+    except ValueError:
+        return None, "Invalid division. Please select from dropdown."
+    if division_int > get_divisions(game):
+        return None, "Invalid division. Please select from dropdown."
+    return division_int, None
+
 
 async def tier_autocomplete(ctx: discord.AutocompleteContext) -> list[discord.OptionChoice]:
     """Suggest valid tiers one the user has picked a game."""
@@ -133,6 +146,10 @@ async def fetch_profile_data(discordid: int) -> dict:
         "SELECT game, prime FROM profile_primary_mains WHERE discordid = %s;",
         (discordid,)
     )
+    role_rank_rows = await db.fetch_all(
+        "SELECT game, role, rank_label FROM profile_role_ranks WHERE discordid = %s;",
+        (discordid,)
+    )
 
     stats_by_game = {row[0]: row for row in stats_rows}
     roles_by_game = {}
@@ -142,6 +159,9 @@ async def fetch_profile_data(discordid: int) -> dict:
     for g, m in main_rows:
         mains_by_game.setdefault(g, []).append(m)
     primary_by_game = {g: p for g, p in primary_rows}
+    role_ranks_by_game = {}
+    for g, r, label in role_rank_rows:
+        role_ranks_by_game.setdefault(g, {})[r] = label
 
     return {
         "profile_row": profile_row,
@@ -149,6 +169,7 @@ async def fetch_profile_data(discordid: int) -> dict:
         "roles_by_game": roles_by_game,
         "mains_by_game": mains_by_game,
         "primary_by_game": primary_by_game,
+        "role_ranks_by_game": role_ranks_by_game,
         "total_wins": sum(row[2] for row in stats_rows),
         "total_losses": sum(row[3] for row in stats_rows),
     }
@@ -188,11 +209,20 @@ def build_game_embed(
                      mains: list[str], 
                      primary_main: str | None, 
                      tag: str, 
-                     page_number: int, 
+                     page_number: int,
                      total_pages: int,
-                     setup: bool) -> tuple[discord.Embed, "Path | None"]:
-    """Build one per-game profile page: rank, roles, mains, wins/losses, and a champion thumbnail if one exists."""
-    rank_label = row[1] if row else "Not set"
+                     setup: bool,
+                     role_ranks: dict[str, str] | None = None) -> tuple[discord.Embed, "Path | None"]:
+    """Build one per-game profile page: rank, roles, mains, wins/losses, and a champion thumbnail if one exists.
+
+    For per-role-ranks games, pass `role_ranks` (role -> rank_label) to render one
+    rank line per role instead of the single game-wide rank_label in `row`."""
+    if role_ranks is not None:
+        rank_label = "\n".join(
+            f"{r} — {role_ranks.get(r, 'Not set')}" for r in config.rankable_roles(game)
+        )
+    else:
+        rank_label = row[1] if row else "Not set"
     wins = row[2] if row else "N/A"
     losses = row[3] if row else "N/A"
     role_display = ", ".join(roles) if roles else "Not set"
@@ -234,7 +264,7 @@ class Profile(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    profile = discord.SlashCommandGroup("profile", "Profile tools")
+    profile = discord.SlashCommandGroup("profile", "Profile tools", guild_ids=[GUILD_ID])
     set_grp = profile.create_subgroup("set", "Set something on your profile")
 
     @discord.slash_command(
@@ -249,18 +279,11 @@ class Profile(commands.Cog):
             description="Everything you can do with /profile:",
             color=discord.Color.from_rgb(78, 42, 132),
         )
-        embed.add_field(name="/profile view [user] [game]", value="See your (or someone else's) profile: bio, rank, roles, mains, and win/loss record.", inline=False)
-        embed.add_field(name="/profile setup", value="Interactive paginated editor for your own profile — flip through pages with buttons that edit each field in place.", inline=False)
-        embed.add_field(name="/profile edit", value="Alias for `/profile setup`.", inline=False)
-        embed.add_field(name="/profile set bio <bio>", value="Set your profile bio.", inline=False)
-        embed.add_field(name="/profile set picture [url] [position]", value="Set your profile's main image or thumbnail via a direct image URL. Clears if left blank. Defaults to main image.", inline=False)
-        embed.add_field(name="/profile set rank <game> <tier> [division]", value="Set your rank for a game. Defaults to `1`.", inline=False)
-        embed.add_field(name="/profile set role <game>", value="Open a menu to pick your role(s) for a game.", inline=False)
-        embed.add_field(name="/profile set main <game>", value="Open a menu to set your mains for a game.", inline=False)
-        embed.add_field(name="/profile set primary <game> <primary>", value="Choose which of your mains shows as your profile thumbnail/splash art.", inline=False)
-        embed.add_field(name="/profile set tag [tag]", value="Set the emoji shown next to your name on your profile and in lobbies. Clears if left blank.", inline=False)
-        embed.add_field(name="/profile elo [user]", value="Show a player's elo per game. Defaults to caller. For game head use only.", inline=False)
-        embed.set_footer(text="🗝️ Key: /command <mandatory-arguments> [optional-arguments]")
+        embed.add_field(name="🔍 /profile view", value="See your (or someone else's) profile.", inline=True)
+        embed.add_field(name="📝 /profile edit", value="Edit your profile page-by-page.", inline=True)
+        embed.add_field(name="🖊️ /profile set", value="Set a specific part of your profile.", inline=True)
+        embed.add_field(name="🏆 /leaderboard", value="View the leaderboard of a game, based on elo", inline=True)
+        embed.set_footer(text="❓ Questions? Suggestions? #LMK @liilac__")
         await ctx.respond(embed=embed, ephemeral=True)
 
     @set_grp.command(
@@ -376,8 +399,9 @@ class Profile(commands.Cog):
         tier: discord.Option(
             str,
             name="tier",
-            description="Your rank tier",
+            description="Your rank tier (for per-role-ranks games, skips straight to picking which role it's for)",
             autocomplete=tier_autocomplete,
+            default=None,
         ),
         division: discord.Option(
             str,
@@ -387,26 +411,31 @@ class Profile(commands.Cog):
             default="1",
         )
     ) -> None:
-        """Set your rank for a game, storing both a numeric value (for balancing) and a string (for display)."""
+        """Set your rank for a game, storing both a numeric value (for balancing) and a string (for display).
+
+        Games with per-role ranks (Overwatch) always need a role picked via menu, since one
+        rank per game doesn't apply to them -- but if tier/division were already given here,
+        that menu only asks for the role instead of re-asking for tier/division too."""
         await ctx.defer(ephemeral=True)
 
-        if tier not in get_tiers(game):
-            await ctx.followup.send(
-                "Invalid tier. Please select from dropdown.", ephemeral=True
-            )
+        if config.is_per_role_ranks(game):
+            if tier is not None:
+                division_int, error = validate_tier_division(game, tier, division)
+                if error:
+                    await ctx.followup.send(error, ephemeral=True)
+                    return
+                label = format_rank_label(game, tier, division_int)
+                view = RoleRankSelectView(requester_id=ctx.author.id, game=game, tier=tier, division=division_int)
+                await ctx.followup.send(f"Pick which role that {label} is for:", view=view, ephemeral=True)
+                return
+
+            view = RoleRankSelectView(requester_id=ctx.author.id, game=game)
+            await ctx.followup.send("Pick a role to set your rank for:", view=view, ephemeral=True)
             return
 
-        try:
-            division_int = int(division)
-            if division_int > get_divisions(game):
-                await ctx.followup.send(
-                    "Invalid division. Please select from dropdown.", ephemeral=True
-                )
-                return
-        except ValueError:
-            await ctx.followup.send(
-                "Invalid division. Please select from dropdown.", ephemeral=True
-            )
+        division_int, error = validate_tier_division(game, tier, division)
+        if error:
+            await ctx.followup.send(error, ephemeral=True)
             return
 
         rank_value = compute_rank_value(game, tier, division_int)
@@ -619,11 +648,14 @@ class Profile(commands.Cog):
         roles_by_game = data["roles_by_game"]
         mains_by_game = data["mains_by_game"]
         primary_by_game = data["primary_by_game"]
+        role_ranks_by_game = data["role_ranks_by_game"]
         total_wins = data["total_wins"]
         total_losses = data["total_losses"]
 
         games_with_data = {
-            g for g in GAME_CHOICES if g in stats_by_game or roles_by_game.get(g) or mains_by_game.get(g) or g in primary_by_game
+            g for g in GAME_CHOICES
+            if g in stats_by_game or roles_by_game.get(g) or mains_by_game.get(g)
+            or g in primary_by_game or role_ranks_by_game.get(g)
         }
         if game is not None:
             games_with_data.add(game)
@@ -637,8 +669,9 @@ class Profile(commands.Cog):
             roles = roles_by_game.get(g, [])
             mains = mains_by_game.get(g, [])
             primary_main = effective_primary(mains, primary_by_game.get(g))
+            role_ranks = role_ranks_by_game.get(g, {}) if config.is_per_role_ranks(g) else None
             tag = profile_row[3] if profile_row and profile_row[3] else "💬"
-            pages.append(build_game_embed(target, g, row, roles, mains, primary_main, tag, i, total_pages, setup=False))
+            pages.append(build_game_embed(target, g, row, roles, mains, primary_main, tag, i, total_pages, setup=False, role_ranks=role_ranks))
 
         if game is not None:
             start_index = pages_games.index(game) +1
@@ -677,6 +710,10 @@ class Profile(commands.Cog):
             "SELECT game, elo, games_played FROM profile_elo WHERE discordid = %s;",
             (target.id,)
         )
+        role_rows = await db.fetch_all(
+            "SELECT game, role, elo, games_played FROM profile_role_elo WHERE discordid = %s;",
+            (target.id,)
+        )
 
         tag_row = await db.fetch_one(
             "SELECT tag FROM profiles WHERE discordid = %s;",
@@ -689,8 +726,18 @@ class Profile(commands.Cog):
             color=discord.Color.from_rgb(78, 42, 132),
         )
         elo_by_game = {game: (value, games_played) for game, value, games_played in rows}
+        role_elo_by_game = {}
+        for game, role, value, games_played in role_rows:
+            role_elo_by_game.setdefault(game, {})[role] = (value, games_played)
+
         for game in GAME_CHOICES:
-            if game in elo_by_game:
+            if config.is_per_role_ranks(game):
+                roles = role_elo_by_game.get(game, {})
+                for role in config.rankable_roles(game):
+                    if role in roles:
+                        value, games_played = roles[role]
+                        embed.add_field(name=f"{game.title()} — {role}", value=f"{value:.0f} elo ({games_played} games)", inline=True)
+            elif game in elo_by_game:
                 value, games_played = elo_by_game[game]
                 embed.add_field(name=game.title(), value=f"{value:.0f} elo ({games_played} games)", inline=True)
 
@@ -963,6 +1010,86 @@ class RankSelectView(discord.ui.View):
         await db.perform_one(sql, (self.requester_id, self.game, rank_value, rank_label))
         await self.on_done(interaction)
 
+class RoleRankSelectView(discord.ui.View):
+    """Role -> tier -> division cascade for one role's rank in a per-role-ranks game.
+
+    If `tier`/`division` are already known (the caller passed them straight into
+    /profile set rank), only the role step is shown and save happens immediately
+    on picking it -- no point re-asking for a tier the player already gave.
+
+    Saves exactly one role per submission, same as RankSelectView saves one rank per
+    submission; setting a second role means invoking this view again.
+    """
+    def __init__(self, requester_id: int, game: str, on_done=None, tier: str | None = None, division: int | None = None) -> None:
+        super().__init__(timeout=120)
+        self.requester_id = requester_id
+        self.game = game
+        self.on_done = on_done
+        self.role = None
+        self.tier = tier
+        self.division = division
+
+        options = [discord.SelectOption(label=r, value=r) for r in config.rankable_roles(game)]
+        self.select = discord.ui.Select(placeholder="Choose a role", options=options)
+        self.select.callback = self.on_role_select
+        self.add_item(self.select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.requester_id
+
+    async def on_role_select(self, interaction: discord.Interaction) -> None:
+        self.role = self.select.values[0]
+
+        if self.tier is not None:
+            await self.save(interaction, self.division)
+            return
+
+        self.clear_items()
+        options = [discord.SelectOption(label=t, value=t) for t in get_tiers(self.game)]
+        self.tier_select = discord.ui.Select(placeholder=f"Choose your {self.role} tier", options=options)
+        self.tier_select.callback = self.on_tier_select
+        self.add_item(self.tier_select)
+        await interaction.response.edit_message(content=f"Role: {self.role}. Now pick a tier:", view=self)
+
+    async def on_tier_select(self, interaction: discord.Interaction) -> None:
+        self.tier = self.tier_select.values[0]
+
+        if not tier_has_divisions(self.game, self.tier):
+            await self.save(interaction, division=1)
+            return
+
+        self.clear_items()
+        divisions = get_divisions(self.game)
+        options = [discord.SelectOption(label=str(d), value=str(d)) for d in range(1, divisions + 1)]
+        self.division_select = discord.ui.Select(placeholder="Choose your division", options=options)
+        self.division_select.callback = self.on_division_select
+        self.add_item(self.division_select)
+        await interaction.response.edit_message(content=f"{self.role} — {self.tier}. Now pick a division:", view=self)
+
+    async def on_division_select(self, interaction: discord.Interaction) -> None:
+        division = int(self.division_select.values[0])
+        await self.save(interaction, division)
+
+    async def save(self, interaction: discord.Interaction, division: int) -> None:
+        rank_value = compute_rank_value(self.game, self.tier, division)
+        rank_label = format_rank_label(self.game, self.tier, division)
+
+        sql = """
+            INSERT INTO profile_role_ranks (discordid, game, role, rank_value, rank_label, updated_at)
+            VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (discordid, game, role)
+            DO UPDATE SET
+                rank_value = EXCLUDED.rank_value,
+                rank_label = EXCLUDED.rank_label,
+                updated_at = CURRENT_TIMESTAMP;
+        """
+        await db.perform_one(sql, (self.requester_id, self.game, self.role, rank_value, rank_label))
+
+        if self.on_done:
+            await self.on_done(interaction)
+        else:
+            await interaction.response.edit_message(content=f"{self.role} rank updated to {rank_label}.", view=None)
+
 class PrimarySelectView(discord.ui.View):
     """Single-select dropdown for choosing a primary main from a player's own mains for one game."""
     def __init__(self, requester_id: int, game: str, mains: list[str], current_primary: str | None, on_done) -> None:
@@ -1151,7 +1278,8 @@ class ProfileSetupView(discord.ui.View):
         roles = data["roles_by_game"].get(game, [])
         mains = data["mains_by_game"].get(game, [])
         primary_main = effective_primary(mains, data["primary_by_game"].get(game))
-        return build_game_embed(self.target, game, row, roles, mains, primary_main, tag, self.index + 1, self.total_pages, setup=True)
+        role_ranks = data["role_ranks_by_game"].get(game, {}) if config.is_per_role_ranks(game) else None
+        return build_game_embed(self.target, game, row, roles, mains, primary_main, tag, self.index + 1, self.total_pages, setup=True, role_ranks=role_ranks)
 
     def build_buttons(self) -> None:
         """Clear and rebuild every button: nav buttons plus this page's field-edit buttons."""
@@ -1248,8 +1376,12 @@ class ProfileSetupView(discord.ui.View):
 
     async def on_edit_rank(self, interaction: discord.Interaction) -> None:
         game = GAME_CHOICES[self.index - 1]
-        view = RankSelectView(requester_id=self.requester_id, game=game, on_done=self.on_field_done)
-        await interaction.response.edit_message(content=f"Pick your {game.title()} tier:", embed=None, view=view, attachments=[])
+        if config.is_per_role_ranks(game):
+            view = RoleRankSelectView(requester_id=self.requester_id, game=game, on_done=self.on_field_done)
+            await interaction.response.edit_message(content=f"Pick a role to set your {game.title()} rank:", embed=None, view=view, attachments=[])
+        else:
+            view = RankSelectView(requester_id=self.requester_id, game=game, on_done=self.on_field_done)
+            await interaction.response.edit_message(content=f"Pick your {game.title()} tier:", embed=None, view=view, attachments=[])
 
     async def on_edit_roles(self, interaction: discord.Interaction) -> None:
         game = GAME_CHOICES[self.index - 1]
@@ -1268,7 +1400,7 @@ class ProfileSetupView(discord.ui.View):
         game = GAME_CHOICES[self.index - 1]
         data = await fetch_profile_data(self.target.id)
         mains = data["mains_by_game"].get(game, [])
-        current_primary = data["primary_by_game"].get(game)
+        current_primary = effective_primary(mains, data["primary_by_game"].get(game))
         view = PrimarySelectView(requester_id=self.requester_id, game=game, mains=mains, current_primary=current_primary, on_done=self.on_field_done)
         await interaction.response.edit_message(content="Pick your primary main:", embed=None, view=view, attachments=[])
 
