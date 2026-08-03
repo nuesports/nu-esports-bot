@@ -77,6 +77,25 @@ From the root directory of the repository, run the following command:
 docker-compose up
 ```
 
+This rebuilds the image (reinstalling dependencies) on every run, so it's the
+right default -- correct and simple -- but slow to iterate on since it reinstalls
+even for a one-line code change.
+
+#### Faster local iteration (optional)
+
+`compose.dev.yaml` layers an opt-in dev mode on top -- it doesn't change what
+`docker compose up --build` does above, it's only used if you explicitly ask for it:
+
+```bash
+docker compose -f compose.yaml -f compose.dev.yaml up --build   # first time, or after a dependency change
+docker compose restart bot                                       # after a plain code edit -- no rebuild
+```
+
+If you want this as your personal default so you don't have to type `-f -f` every
+time, set `COMPOSE_FILE` in your own local `.env` (gitignored, doesn't affect anyone
+else) -- `compose.yaml:compose.dev.yaml` on Linux/macOS, `compose.yaml;compose.dev.yaml`
+on Windows (Compose uses `;` there since `:` is already part of drive-letter paths).
+
 ### Running Locally
 
 Running the bot locally requires a few additional steps.

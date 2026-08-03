@@ -1,0 +1,16 @@
+# Opt-in fast dev loop. Layer this on top of compose.yaml, it's never auto-loaded:
+#   docker compose -f compose.yaml -f compose.dev.yaml up --build   (first time / after a dependency change)
+#   docker compose restart bot                                      (after a plain code edit -- no rebuild)
+#
+# Plain `docker compose up --build` (no -f flags) is completely unaffected by this file.
+services:
+  bot:
+    volumes:
+      # Live source, so a restart (not a rebuild) picks up code edits.
+      - .:/bot
+      # Anonymous volume "wins" over the bind mount above for this one path, so the
+      # container's own Linux .venv isn't shadowed by this machine's (Windows) one.
+      # Unlike a named volume, an anonymous one gets thrown away and repopulated
+      # fresh from the image whenever --build actually changes the image -- so a
+      # new dependency shows up correctly on the next rebuild, not silently stale.
+      - /bot/.venv
