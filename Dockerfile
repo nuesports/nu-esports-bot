@@ -1,5 +1,11 @@
 FROM ghcr.io/astral-sh/uv:python3.10-alpine
 WORKDIR /bot
+
+# Deps first, from just the lockfiles, so this layer is cached and skipped
+# unless pyproject.toml/uv.lock actually change (not on every code edit).
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-install-project
+
 COPY . /bot
 
 # Accept build arguments for config fetching
