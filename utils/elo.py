@@ -1,6 +1,6 @@
 from utils import config
 
-ELO_K = 60   # max elo swing for a single game, per player
+ELO_K = 120  # max elo swing for a single game, per player
 ELO_D = 1000 # how much a rating gap affects win probability (bigger = flatter)
 
 def decode_rank_value(game: str, rank_value: int | None) -> tuple[str, int | None] | None:
