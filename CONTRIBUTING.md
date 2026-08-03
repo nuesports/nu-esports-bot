@@ -22,11 +22,13 @@ Follow the steps in the README under [Getting Started](https://github.com/Golf0n
 
 After following the steps, you should have a local instance of the bot that you can test your changes with.
 
+This project uses [uv](https://docs.astral.sh/uv/) for dependency management. Run `uv sync` once to install everything, including dev tools. Then run `uv run pre-commit install` to set up the git hook that runs Ruff on commit — it's the easiest way to make sure your changes pass CI before you even push.
+
 ## Making Changes
 
 The Pycord documentation can be found [here](https://docs.pycord.dev/en/v2.6.1/).
 
-This project uses [Ruff](https://docs.astral.sh/ruff/) for formatting and linting. Install it and use it. Code that doesn't pass checks won't get merged!
+This project uses [Ruff](https://docs.astral.sh/ruff/) for formatting and linting. The pre-commit hook from setup runs it automatically; otherwise run `uv run pre-commit run --all-files` by hand. Code that doesn't pass checks won't get merged!
 
 After making changes, you'll need to rebuild the Docker image when running. When testing your changes, it may be helpful to run:
 
