@@ -694,9 +694,13 @@ class MapSelectView(discord.ui.View):
         self.session = session
 
         options = [discord.SelectOption(label=m, default=(m == session.map)) for m in MAPS[session.game]]
-        self.select = discord.ui.Select(placeholder="Pick a map.", options=options)
-        self.select.callback = self.on_select
-        self.add_item(self.select)
+        # a Select caps out at 25 options (Overwatch has 32 maps), so split across as many selects as needed
+        chunks = [options[i:i + 25] for i in range(0, len(options), 25)]
+        for i, chunk in enumerate(chunks):
+            placeholder = "Pick a map." if len(chunks) == 1 else f"Pick a map ({i + 1}/{len(chunks)})."
+            select = discord.ui.Select(placeholder=placeholder, options=chunk)
+            select.callback = self.on_select
+            self.add_item(select)
 
         back_button = discord.ui.Button(label="Back", style=discord.ButtonStyle.success)
         back_button.callback = self.back
@@ -704,7 +708,7 @@ class MapSelectView(discord.ui.View):
 
     async def on_select(self, interaction: discord.Interaction):
         """Set the session's map and refresh every open view of this lobby."""
-        self.session.map = self.select.values[0]
+        self.session.map = interaction.data["values"][0]
 
         await self.session.message.edit(embed=generate_embed(self.session), view=LobbyView(self.session))
         await interaction.response.edit_message(embed=generate_embed(self.session), view=AdminView(self.session))
