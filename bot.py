@@ -34,7 +34,8 @@ cogs_list = [
     "moderation",
     "presence",
     "profile",
-    "leaderboard"
+    "leaderboard",
+    "github_backlog"
 ]
 
 for cog in cogs_list:
