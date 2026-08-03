@@ -8,18 +8,25 @@ from utils import db
 GUILD_ID = config.secrets["discord"]["guild_id"]
 GAME_CHOICES = list(config.game_data.keys())
 PAGE_SIZE = 10
+PRIOR_GAMES = 10  # phantom average-record games blended into win rate so a few games can't swing rank
 
 def leaderboard_label(game: str, role: str | None) -> str:
     """Display label for a leaderboard: just the game, or "game role" for a per-role one."""
     return f"{game.title()} {role}" if role else game.title()
 
 async def fetch_leaderboard_rows(game: str, role: str | None = None) -> list[tuple]:
-    """Fetch every player's win/loss + tag for a game, ranked by elo (elo itself not selected).
+    """Fetch every player's win/loss + tag for a game, ranked by win rate (elo only breaks ties).
 
-    - `role` given: rank by that role's elo (profile_role_elo).
+    Win rate is Bayesian-smoothed with PRIOR_GAMES phantom average games, so a few games can't
+    swing rank the way a raw win% would -- see compute_win_rate.
+
+    - `role` given: that role's players (profile_role_elo).
     - `role` omitted on a per-role-ranks game: a "mixed" leaderboard -- each player's
-      single best role and its elo, ranked across all roles.
-    - `role` omitted otherwise: rank by the one game-wide elo (profile_elo).
+      single best role by elo, ranked by win rate across all roles.
+    - `role` omitted otherwise: the one game-wide pool (profile_elo).
+
+    Only players with at least one recorded match (a profile_stats row) show up -- an
+    elo-seeded player who's never actually played doesn't belong on a results scoreboard.
 
     Every row is (discordid, wins, losses, tag, role_or_none) -- the role slot is only
     ever populated for the mixed leaderboard, to show which role each entry is from.
@@ -27,14 +34,14 @@ async def fetch_leaderboard_rows(game: str, role: str | None = None) -> list[tup
     if role is not None:
         rows = await db.fetch_all(
             """
-            SELECT pre.discordid, COALESCE(ps.wins, 0) AS wins, COALESCE(ps.losses, 0) AS losses, p.tag
+            SELECT pre.discordid, ps.wins, ps.losses, p.tag
             FROM profile_role_elo pre
-            LEFT JOIN profile_stats ps ON ps.discordid = pre.discordid AND ps.game = pre.game
+            JOIN profile_stats ps ON ps.discordid = pre.discordid AND ps.game = pre.game
             LEFT JOIN profiles p ON p.discordid = pre.discordid
             WHERE pre.game = %s AND pre.role = %s
-            ORDER BY pre.elo DESC;
+            ORDER BY (ps.wins + %s * 0.5) / (ps.wins + ps.losses + %s) DESC, pre.elo DESC;
             """,
-            (game, role),
+            (game, role, PRIOR_GAMES, PRIOR_GAMES),
         )
         return [(discordid, wins, losses, tag, None) for discordid, wins, losses, tag in rows]
 
@@ -44,29 +51,29 @@ async def fetch_leaderboard_rows(game: str, role: str | None = None) -> list[tup
             SELECT discordid, role, wins, losses, tag FROM (
                 SELECT DISTINCT ON (pre.discordid)
                     pre.discordid, pre.role, pre.elo,
-                    COALESCE(ps.wins, 0) AS wins, COALESCE(ps.losses, 0) AS losses, p.tag
+                    ps.wins, ps.losses, p.tag
                 FROM profile_role_elo pre
-                LEFT JOIN profile_stats ps ON ps.discordid = pre.discordid AND ps.game = pre.game
+                JOIN profile_stats ps ON ps.discordid = pre.discordid AND ps.game = pre.game
                 LEFT JOIN profiles p ON p.discordid = pre.discordid
                 WHERE pre.game = %s
                 ORDER BY pre.discordid, pre.elo DESC
             ) best_role
-            ORDER BY elo DESC;
+            ORDER BY (wins + %s * 0.5) / (wins + losses + %s) DESC, elo DESC;
             """,
-            (game,),
+            (game, PRIOR_GAMES, PRIOR_GAMES),
         )
         return [(discordid, wins, losses, tag, entry_role) for discordid, entry_role, wins, losses, tag in rows]
 
     rows = await db.fetch_all(
         """
-        SELECT pe.discordid, COALESCE(ps.wins, 0) AS wins, COALESCE(ps.losses, 0) AS losses, p.tag
+        SELECT pe.discordid, ps.wins, ps.losses, p.tag
         FROM profile_elo pe
-        LEFT JOIN profile_stats ps ON ps.discordid = pe.discordid AND ps.game = pe.game
+        JOIN profile_stats ps ON ps.discordid = pe.discordid AND ps.game = pe.game
         LEFT JOIN profiles p ON p.discordid = pe.discordid
         WHERE pe.game = %s
-        ORDER BY pe.elo DESC;
+        ORDER BY (ps.wins + %s * 0.5) / (ps.wins + ps.losses + %s) DESC, pe.elo DESC;
         """,
-        (game,),
+        (game, PRIOR_GAMES, PRIOR_GAMES),
     )
     return [(discordid, wins, losses, tag, None) for discordid, wins, losses, tag in rows]
 
@@ -89,7 +96,7 @@ def format_entry(guild: discord.Guild, rank: int, discordid: int, wins: int, los
     return f"{rank}. {tag} *{name}* — **{wins}W** / **{losses}L**{icon}"
 
 def build_leaderboard_pages(guild: discord.Guild, game: str, rows: list[tuple], caller_id: int, role: str | None = None) -> list[discord.Embed] | None:
-    """Build one embed per page of 10 leaderboard entries, ordered by elo but never showing it.
+    """Build one embed per page of 10 leaderboard entries, ordered by win rate (see fetch_leaderboard_rows).
 
     Pass `role` for a per-role-ranks game's leaderboard, just to title the embed correctly.
 
