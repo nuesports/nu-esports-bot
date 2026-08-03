@@ -575,7 +575,8 @@ class Matchmaking(commands.Cog):
         view = LobbyView(session)
         embed = generate_embed(session)
         message = await ctx.followup.send(embed=embed, view=view)
-        session.message = message
+        # re-fetch as a normal message so later edits use the bot's token, not the interaction webhook, which expires after 15 min
+        session.message = await ctx.channel.fetch_message(message.id)
         if session.owner is None:
             session.owner = ctx.author 
 
@@ -708,34 +709,39 @@ class WinnerSelectView(discord.ui.View):
         
         await update_record(self.session, self.session.team_a, self.session.team_b)
         await apply_elo_changes(self.session, team_a_won=True)
-        await self.session.message.edit(
-            embed=generate_postgame_embed(self.session, self.session.team_names[0], self.session.team_a),
-            view=PostgameView(self.session),
-        )
+        await interaction.response.defer()
+        # result's already recorded above, so a failed edit here still needs surfacing, not swallowing
+        try:
+            await self.session.message.edit(
+                embed=generate_postgame_embed(self.session, self.session.team_names[0], self.session.team_a),
+                view=PostgameView(self.session),
+            )
+        except (discord.NotFound, discord.HTTPException):
+            await interaction.followup.send("Result recorded, but I couldn't update the lobby embed.", ephemeral=True)
 
         cog = interaction.client.get_cog("Matchmaking")
         cog.active_sessions.pop(self.session.key, None)
-
-        await interaction.response.defer()
         await interaction.delete_original_response()
-    
+
     async def team_b(self, interaction: discord.Interaction) -> None:
         """Declare team_b the winner: record wins/losses, post the postgame embed, end the session."""
         if not has_privilege(interaction):
             await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
             return
-        
+
         await update_record(self.session, self.session.team_b, self.session.team_a)
         await apply_elo_changes(self.session, team_a_won=False)
-        await self.session.message.edit(
-            embed=generate_postgame_embed(self.session, self.session.team_names[1], self.session.team_b),
-            view=PostgameView(self.session),
-        )
+        await interaction.response.defer()
+        try:
+            await self.session.message.edit(
+                embed=generate_postgame_embed(self.session, self.session.team_names[1], self.session.team_b),
+                view=PostgameView(self.session),
+            )
+        except (discord.NotFound, discord.HTTPException):
+            await interaction.followup.send("Result recorded, but I couldn't update the lobby embed.", ephemeral=True)
 
         cog = interaction.client.get_cog("Matchmaking")
         cog.active_sessions.pop(self.session.key, None)
-
-        await interaction.response.defer()
         await interaction.delete_original_response()
     
     async def back(self, interaction: discord.Interaction) -> None:
