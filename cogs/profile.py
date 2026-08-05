@@ -226,7 +226,7 @@ def build_game_embed(
     embed.add_field(name="Rank", value=rank_label, inline=True)
     if has_roles:
         embed.add_field(name="Role", value=role_display, inline=True)
-    embed.add_field(name="Mains", value=main_display, inline=True)
+    embed.add_field(name="Main" if len(mains) == 1 else "Mains", value=main_display, inline=True)
     if not has_roles:
         embed.add_field(name="​", value="​", inline=True)
     embed.add_field(name="Wins", value=f"{wins}", inline=True)
