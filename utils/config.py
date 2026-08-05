@@ -45,11 +45,19 @@ def load_matchmaking_data():
         data.setdefault("team_names", [])
         return data
 
+def load_fun_data():
+    fun_file = Path("data/fun.yaml")
+    if not fun_file.exists():
+        raise FileNotFoundError("data/fun.yaml not found in local directory")
+    with open(fun_file, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
 config = load_config()
 secrets = load_secrets()
 game_data = load_game_data()
 gameroom_data = load_gameroom_data()
 matchmaking_data = load_matchmaking_data()
+fun_data = load_fun_data()
 
 def is_per_role_ranks(game: str) -> bool:
     """Whether a game tracks rank (and elo) separately per role instead of once per game."""
