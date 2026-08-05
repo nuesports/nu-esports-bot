@@ -63,7 +63,9 @@ def main() -> None:
         for name in sorted(extra_in_yaml):
             print(f"  - {name}")
 
-    body = "\n".join(f"  {cid}: {name}" for name, cid in entries)
+    # yaml treats ": " inside an unquoted scalar as another mapping, so anything with
+    # a colon in the name (none today, but just in case) needs quoting to stay valid
+    body = "\n".join(f"  {cid}: '{name}'" if ":" in name else f"  {cid}: {name}" for name, cid in entries)
     new_block = HEADER + body + "\n"
 
     if "champion_ids:" in text:
