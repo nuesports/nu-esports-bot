@@ -204,15 +204,14 @@ def build_game_embed(
     For per-role-ranks games, pass `role_ranks` (role -> rank_label) to render one
     rank line per role instead of the single game-wide rank_label in `row`."""
     if role_ranks is not None:
-        rank_label = "\n".join(
-            f"{r} — {role_ranks.get(r, 'Not set')}" for r in config.rankable_roles(game)
-        )
+        set_roles = [(r, role_ranks[r]) for r in config.rankable_roles(game) if role_ranks.get(r)]
+        rank_label = "\n".join(f"{r} — {label}" for r, label in set_roles) if set_roles else "-"
     else:
-        rank_label = row[1] if row else "Not set"
+        rank_label = (row[1] if row else None) or "-"
     wins = row[2] if row else "N/A"
     losses = row[3] if row else "N/A"
-    role_display = ", ".join(roles) if roles else "Not set"
-    main_display = ", ".join(mains) if mains else "Not set"
+    role_display = ", ".join(roles) if roles else "-"
+    main_display = "\n".join(", ".join(mains[i:i + 3]) for i in range(0, len(mains), 3)) if mains else "-"
     if not setup:
             embed = discord.Embed(
                     title=f"{tag} {target.display_name} - {game.title()}",
@@ -227,7 +226,7 @@ def build_game_embed(
     embed.add_field(name="Rank", value=rank_label, inline=True)
     if has_roles:
         embed.add_field(name="Role", value=role_display, inline=True)
-    embed.add_field(name="Main", value=main_display, inline=True)
+    embed.add_field(name="Mains", value=main_display, inline=True)
     if not has_roles:
         embed.add_field(name="​", value="​", inline=True)
     embed.add_field(name="Wins", value=f"{wins}", inline=True)
