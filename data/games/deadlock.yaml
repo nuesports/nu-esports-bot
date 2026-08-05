@@ -1,4 +1,11 @@
 roles: []
+
+# Alternate spellings accepted for /profile set main, mapped to the canonical
+# characters entry -- e.g. Valve's official name is "The Doorman", but people
+# will keep typing "Doorman" out of habit.
+aliases:
+  Doorman: The Doorman
+
 tiers: [Initiate, Seeker, Acolyte, Sentinel, Mystic, Ritualist, Emissary, Oracle, Phantom, Ascendant, Eternus]
 divisions: 6
 no_division_tiers: [] # Tiers that aren't divisioned, like Challenger in League
@@ -37,7 +44,7 @@ characters: # Alphabetically
   - Billy
   - Calico
   - Celeste
-  - Doorman
+  - The Doorman
   - Drifter
   - Dynamo
   - Graves
@@ -69,3 +76,45 @@ characters: # Alphabetically
   - Warden
   - Wraith
   - Yamato
+
+hero_ids: # heroId -> name, for mapping /v1/players/hero-stats results. Regenerate with
+          # scripts/update_deadlock_heroes.py when a new hero is added to the
+          # characters list above.
+  6: Abrams
+  77: Apollo
+  15: Bebop
+  72: Billy
+  16: Calico
+  81: Celeste
+  64: Drifter
+  11: Dynamo
+  76: Graves
+  17: Grey Talon
+  13: Haze
+  14: Holliday
+  1: Infernus
+  20: Ivy
+  12: Kelvin
+  4: Lady Geist
+  31: Lash
+  8: McGinnis
+  63: Mina
+  52: Mirage
+  18: Mo & Krill
+  67: Paige
+  10: Paradox
+  50: Pocket
+  79: Rem
+  2: Seven
+  19: Shiv
+  80: Silver
+  60: Sinclair
+  69: The Doorman
+  65: Venator
+  66: Victor
+  3: Vindicta
+  35: Viscous
+  58: Vyper
+  25: Warden
+  7: Wraith
+  27: Yamato
