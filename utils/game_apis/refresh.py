@@ -42,3 +42,27 @@ async def _fetch_with_lock(discordid: int, game: str, account_row: tuple, force:
             print(f"[game_apis] refresh failed for {discordid}/{game}: {e}")
         finally:
             _fetch_locks.pop((discordid, game), None)
+
+async def refresh_stale_ranks(discordid: int) -> None:
+    """Called by `/profile view` before rendering. Refreshes all stale links,
+    and swallows api errors (falls back to whatever's already on file)"""
+
+    accounts = await db.fetch_all(
+        f"SELECT {ACCOUNT_COLUMNS} FROM game_accounts WHERE discordid = %s;",
+        (discordid,),
+    )
+
+    for row in accounts:
+        game = row[0]
+        if not game in CLIENTS or not await _is_stale(discordid, game):
+            continue
+        await _fetch_with_lock(discordid, game, row, force=False)
+
+async def force_refresh(discordid: int, game: str) -> None:
+    """Fetch regardless of staleness; called after linking"""
+    row = await db.fetch_all(
+        f"SELECT {ACCOUNT_COLUMNS} FROM game_accounts WHERE discordid = %s AND game = %s;",
+        (discordid, game),
+    )
+    if row and game in CLIENTS:
+        await _fetch_with_lock(discordid, game, row, force=True)
