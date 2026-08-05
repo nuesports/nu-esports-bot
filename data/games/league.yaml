@@ -208,9 +208,9 @@ characters: # Alphabetically
   - Zoe
   - Zyra
 
-champion_ids: # championId -> name, for mapping champion-mastery-v4 results. Regenerate from
-              # Data Dragon (ddragon.leagueoflegends.com/cdn/<version>/data/en_US/champion.json)
-              # when a new champion is added to the characters list above.
+champion_ids: # championId -> name, for mapping champion-mastery-v4 results. Regenerate with
+              # scripts/update_champion_ids.py when a new champion is added to the
+              # characters list above.
   266: Aatrox
   103: Ahri
   84: Akali
