@@ -57,5 +57,29 @@ class LeagueClient:
         )
 
     async def fetch_and_store(self, discordid: int, account_row: tuple) -> None:
-        ...
-    
+        summoner_id = account_row[5]
+        headers = {"X-Riot-Token": _get_riot_api_key()}
+
+        entries_url = f"https://{PLATFORM_ROUTING}.api.riotgames.com/lol/league/v4/entries/by-summoner/{summoner_id}"
+        entries = await fetch_json_with_retries(entries_url, headers=headers)
+
+        solo_entry = next((e for e in entries if e.get("queueType") == RANKED_SOLO_QUEUE), None)
+        if solo_entry is None:
+            return # <-- unranked
+        
+        tier = solo_entry["tier"].title()
+        division = ROMAN_TO_DIVISION.get(solo_entry.get("rank"), 1)
+        rank_value = compute_rank_value("league", tier, division)
+        rank_label = format_rank_label("league", tier, division)
+
+        await db.perform_one(
+            """
+            INSERT INTO profile_stats (discordid, game, rank_value, rank_label, updated_at)
+            VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (discordid, game) DO UPDATE SET
+                rank_value = EXCLUDED.rank_value,
+                rank_label = EXCLUDED.rank_label,
+                updated_at = CURRENT_TIMESTAMP;
+            """,
+            (discordid, "league", rank_value, rank_label),
+        )
