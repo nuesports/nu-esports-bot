@@ -1394,6 +1394,11 @@ class ProfileSetupView(discord.ui.View):
         self.add_item(pic_btn)
 
     def add_game_buttons(self, game: str) -> None:
+        if game in game_apis.CLIENTS:
+            account_btn = discord.ui.Button(label="Account", style=discord.ButtonStyle.success)
+            account_btn.callback = self.on_edit_account
+            self.add_item(account_btn)
+
         rank_btn = discord.ui.Button(label="Rank", style=discord.ButtonStyle.primary)
         rank_btn.callback = self.on_edit_rank
         self.add_item(rank_btn)
@@ -1412,11 +1417,6 @@ class ProfileSetupView(discord.ui.View):
         primary_btn = discord.ui.Button(label="Primary", style=discord.ButtonStyle.primary, disabled=mains_count <= 1)
         primary_btn.callback = self.on_edit_primary
         self.add_item(primary_btn)
-
-        if game in game_apis.CLIENTS:
-            account_btn = discord.ui.Button(label="Account", style=discord.ButtonStyle.primary)
-            account_btn.callback = self.on_edit_account
-            self.add_item(account_btn)
 
     async def on_back(self, interaction: discord.Interaction) -> None:
         self.index -= 1
