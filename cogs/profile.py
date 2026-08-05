@@ -1303,13 +1303,19 @@ class AccountModal(discord.ui.Modal):
         if client is None:
             await interaction.response.send_message(f"{self.game.title()} doesn't support account linking yet.", ephemeral=True)
             return
+
+        # linking + the initial refresh can take several sequential API calls (Valorant's
+        # mains-seeding alone can be 4+), well past Discord's 3s response window; defer
+        # before doing any of that, so on_done -> refresh_page has time to finish
+        await interaction.response.defer()
+
         try:
             result = await client.link(identifier)
         except game_apis.LinkError as e:
-            await interaction.response.send_message(f"Couldn't link account: {e}", ephemeral=True)
+            await interaction.followup.send(f"Couldn't link account: {e}", ephemeral=True)
             return
         except Exception:
-            await interaction.response.send_message("Something went wrong reaching the game's API. Try again soon", ephemeral=True)
+            await interaction.followup.send("Something went wrong reaching the game's API. Try again soon", ephemeral=True)
             return
 
         await db.perform_one(
@@ -1470,7 +1476,12 @@ class ProfileSetupView(discord.ui.View):
         embed, image_path = await self.build_embed()
         self.build_buttons()
         file = image_attachment(image_path)
-        await interaction.response.edit_message(content=None, embed=embed, view=self, file=file, attachments=[])
+        if interaction.response.is_done():
+            # already deferred (e.g. AccountModal, which can run long before getting here) --
+            # edit_message would raise InteractionResponded, this is the deferred equivalent
+            await interaction.edit_original_response(content=None, embed=embed, view=self, file=file, attachments=[])
+        else:
+            await interaction.response.edit_message(content=None, embed=embed, view=self, file=file, attachments=[])
 
     async def on_edit_tag(self, interaction: discord.Interaction) -> None:
         data = await fetch_profile_data(self.target.id)
