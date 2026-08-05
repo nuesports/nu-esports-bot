@@ -39,15 +39,20 @@ async def _fetch_with_lock(discordid: int, game: str, account_row: tuple, force:
     if not client:
         return
     lock = _fetch_locks.setdefault((discordid, game), asyncio.Lock())
-    async with lock:
-        try:
-            if not force and not await _is_stale(discordid, game):
-                return # someone else refreshed
-            await client.fetch_and_store(discordid, account_row)
-        except Exception as e:
-            print(f"[game_apis] refresh failed for {discordid}/{game}: {e}")
-        finally:
-            _fetch_locks.pop((discordid, game), None)
+    # popping must happen after the lock is actually released (outside `async with`),
+    # not while still held -- popping first lets a concurrent caller's setdefault()
+    # create a fresh, already-unlocked Lock and run fetch_and_store in parallel with
+    # this one, defeating the dedup this lock exists for
+    try:
+        async with lock:
+            try:
+                if not force and not await _is_stale(discordid, game):
+                    return # someone else refreshed
+                await client.fetch_and_store(discordid, account_row)
+            except Exception as e:
+                print(f"[game_apis] refresh failed for {discordid}/{game}: {e}")
+    finally:
+        _fetch_locks.pop((discordid, game), None)
 
 async def refresh_stale_ranks(discordid: int) -> None:
     """Called by `/profile view` before rendering. Refreshes all stale links,
