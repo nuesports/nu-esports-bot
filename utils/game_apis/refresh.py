@@ -27,3 +27,18 @@ async def _is_stale(discordid: int, game:str) -> bool:
         )
     last_updated = row[0] if row else None
     return last_updated is None or (datetime.now(timezone.utc) - last_updated) > RANK_STALE_AFTER
+
+async def _fetch_with_lock(discordid: int, game: str, account_row: tuple, force: bool) -> None:
+    client = CLIENTS.get(game)
+    if not client:
+        return
+    lock = _fetch_locks.setdefault((discordid, game), asyncio.Lock())
+    async with lock:
+        try:
+            if not force and not await _is_stale(discordid, game):
+                return # someone else refreshed
+            await client.fetch_and_store(discordid, account_row)
+        except Exception as e:
+            print(f"[game_apis] refresh failed for {discordid}/{game}: {e}")
+        finally:
+            _fetch_locks.pop((discordid, game), None)
