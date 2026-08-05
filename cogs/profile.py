@@ -17,6 +17,15 @@ GUILD_ID = config.secrets["discord"]["guild_id"]
 GAME_CHOICES = list(config.game_data.keys())
 CUSTOM_EMOJI_RE = re.compile(r"^<a?:\w+:(?P<id>\d+)>$")
 
+def account_placeholder() -> str:
+    """One random example identifier per format (Riot ID / BattleTag / Steam), for the
+    Account modal's placeholder -- freshly rolled each time the modal opens."""
+    riot = random.choice(config.fun_data["riot-ids"])
+    battletag = random.choice(config.fun_data["battle-tags"])
+    steam = random.choice(config.fun_data["steam-ids"])
+    return f"e.g. {riot} / {battletag} / {steam}"
+
+
 def get_roles(game: str) -> list[str]:
     """Return the selectable roles for a game (includes "Flex")."""
     return config.game_data[game]["roles"]
@@ -1287,7 +1296,7 @@ class AccountModal(discord.ui.Modal):
         self.add_item(
             discord.ui.InputText(
                 label="Riot ID / BattleTag / Steam ID",
-                placeholder="e.g. Name#Tag",
+                placeholder=account_placeholder(),
                 value=current_identifier or "",
                 required=False,
             )

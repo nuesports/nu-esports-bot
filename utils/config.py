@@ -46,11 +46,19 @@ def load_matchmaking_data():
         data.setdefault("team_names", [])
         return data
 
+def load_fun_data():
+    fun_file = Path("data/fun.yaml")
+    if not fun_file.exists():
+        raise FileNotFoundError("data/fun.yaml not found in local directory")
+    with open(fun_file, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
 config = load_config()
 secrets = load_secrets()
 game_data = load_game_data()
 gameroom_data = load_gameroom_data()
 matchmaking_data = load_matchmaking_data()
+fun_data = load_fun_data()
 
 def _role_ids(value) -> set[int]:
     """Normalize a roles config value (int, list, or None) to a set of role IDs."""
