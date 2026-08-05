@@ -165,6 +165,23 @@ async def fetch_profile_data(discordid: int) -> dict:
         "external_id_by_game": external_id_by_game,
     }
 
+async def link_account(discordid: int, game: str, result: "game_apis.LinkResult") -> None:
+    """Upserts a linked game account and immediately force-refreshes it, so the player
+    doesn't have to wait out the staleness TTL to see a rank right after linking.
+    Shared by /profile set account and the setup-flow AccountModal so the two never drift."""
+    await db.perform_one(
+        """
+        INSERT INTO game_accounts (discordid, game, external_id, display_name, region, provider_account_id, provider_secondary_id, linked_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+        ON CONFLICT (discordid, game) DO UPDATE SET
+            external_id = EXCLUDED.external_id, display_name = EXCLUDED.display_name, region = EXCLUDED.region,
+            provider_account_id = EXCLUDED.provider_account_id, provider_secondary_id = EXCLUDED.provider_secondary_id,
+            linked_at = CURRENT_TIMESTAMP;
+        """,
+        (discordid, game, result.external_id, result.display_name, result.region, result.provider_account_id, result.provider_secondary_id),
+    )
+    await game_apis.force_refresh(discordid, game)
+
 async def reset_game_profile(discordid: int, game: str) -> None:
     """Wipes everything a player customizes for one game -- rank, roles, mains,
     primary main, linked account -- but leaves elo and win/loss record alone.
@@ -430,21 +447,7 @@ class Profile(commands.Cog):
             await ctx.followup.send("Something went wrong reaching the game's API. Try again soon", ephemeral=True)
             return
 
-        await db.perform_one(
-            """
-            INSERT INTO game_accounts (discordid, game, external_id, display_name, region, provider_account_id, provider_secondary_id, linked_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-            ON CONFLICT (discordid, game) DO UPDATE SET
-            external_id = EXCLUDED.external_id,
-            display_name = EXCLUDED.display_name,
-            region = EXCLUDED.region,
-            provider_account_id = EXCLUDED.provider_account_id,
-            provider_secondary_id = EXCLUDED.provider_secondary_id,
-            linked_at = CURRENT_TIMESTAMP;
-            """, 
-            (ctx.author.id, game, result.external_id, result.display_name, result.region, result.provider_account_id, result.provider_secondary_id)
-            )
-        await game_apis.force_refresh(ctx.author.id, game)
+        await link_account(ctx.author.id, game, result)
 
         embed = discord.Embed(title="Account Linked", description=f"{game.title()}: **{result.display_name}**", color=discord.Color.from_rgb(78, 42, 132))
         await ctx.followup.send(embed=embed, ephemeral=True)
@@ -1347,18 +1350,7 @@ class AccountModal(discord.ui.Modal):
             await interaction.followup.send("Something went wrong reaching the game's API. Try again soon", ephemeral=True)
             return
 
-        await db.perform_one(
-            """
-            INSERT INTO game_accounts (discordid, game, external_id, display_name, region, provider_account_id, provider_secondary_id, linked_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-            ON CONFLICT (discordid, game) DO UPDATE SET
-                external_id = EXCLUDED.external_id, display_name = EXCLUDED.display_name, region = EXCLUDED.region,
-                provider_account_id = EXCLUDED.provider_account_id, provider_secondary_id = EXCLUDED.provider_secondary_id,
-                linked_at = CURRENT_TIMESTAMP;
-            """,
-            (self.requester_id, self.game, result.external_id, result.display_name, result.region, result.provider_account_id, result.provider_secondary_id),
-        )
-        await game_apis.force_refresh(self.requester_id, self.game)
+        await link_account(self.requester_id, self.game, result)
         await self.on_done(interaction)
 
 class ResetConfirmView(discord.ui.View):
