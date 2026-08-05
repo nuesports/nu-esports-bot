@@ -111,3 +111,8 @@ def rankable_roles(game: str) -> list[str]:
 def role_icon(game: str, role: str) -> str:
     """Emoji for a role, shown next to a player's name on a mixed per-role leaderboard entry."""
     return game_data[game].get("role_icons", {}).get(role, "")
+
+def main_aliases(game: str) -> dict[str, str]:
+    """Alternate spellings accepted for /profile set main (e.g. old names after a rename),
+    mapped to the canonical entry in this game's characters list."""
+    return game_data[game].get("aliases", {})

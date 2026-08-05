@@ -940,7 +940,8 @@ class MainsModal(discord.ui.Modal):
         raw = self.children[0].value or ""
         candidates = [c.strip() for c in raw.split(",") if c.strip()]
 
-        lookup = {m.lower(): m for m in get_mains(self.game)}
+        lookup = {alias.lower(): canonical for alias, canonical in config.main_aliases(self.game).items()}
+        lookup.update({m.lower(): m for m in get_mains(self.game)})
         resolved, invalid = [], []
         for c in candidates:
             match = lookup.get(c.lower())
