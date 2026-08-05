@@ -8,6 +8,7 @@ from pathlib import Path
 
 from utils import config
 from utils import db
+from utils import game_apis
 from utils.images import get_character_image, image_attachment
 from utils.ranks import get_tiers, get_divisions, tier_has_divisions, compute_rank_value, format_rank_label, validate_tier_division
 
@@ -346,6 +347,58 @@ class Profile(commands.Cog):
         except discord.HTTPException:
             await ctx.followup.send("Picture saved, but but Discord couldn't render that image — double check the link works in a browser.", ephemeral=True)
 
+    @set_grp.command(
+            name = "account",
+            guild_ids = [GUILD_ID]
+    )
+    async def account(
+        self, 
+        ctx: discord.ApplicationContext, 
+        game: discord.Option(
+            str, 
+            choices=GAME_CHOICES
+          ),
+        identifier: discord.Option(
+            str,
+            description="Riot ID/BattleTag/Steam ID or vanity"
+        )
+    ) -> None:
+        """Sets your account for a game"""
+        await ctx.defer(ephemeral=True)
+
+        client = game_apis.CLIENTS.get(game)
+
+        if client is None:
+            await ctx.followup.send(f"{game.title()} doesn't support account linking yet.", ephemeral=True)
+            return
+        try:
+            result = await client.link(identifier)
+        except game_apis.LinkError as e:
+            await ctx.followup.send(f"Couldn't link account: {e}", ephemeral=True)
+            return
+        except Exception:
+            await ctx.followup.send("Something went wrong reaching the game's API. Try again soon", ephemeral=True)
+            return
+
+        await db.perform_one(
+            """
+            INSERT INTO game_accounts (discordid, game, external_id, display_name, region, provider_account_id, provider_secondary_id, linked_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (discordid, game) DO UPDATE SET
+            external_id = EXCLUDED.external_id,
+            display_name = EXCLUDED.display_name,
+            region = EXCLUDED.region,
+            provider_account_id = EXCLUDED.provider_account_id,
+            provider_secondary_id = EXCLUDED.provider_secondary_id,
+            linked_at = CURRENT_TIMESTAMP;
+            """, 
+            (ctx.author.id, game, result.external_id, result.display_name, result.region, result.provider_account_id, result.provider_secondary_id)
+            )
+        await game_apis.force_refresh(ctx.author.id, game)
+
+        embed = discord.Embed(title="Account Linked", description=f"{game.title()}: **{result.display_name}**", color=discord.Color.from_rgb(78, 42, 132))
+        await ctx.followup.send(embed=embed, ephemeral=True)
+        
     @set_grp.command(
             name = "rank",
             guild_ids = [GUILD_ID]
