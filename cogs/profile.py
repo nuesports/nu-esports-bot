@@ -144,6 +144,21 @@ async def fetch_profile_data(discordid: int) -> dict:
         "account_by_game": account_by_game,
     }
 
+async def reset_game_profile(discordid: int, game: str) -> None:
+    """Wipes everything a player customizes for one game -- rank, roles, mains,
+    primary main, linked account -- but leaves elo and win/loss record alone.
+    Those are the club's matchmaking history, not something a casual reset should erase."""
+    await db.perform_one(
+        "UPDATE profile_stats SET rank_value = NULL, rank_label = NULL, updated_at = CURRENT_TIMESTAMP "
+        "WHERE discordid = %s AND game = %s;",
+        (discordid, game),
+    )
+    await db.perform_one("DELETE FROM profile_role_ranks WHERE discordid = %s AND game = %s;", (discordid, game))
+    await db.perform_one("DELETE FROM profile_roles WHERE discordid = %s AND game = %s;", (discordid, game))
+    await db.perform_one("DELETE FROM profile_primary_mains WHERE discordid = %s AND game = %s;", (discordid, game))
+    await db.perform_one("DELETE FROM profile_mains WHERE discordid = %s AND game = %s;", (discordid, game))
+    await db.perform_one("DELETE FROM game_accounts WHERE discordid = %s AND game = %s;", (discordid, game))
+
 def build_home_embed(target: discord.Member, profile_row: tuple | None, total_pages: int, total_wins: int, total_losses: int, setup: bool) -> discord.Embed:
     """Build the first page of a profile: bio, win/loss record, and member-since date."""
     bio = profile_row[0] if profile_row and profile_row[0] else "No bio set."
@@ -1315,6 +1330,26 @@ class AccountModal(discord.ui.Modal):
         await game_apis.force_refresh(self.requester_id, self.game)
         await self.on_done(interaction)
 
+class ResetConfirmView(discord.ui.View):
+    """Confirm/cancel guard in front of the destructive per-game reset button."""
+    def __init__(self, requester_id: int, game: str, on_done) -> None:
+        super().__init__(timeout=60)
+        self.requester_id = requester_id
+        self.game = game
+        self.on_done = on_done
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.requester_id
+
+    @discord.ui.button(label="Reset", style=discord.ButtonStyle.danger)
+    async def confirm(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+        await reset_game_profile(self.requester_id, self.game)
+        await self.on_done(interaction)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+        await self.on_done(interaction)
+
 class ProfileSetupView(discord.ui.View):
     """Paginated profile editor: left/right buttons, plus edit buttons for whatever page is currently shown.
 
@@ -1418,6 +1453,10 @@ class ProfileSetupView(discord.ui.View):
         primary_btn.callback = self.on_edit_primary
         self.add_item(primary_btn)
 
+        reset_btn = discord.ui.Button(label="Reset", style=discord.ButtonStyle.danger)
+        reset_btn.callback = self.on_edit_reset
+        self.add_item(reset_btn)
+
     async def on_back(self, interaction: discord.Interaction) -> None:
         self.index -= 1
         await self.refresh_page(interaction)
@@ -1492,6 +1531,15 @@ class ProfileSetupView(discord.ui.View):
         data = await fetch_profile_data(self.target.id)
         current_identifier = data["account_by_game"].get(game)
         await interaction.response.send_modal(AccountModal(self.requester_id, game, current_identifier, self.on_field_done))
+
+    async def on_edit_reset(self, interaction: discord.Interaction) -> None:
+        game = GAME_CHOICES[self.index - 1]
+        view = ResetConfirmView(requester_id=self.requester_id, game=game, on_done=self.on_field_done)
+        await interaction.response.edit_message(
+            content=f"Reset your entire {game.title()} profile? This clears rank, roles, mains, and your linked "
+            "account -- but not your win/loss record or elo. Can't be undone.",
+            embed=None, view=view, attachments=[],
+        )
 
     async def on_field_done(self, interaction: discord.Interaction) -> None:
         """Called by field modals after a successful save; refresh this same page in place."""
