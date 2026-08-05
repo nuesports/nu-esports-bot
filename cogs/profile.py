@@ -114,6 +114,10 @@ async def fetch_profile_data(discordid: int) -> dict:
         "SELECT game, role, rank_label FROM profile_role_ranks WHERE discordid = %s;",
         (discordid,)
     )
+    account_rows = await db.fetch_all(
+        "SELECT game, display_name FROM game_accounts WHERE discordid = %s;",
+        (discordid,)
+    )
 
     stats_by_game = {row[0]: row for row in stats_rows}
     roles_by_game = {}
@@ -126,6 +130,7 @@ async def fetch_profile_data(discordid: int) -> dict:
     role_ranks_by_game = {}
     for g, r, label in role_rank_rows:
         role_ranks_by_game.setdefault(g, {})[r] = label
+    account_by_game = {g: name for g, name in account_rows}
 
     return {
         "profile_row": profile_row,
@@ -136,6 +141,7 @@ async def fetch_profile_data(discordid: int) -> dict:
         "role_ranks_by_game": role_ranks_by_game,
         "total_wins": sum(row[2] for row in stats_rows),
         "total_losses": sum(row[3] for row in stats_rows),
+        "account_by_game": account_by_game,
     }
 
 def build_home_embed(target: discord.Member, profile_row: tuple | None, total_pages: int, total_wins: int, total_losses: int, setup: bool) -> discord.Embed:
@@ -176,7 +182,8 @@ def build_game_embed(
                      page_number: int,
                      total_pages: int,
                      setup: bool,
-                     role_ranks: dict[str, str] | None = None) -> tuple[discord.Embed, "Path | None"]:
+                     role_ranks: dict[str, str] | None = None,
+                     account_name: str | None = None) -> tuple[discord.Embed, "Path | None"]:
     """Build one per-game profile page: rank, roles, mains, wins/losses, and a champion thumbnail if one exists.
 
     For per-role-ranks games, pass `role_ranks` (role -> rank_label) to render one
@@ -210,6 +217,8 @@ def build_game_embed(
         embed.add_field(name="​", value="​", inline=True)
     embed.add_field(name="Wins", value=f"{wins}", inline=True)
     embed.add_field(name="Losses", value=f"{losses}", inline=True)
+    if account_name:
+        embed.add_field(name="Account", value=account_name, inline=True)
 
     image_path = None
     if primary_main:
@@ -671,7 +680,7 @@ class Profile(commands.Cog):
         games_with_data = {
             g for g in GAME_CHOICES
             if g in stats_by_game or roles_by_game.get(g) or mains_by_game.get(g)
-            or g in primary_by_game or role_ranks_by_game.get(g)
+            or g in primary_by_game or role_ranks_by_game.get(g) or g in data["account_by_game"]
         }
         if game is not None:
             games_with_data.add(game)
@@ -687,7 +696,7 @@ class Profile(commands.Cog):
             primary_main = effective_primary(mains, primary_by_game.get(g))
             role_ranks = role_ranks_by_game.get(g, {}) if config.is_per_role_ranks(g) else None
             tag = profile_row[3] if profile_row and profile_row[3] else "💬"
-            pages.append(build_game_embed(target, g, row, roles, mains, primary_main, tag, i, total_pages, setup=False, role_ranks=role_ranks))
+            pages.append(build_game_embed(target, g, row, roles, mains, primary_main, tag, i, total_pages, setup=False, role_ranks=role_ranks, account_name=data["account_by_game"].get(g)))
 
         if game is not None:
             start_index = pages_games.index(game) +1
@@ -1253,6 +1262,55 @@ class PictureModal(discord.ui.Modal):
         await db.perform_one(sql, (self.requester_id, url))
         await self.on_done(interaction)
 
+class AccountModal(discord.ui.Modal):
+    """Single-field modal for linking an external game account, via /profile setup."""
+    def __init__(self, requester_id: int, game: str, current_identifier: str | None, on_done) -> None:
+        super().__init__(title=f"Link your {game.title()} account")
+        self.requester_id = requester_id
+        self.game = game
+        self.on_done = on_done
+        self.add_item(
+            discord.ui.InputText(
+                label="Riot ID / BattleTag / Steam ID",
+                placeholder="e.g. Name#Tag",
+                value=current_identifier or "",
+                required=False,
+            )
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        identifier = (self.children[0].value or "").strip()
+        if not identifier:
+            await interaction.response.send_message("Nothing entered, account unchanged.", ephemeral=True)
+            return
+
+        client = game_apis.CLIENTS.get(self.game)
+        if client is None:
+            await interaction.response.send_message(f"{self.game.title()} doesn't support account linking yet.", ephemeral=True)
+            return
+        try:
+            result = await client.link(identifier)
+        except game_apis.LinkError as e:
+            await interaction.response.send_message(f"Couldn't link account: {e}", ephemeral=True)
+            return
+        except Exception:
+            await interaction.response.send_message("Something went wrong reaching the game's API. Try again soon", ephemeral=True)
+            return
+
+        await db.perform_one(
+            """
+            INSERT INTO game_accounts (discordid, game, external_id, display_name, region, provider_account_id, provider_secondary_id, linked_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (discordid, game) DO UPDATE SET
+                external_id = EXCLUDED.external_id, display_name = EXCLUDED.display_name, region = EXCLUDED.region,
+                provider_account_id = EXCLUDED.provider_account_id, provider_secondary_id = EXCLUDED.provider_secondary_id,
+                linked_at = CURRENT_TIMESTAMP;
+            """,
+            (self.requester_id, self.game, result.external_id, result.display_name, result.region, result.provider_account_id, result.provider_secondary_id),
+        )
+        await game_apis.force_refresh(self.requester_id, self.game)
+        await self.on_done(interaction)
+
 class ProfileSetupView(discord.ui.View):
     """Paginated profile editor: left/right buttons, plus edit buttons for whatever page is currently shown.
 
@@ -1295,7 +1353,7 @@ class ProfileSetupView(discord.ui.View):
         mains = data["mains_by_game"].get(game, [])
         primary_main = effective_primary(mains, data["primary_by_game"].get(game))
         role_ranks = data["role_ranks_by_game"].get(game, {}) if config.is_per_role_ranks(game) else None
-        return build_game_embed(self.target, game, row, roles, mains, primary_main, tag, self.index + 1, self.total_pages, setup=True, role_ranks=role_ranks)
+        return build_game_embed(self.target, game, row, roles, mains, primary_main, tag, self.index + 1, self.total_pages, setup=True, role_ranks=role_ranks, account_name=data["account_by_game"].get(game))
 
     def build_buttons(self) -> None:
         """Clear and rebuild every button: nav buttons plus this page's field-edit buttons."""
@@ -1350,6 +1408,11 @@ class ProfileSetupView(discord.ui.View):
         primary_btn = discord.ui.Button(label="Primary", style=discord.ButtonStyle.primary, disabled=mains_count <= 1)
         primary_btn.callback = self.on_edit_primary
         self.add_item(primary_btn)
+
+        if game in game_apis.CLIENTS:
+            account_btn = discord.ui.Button(label="Account", style=discord.ButtonStyle.primary)
+            account_btn.callback = self.on_edit_account
+            self.add_item(account_btn)
 
     async def on_back(self, interaction: discord.Interaction) -> None:
         self.index -= 1
@@ -1419,6 +1482,12 @@ class ProfileSetupView(discord.ui.View):
         current_primary = effective_primary(mains, data["primary_by_game"].get(game))
         view = PrimarySelectView(requester_id=self.requester_id, game=game, mains=mains, current_primary=current_primary, on_done=self.on_field_done)
         await interaction.response.edit_message(content="Pick your primary main:", embed=None, view=view, attachments=[])
+
+    async def on_edit_account(self, interaction: discord.Interaction) -> None:
+        game = GAME_CHOICES[self.index - 1]
+        data = await fetch_profile_data(self.target.id)
+        current_identifier = data["account_by_game"].get(game)
+        await interaction.response.send_modal(AccountModal(self.requester_id, game, current_identifier, self.on_field_done))
 
     async def on_field_done(self, interaction: discord.Interaction) -> None:
         """Called by field modals after a successful save; refresh this same page in place."""

@@ -20,6 +20,33 @@ def _get_riot_api_key() -> str:
 class LeagueClient:
     game = "league"
 
+    async def _maybe_seed_mains(self, discordid: int, puuid: str, headers: dict) -> None:
+        """Seed mains via top 3 mastery, but only when mains is empty (aka the first time)"""
+        existing = await db.fetch_one(
+            "SELECT 1 from profile_mains WHERE discordid = %s and game = 'league' LIMIT 1;",
+            (discordid, ),
+        )
+        if existing:
+            return
+
+        mastery_url = (
+            f"https://{PLATFORM_ROUTING}.api.riotgames.com/lol/champion-mastery/v4/"
+            f"champion-masteries/by-puuid/{puuid}/top?count=3"
+        )
+        top_champs = await fetch_json_with_retries(mastery_url, headers=headers)
+        if not top_champs:
+            return
+
+        champion_names = config.game_data["league"]["champion_ids"]
+        mains = [champion_names[c["championId"]] for c in top_champs if c["championId"] in champion_names]
+        if not mains:
+            return
+
+        await db.perform_many(
+            "INSERT INTO profile_mains (discordid, game, main) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING;",
+            [(discordid, "league", m) for m in mains]
+        )
+
     async def link(self, raw_identifier: str) -> LinkResult:
         if "#" not in raw_identifier:
             raise LinkError("Riot ID must be in the form Name#Tag")
@@ -58,22 +85,22 @@ class LeagueClient:
         entries = await fetch_json_with_retries(entries_url, headers=headers)
 
         solo_entry = next((e for e in entries if e.get("queueType") == RANKED_SOLO_QUEUE), None)
-        if solo_entry is None:
-            return # <-- unranked
-        
-        tier = solo_entry["tier"].title()
-        division = ROMAN_TO_DIVISION.get(solo_entry.get("rank"), 1)
-        rank_value = compute_rank_value("league", tier, division)
-        rank_label = format_rank_label("league", tier, division)
+        if solo_entry is not None:
+            tier = solo_entry["tier"].title()
+            division = ROMAN_TO_DIVISION.get(solo_entry.get("rank"), 1)
+            rank_value = compute_rank_value("league", tier, division)
+            rank_label = format_rank_label("league", tier, division)
 
-        await db.perform_one(
-            """
-            INSERT INTO profile_stats (discordid, game, rank_value, rank_label, updated_at)
-            VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
-            ON CONFLICT (discordid, game) DO UPDATE SET
-                rank_value = EXCLUDED.rank_value,
-                rank_label = EXCLUDED.rank_label,
-                updated_at = CURRENT_TIMESTAMP;
-            """,
-            (discordid, "league", rank_value, rank_label),
-        )
+            await db.perform_one(
+                """
+                INSERT INTO profile_stats (discordid, game, rank_value, rank_label, updated_at)
+                VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (discordid, game) DO UPDATE SET
+                    rank_value = EXCLUDED.rank_value,
+                    rank_label = EXCLUDED.rank_label,
+                    updated_at = CURRENT_TIMESTAMP;
+                """,
+                (discordid, "league", rank_value, rank_label),
+            )
+
+        await self._maybe_seed_mains(discordid, puuid, headers)
