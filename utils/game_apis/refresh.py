@@ -5,6 +5,7 @@ from utils import config, db
 from .league import LeagueClient
 from .overwatch import OverwatchClient
 from .deadlock import DeadlockClient
+from .valorant import ValorantClient
 
 RANK_STALE_AFTER = timedelta(minutes=45)
 
@@ -12,6 +13,7 @@ CLIENTS = {
     "league": LeagueClient(),
     "overwatch": OverwatchClient(),
     "deadlock": DeadlockClient(),
+    "valorant": ValorantClient(),
 }
 
 _fetch_locks: dict[tuple[int, str], asyncio.Lock] = {}
