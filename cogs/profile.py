@@ -163,17 +163,21 @@ async def fetch_profile_data(discordid: int) -> dict:
 async def reset_game_profile(discordid: int, game: str) -> None:
     """Wipes everything a player customizes for one game -- rank, roles, mains,
     primary main, linked account -- but leaves elo and win/loss record alone.
-    Those are the club's matchmaking history, not something a casual reset should erase."""
-    await db.perform_one(
-        "UPDATE profile_stats SET rank_value = NULL, rank_label = NULL, updated_at = CURRENT_TIMESTAMP "
-        "WHERE discordid = %s AND game = %s;",
-        (discordid, game),
-    )
-    await db.perform_one("DELETE FROM profile_role_ranks WHERE discordid = %s AND game = %s;", (discordid, game))
-    await db.perform_one("DELETE FROM profile_roles WHERE discordid = %s AND game = %s;", (discordid, game))
-    await db.perform_one("DELETE FROM profile_primary_mains WHERE discordid = %s AND game = %s;", (discordid, game))
-    await db.perform_one("DELETE FROM profile_mains WHERE discordid = %s AND game = %s;", (discordid, game))
-    await db.perform_one("DELETE FROM game_accounts WHERE discordid = %s AND game = %s;", (discordid, game))
+    Those are the club's matchmaking history, not something a casual reset should erase.
+
+    Runs on one shared cursor so it's a single transaction -- db.perform_one commits
+    per call, which would let a mid-sequence failure leave a half-wiped profile."""
+    async with db.cursor() as cur:
+        await cur.execute(
+            "UPDATE profile_stats SET rank_value = NULL, rank_label = NULL, updated_at = CURRENT_TIMESTAMP "
+            "WHERE discordid = %s AND game = %s;",
+            (discordid, game),
+        )
+        await cur.execute("DELETE FROM profile_role_ranks WHERE discordid = %s AND game = %s;", (discordid, game))
+        await cur.execute("DELETE FROM profile_roles WHERE discordid = %s AND game = %s;", (discordid, game))
+        await cur.execute("DELETE FROM profile_primary_mains WHERE discordid = %s AND game = %s;", (discordid, game))
+        await cur.execute("DELETE FROM profile_mains WHERE discordid = %s AND game = %s;", (discordid, game))
+        await cur.execute("DELETE FROM game_accounts WHERE discordid = %s AND game = %s;", (discordid, game))
 
 def build_home_embed(target: discord.Member, profile_row: tuple | None, total_pages: int, total_wins: int, total_losses: int, setup: bool) -> discord.Embed:
     """Build the first page of a profile: bio, win/loss record, and member-since date."""
