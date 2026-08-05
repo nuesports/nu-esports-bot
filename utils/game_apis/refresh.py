@@ -22,7 +22,7 @@ async def _is_stale(discordid: int, game:str) -> bool:
         )
     else:
         row = await db.fetch_one(
-            "SELECT update_at FROM profile_rstats WHERE discordid = %s AND game = %s;",
+            "SELECT updated_at FROM profile_stats WHERE discordid = %s AND game = %s;",
             (discordid, game)
         )
     last_updated = row[0] if row else None
@@ -54,13 +54,13 @@ async def refresh_stale_ranks(discordid: int) -> None:
 
     for row in accounts:
         game = row[0]
-        if not game in CLIENTS or not await _is_stale(discordid, game):
+        if game not in CLIENTS or not await _is_stale(discordid, game):
             continue
         await _fetch_with_lock(discordid, game, row, force=False)
 
 async def force_refresh(discordid: int, game: str) -> None:
     """Fetch regardless of staleness; called after linking"""
-    row = await db.fetch_all(
+    row = await db.fetch_one(
         f"SELECT {ACCOUNT_COLUMNS} FROM game_accounts WHERE discordid = %s AND game = %s;",
         (discordid, game),
     )
