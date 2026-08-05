@@ -131,7 +131,7 @@ async def fetch_profile_data(discordid: int) -> dict:
         (discordid,)
     )
     account_rows = await db.fetch_all(
-        "SELECT game, display_name FROM game_accounts WHERE discordid = %s;",
+        "SELECT game, display_name, external_id FROM game_accounts WHERE discordid = %s;",
         (discordid,)
     )
 
@@ -146,7 +146,11 @@ async def fetch_profile_data(discordid: int) -> dict:
     role_ranks_by_game = {}
     for g, r, label in role_rank_rows:
         role_ranks_by_game.setdefault(g, {})[r] = label
-    account_by_game = {g: name for g, name in account_rows}
+    account_by_game = {g: name for g, name, _ in account_rows}
+    # display_name can be markdown (e.g. Deadlock's "[persona](profileurl)" link) -- fine
+    # for showing on the embed, but not for pre-filling a text input to re-edit, so keep
+    # the plain external_id around separately for that
+    external_id_by_game = {g: external_id for g, _, external_id in account_rows}
 
     return {
         "profile_row": profile_row,
@@ -158,6 +162,7 @@ async def fetch_profile_data(discordid: int) -> dict:
         "total_wins": sum(row[2] for row in stats_rows),
         "total_losses": sum(row[3] for row in stats_rows),
         "account_by_game": account_by_game,
+        "external_id_by_game": external_id_by_game,
     }
 
 async def reset_game_profile(discordid: int, game: str) -> None:
@@ -1560,7 +1565,7 @@ class ProfileSetupView(discord.ui.View):
     async def on_edit_account(self, interaction: discord.Interaction) -> None:
         game = GAME_CHOICES[self.index - 1]
         data = await fetch_profile_data(self.target.id)
-        current_identifier = data["account_by_game"].get(game)
+        current_identifier = data["external_id_by_game"].get(game)
         await interaction.response.send_modal(AccountModal(self.requester_id, game, current_identifier, self.on_field_done))
 
     async def on_edit_reset(self, interaction: discord.Interaction) -> None:
