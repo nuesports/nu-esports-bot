@@ -29,10 +29,10 @@ class LeagueClient:
 
         headers = {"X-Riot-Token": _get_riot_api_key()}
 
-        account_url = {
-            f"https://{REGIONAL_ROUTING}.api.riotgames.com/riot/accounts/v1/accounts/"
+        account_url = (
+            f"https://{REGIONAL_ROUTING}.api.riotgames.com/riot/account/v1/accounts/"
             f"by-riot-id/{game_name}/{tag_line}"
-        }
+        )
         try:
             account = await fetch_json_with_retries(account_url, headers=headers)
         except aiohttp.ClientResponseError as e:
@@ -41,7 +41,7 @@ class LeagueClient:
             raise LinkError("Riot API's having troubles right now, try again soon")
 
         puuid = account["puuid"]
-        resolved_id = f"{account.get('game_name', game_name)}#{account.get('tag_line', tag_line)}"
+        resolved_id = f"{account.get('gameName', game_name)}#{account.get('tagLine', tag_line)}"
 
         summoner_url = f"https://{PLATFORM_ROUTING}.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/{puuid}"
         try:
