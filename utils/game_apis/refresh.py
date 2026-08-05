@@ -51,18 +51,25 @@ async def _fetch_with_lock(discordid: int, game: str, account_row: tuple, force:
 
 async def refresh_stale_ranks(discordid: int) -> None:
     """Called by `/profile view` before rendering. Refreshes all stale links,
-    and swallows api errors (falls back to whatever's already on file)"""
+    and swallows api errors (falls back to whatever's already on file)
+
+    Staleness checks stay sequential (cheap local DB reads), but the actual
+    per-game fetches run concurrently -- otherwise a single slow/down upstream
+    API serializes and stalls every other linked game behind it too."""
 
     accounts = await db.fetch_all(
         f"SELECT {ACCOUNT_COLUMNS} FROM game_accounts WHERE discordid = %s;",
         (discordid,),
     )
 
+    to_refresh = []
     for row in accounts:
         game = row[0]
-        if game not in CLIENTS or not await _is_stale(discordid, game):
-            continue
-        await _fetch_with_lock(discordid, game, row, force=False)
+        if game in CLIENTS and await _is_stale(discordid, game):
+            to_refresh.append((game, row))
+
+    if to_refresh:
+        await asyncio.gather(*(_fetch_with_lock(discordid, game, row, force=False) for game, row in to_refresh))
 
 async def force_refresh(discordid: int, game: str) -> None:
     """Fetch regardless of staleness; called after linking"""
