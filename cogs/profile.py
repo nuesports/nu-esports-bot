@@ -377,6 +377,8 @@ class Profile(commands.Cog):
             await ctx.followup.send(f"Couldn't link account: {e}", ephemeral=True)
             return
         except Exception:
+            import traceback
+            traceback.print_exc()
             await ctx.followup.send("Something went wrong reaching the game's API. Try again soon", ephemeral=True)
             return
 
@@ -398,7 +400,7 @@ class Profile(commands.Cog):
 
         embed = discord.Embed(title="Account Linked", description=f"{game.title()}: **{result.display_name}**", color=discord.Color.from_rgb(78, 42, 132))
         await ctx.followup.send(embed=embed, ephemeral=True)
-        
+
     @set_grp.command(
             name = "rank",
             guild_ids = [GUILD_ID]
@@ -657,6 +659,8 @@ class Profile(commands.Cog):
         await ctx.defer()
 
         target = user or ctx.author
+
+        await game_apis.refresh_stale_ranks(target.id)
 
         data = await fetch_profile_data(target.id)
         profile_row = data["profile_row"]

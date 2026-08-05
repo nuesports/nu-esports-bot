@@ -43,24 +43,18 @@ class LeagueClient:
         puuid = account["puuid"]
         resolved_id = f"{account.get('gameName', game_name)}#{account.get('tagLine', tag_line)}"
 
-        summoner_url = f"https://{PLATFORM_ROUTING}.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/{puuid}"
-        try:
-            summoner = await fetch_json_with_retries(summoner_url, headers=headers)
-        except aiohttp.ClientResponseError:
-            raise LinkError("Found your Riot account, but couldn't load your summoner data. Try again in a bit")
-
         return LinkResult(
             external_id = resolved_id,
             display_name = resolved_id,
             provider_account_id = puuid,
-            provider_secondary_id=summoner["id"]
+            provider_secondary_id=None
         )
 
     async def fetch_and_store(self, discordid: int, account_row: tuple) -> None:
-        summoner_id = account_row[5]
+        puuid = account_row[4]
         headers = {"X-Riot-Token": _get_riot_api_key()}
 
-        entries_url = f"https://{PLATFORM_ROUTING}.api.riotgames.com/lol/league/v4/entries/by-summoner/{summoner_id}"
+        entries_url = f"https://{PLATFORM_ROUTING}.api.riotgames.com/lol/league/v4/entries/by-puuid/{puuid}"
         entries = await fetch_json_with_retries(entries_url, headers=headers)
 
         solo_entry = next((e for e in entries if e.get("queueType") == RANKED_SOLO_QUEUE), None)
