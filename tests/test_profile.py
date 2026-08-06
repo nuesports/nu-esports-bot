@@ -9,6 +9,8 @@ def game_data(monkeypatch):
             "tiers": ["Bronze", "Silver", "Gold"],
             "divisions": 3,
             "no_division_tiers": ["Gold"],
+            "roles": ["Tank", "Support", "Flex"],
+            "characters": ["Agent1", "Agent2"],
         }
     }
     monkeypatch.setattr(profile.config, "game_data", fake)
@@ -29,6 +31,32 @@ def test_compute_rank_value_flat_tier_ignores_division(game_data):
 def test_format_rank_label(game_data):
     assert profile.format_rank_label(game_data, "Silver", 2) == "Silver 2"
     assert profile.format_rank_label(game_data, "Gold", 1) == "Gold"
+
+
+# --- thin config.game_data passthroughs ---
+
+def test_get_tiers(game_data):
+    assert profile.get_tiers(game_data) == ["Bronze", "Silver", "Gold"]
+
+
+def test_get_divisions(game_data):
+    assert profile.get_divisions(game_data) == 3
+
+
+def test_get_roles(game_data):
+    assert profile.get_roles(game_data) == ["Tank", "Support", "Flex"]
+
+
+def test_get_mains(game_data):
+    assert profile.get_mains(game_data) == ["Agent1", "Agent2"]
+
+
+def test_tier_has_divisions_true_for_divided_tier(game_data):
+    assert profile.tier_has_divisions(game_data, "Bronze") is True
+
+
+def test_tier_has_divisions_false_for_flat_tier(game_data):
+    assert profile.tier_has_divisions(game_data, "Gold") is False
 
 
 # --- validate_tier_division ---
