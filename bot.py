@@ -35,7 +35,8 @@ cogs_list = [
     "presence",
     "profile",
     "leaderboard",
-    "github_backlog"
+    "github_backlog",
+    "sushi"
 ]
 
 for cog in cogs_list:
