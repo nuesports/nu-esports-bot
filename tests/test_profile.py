@@ -100,3 +100,41 @@ def test_is_game_head_true_for_matching_role_case_insensitive():
 def test_is_game_head_false_otherwise():
     member = FakeMember(roles=[FakeRole("Member")])
     assert profile.is_game_head(member) is False
+
+
+# --- normalize_tag ---
+
+class FakeBot:
+    def __init__(self, known_emoji_ids=None):
+        self._known = set(known_emoji_ids or [])
+
+    def get_emoji(self, id):
+        return object() if id in self._known else None
+
+
+def test_normalize_tag_accepts_real_unicode_emoji():
+    assert profile.normalize_tag("🍣", FakeBot()) == "🍣"
+
+
+def test_normalize_tag_converts_known_shortcode():
+    assert profile.normalize_tag(":sushi:", FakeBot()) == "🍣"
+
+
+def test_normalize_tag_accepts_known_custom_discord_emoji():
+    bot = FakeBot(known_emoji_ids=[123456789012345678])
+    value = "<:testemoji:123456789012345678>"
+    assert profile.normalize_tag(value, bot) == value
+
+
+def test_normalize_tag_rejects_unknown_custom_discord_emoji():
+    bot = FakeBot(known_emoji_ids=[])
+    assert profile.normalize_tag("<:testemoji:123456789012345678>", bot) is None
+
+
+def test_normalize_tag_rejects_plain_text():
+    assert profile.normalize_tag("not an emoji", FakeBot()) is None
+
+
+def test_normalize_tag_rejects_empty_value():
+    assert profile.normalize_tag("", FakeBot()) is None
+    assert profile.normalize_tag(None, FakeBot()) is None
