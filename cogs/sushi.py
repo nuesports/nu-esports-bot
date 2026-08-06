@@ -7,47 +7,58 @@ GUILD_ID = config.secrets["discord"]["guild_id"]
 
 
 class Sushi(commands.Cog):
-    """AYCE sushi counter -- in-memory, resets on restart, that's fine for this."""
+    """AYCE sushi leaderboard, per channel -- in-memory, resets on restart, that's fine for this."""
     def __init__(self, bot):
         self.bot = bot
-        self.count = 0
+        self.boards: dict[int, dict[int, int]] = {}  # channel_id -> {user_id: count}
+        self.board_messages: dict[int, discord.Message] = {}  # channel_id -> the live leaderboard message
 
-    def build_embed(self) -> discord.Embed:
-        return discord.Embed(
-            title="Sushi!",
-            description=f"🍣 count: {self.count}",
-            color=discord.Color.from_rgb(78, 42, 132),
-        )
+    def build_embed(self, channel_id: int) -> discord.Embed:
+        board = self.boards.get(channel_id, {})
+        ranked = sorted(board.items(), key=lambda item: item[1], reverse=True)
+        description = "\n".join(
+            f"{i}. <@{user_id}> — {count}" for i, (user_id, count) in enumerate(ranked, start=1)
+        ) if ranked else "nobody's eaten any sushi yet"
+        return discord.Embed(title="🍣 Sushi Leaderboard", description=description, color=discord.Color.from_rgb(78, 42, 132))
 
-    @discord.slash_command(name="sushi", description="Show the sushi counter", guild_ids=[GUILD_ID])
+    async def repost_board(self, channel: discord.abc.Messageable) -> None:
+        """Deletes the channel's current leaderboard message (if any) and sends a fresh
+        one -- keeps it pinned to the bottom of the channel instead of getting buried."""
+        old_message = self.board_messages.get(channel.id)
+        if old_message:
+            try:
+                await old_message.delete()
+            except discord.NotFound:
+                pass
+        message = await channel.send(embed=self.build_embed(channel.id), view=SushiView(self))
+        self.board_messages[channel.id] = message
+
+    @discord.slash_command(name="sushi", description="Show the sushi leaderboard", guild_ids=[GUILD_ID])
     async def sushi(self, ctx: discord.ApplicationContext) -> None:
-        await ctx.respond(embed=self.build_embed(), view=SushiView(self))
-
-    @discord.slash_command(name="sushi-add", description="Add to the sushi counter", guild_ids=[GUILD_ID])
-    async def sushi_add(
-        self,
-        ctx: discord.ApplicationContext,
-        amount: discord.Option(int, description="How many to add (default 1)", default=1),
-    ) -> None:
-        self.count = max(0, self.count + amount)
-        await ctx.respond(embed=self.build_embed(), view=SushiView(self))
+        await ctx.defer(ephemeral=True)
+        await self.repost_board(ctx.channel)
+        await ctx.followup.send("🍣", ephemeral=True)
 
 
 class SushiView(discord.ui.View):
-    """Add/Remove buttons for the sushi counter. No timeout."""
+    """Add/Remove buttons for the sushi leaderboard. No timeout -- AYCE dinners run long."""
     def __init__(self, cog: Sushi) -> None:
         super().__init__(timeout=None)
         self.cog = cog
 
-    @discord.ui.button(label="Add", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="Add", style=discord.ButtonStyle.success, emoji="🍣")
     async def add(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
-        self.cog.count += 1
-        await interaction.response.edit_message(embed=self.cog.build_embed())
+        await interaction.response.defer()
+        board = self.cog.boards.setdefault(interaction.channel_id, {})
+        board[interaction.user.id] = board.get(interaction.user.id, 0) + 1
+        await self.cog.repost_board(interaction.channel)
 
     @discord.ui.button(label="Remove", style=discord.ButtonStyle.danger)
     async def remove(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
-        self.cog.count = max(0, self.cog.count - 1)
-        await interaction.response.edit_message(embed=self.cog.build_embed())
+        await interaction.response.defer()
+        board = self.cog.boards.setdefault(interaction.channel_id, {})
+        board[interaction.user.id] = max(0, board.get(interaction.user.id, 0) - 1)
+        await self.cog.repost_board(interaction.channel)
 
 
 def setup(bot):
