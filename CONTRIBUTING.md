@@ -36,7 +36,9 @@ After making changes, you'll need to rebuild the Docker image when running. When
 docker compose up --build
 ```
 
-There is no formal testing framework as of writing this guide. However, make sure your code works locally! We don't want Miku to crash.
+This project uses [pytest](https://docs.pytest.org/) for testing pure logic (things like elo math and team-balancing, that don't need a live Discord gateway or database connection). Run `uv run pytest` before pushing — CI runs the same suite on every push/PR to `main`, alongside Ruff, and a failing test blocks merge just like a failing lint check.
+
+There isn't coverage for everything — most command handlers and anything requiring a live gateway/database connection still isn't covered. Make sure your code works locally regardless! We don't want Miku to crash.
 
 ## Submitting a Patch
 
