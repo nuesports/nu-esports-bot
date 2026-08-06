@@ -93,3 +93,41 @@ def test_swap_slots_unknown_id_returns_false_and_does_nothing():
     assert matchmaking.swap_slots(session, 1, 999) is False
     assert session.team_a == [a]
     assert session.role_assignments == {1: "Tank"}
+
+
+# --- has_privilege ---
+
+class FakeGuildPermissions:
+    def __init__(self, administrator=False):
+        self.administrator = administrator
+
+
+class FakeRole:
+    def __init__(self, name):
+        self.name = name
+
+
+class FakeUser:
+    def __init__(self, roles=None, administrator=False):
+        self.roles = roles or []
+        self.guild_permissions = FakeGuildPermissions(administrator)
+
+
+class FakeInteraction:
+    def __init__(self, user):
+        self.user = user
+
+
+def test_has_privilege_true_for_admin():
+    interaction = FakeInteraction(FakeUser(administrator=True))
+    assert matchmaking.has_privilege(interaction) is True
+
+
+def test_has_privilege_true_for_game_head_role():
+    interaction = FakeInteraction(FakeUser(roles=[FakeRole("Valorant Game Head")]))
+    assert matchmaking.has_privilege(interaction) is True
+
+
+def test_has_privilege_false_otherwise():
+    interaction = FakeInteraction(FakeUser(roles=[FakeRole("Member")]))
+    assert matchmaking.has_privilege(interaction) is False
