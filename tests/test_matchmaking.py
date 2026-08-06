@@ -54,3 +54,42 @@ def test_balance_teams_assigns_every_player_exactly_once(balance_setup):
     assert all_ids == {1, 2, 3, 4, 5, 6}
     assert len(team_a) == len(team_b) == 3
     assert set(assignments.keys()) == all_ids
+
+
+def test_swap_slots_different_teams_swaps_team_and_lane():
+    session = matchmaking.MatchmakingSession("fakegame")
+    a, b = FakeMember(1), FakeMember(2)
+    session.team_a = [a]
+    session.team_b = [b]
+    session.role_assignments = {1: "Tank", 2: "Support"}
+
+    assert matchmaking.swap_slots(session, 1, 2) is True
+    assert a in session.team_b
+    assert b in session.team_a
+    assert session.role_assignments[1] == "Support"
+    assert session.role_assignments[2] == "Tank"
+
+
+def test_swap_slots_same_team_only_swaps_lanes():
+    session = matchmaking.MatchmakingSession("fakegame")
+    a, b = FakeMember(1), FakeMember(2)
+    session.team_a = [a, b]
+    session.team_b = []
+    session.role_assignments = {1: "Tank", 2: "Support"}
+
+    assert matchmaking.swap_slots(session, 1, 2) is True
+    assert session.team_a == [a, b]
+    assert session.role_assignments[1] == "Support"
+    assert session.role_assignments[2] == "Tank"
+
+
+def test_swap_slots_unknown_id_returns_false_and_does_nothing():
+    session = matchmaking.MatchmakingSession("fakegame")
+    a = FakeMember(1)
+    session.team_a = [a]
+    session.team_b = []
+    session.role_assignments = {1: "Tank"}
+
+    assert matchmaking.swap_slots(session, 1, 999) is False
+    assert session.team_a == [a]
+    assert session.role_assignments == {1: "Tank"}
