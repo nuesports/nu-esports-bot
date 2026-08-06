@@ -1,0 +1,56 @@
+import pytest
+from cogs import matchmaking
+
+class FakeMember:
+    def __init__(self, id):
+        self.id = id
+
+@pytest.fixture
+def balance_setup(monkeypatch):
+    """Fake 2-role game, no elo jitter, no shuffle, fully determinisitc"""
+    monkeypatch.setattr(matchmaking.config, "game_data", {
+        "fakegame": {"per_role_ranks": False}
+    })
+    monkeypatch.setitem(matchmaking.ROLE_REQUIREMENTS, "fakegame", {"Tank": 1, "Support": 1})
+    monkeypatch.setattr(matchmaking.random, "uniform", lambda a, b:0)
+    monkeypatch.setattr(matchmaking.random, "shuffle", lambda seq: None)
+
+def test_balance_teams_empty_lobby_returns_empty(balance_setup):
+    team_a, team_b, assignments = matchmaking.balance_teams("fakegame", [], {}, {})
+    assert team_a == []
+    assert team_b == []
+    assert assignments == {}
+
+def test_balance_teams_splits_one_of_each_role_per_team(balance_setup):
+    players = [FakeMember(i) for i in (1, 2, 3, 4)]
+    roles_by_id = {1: ["Tank"], 2: ["Support"], 3: ["Tank"], 4: ["Support"]}
+    elo_by_id = {1: 1000, 2: 1000, 3: 1000, 4: 1000}
+
+    team_a, team_b, assignments = matchmaking.balance_teams(
+        "fakegame", players, elo_by_id, roles_by_id
+    )
+
+    assert len(team_a) == 2
+    assert len(team_b) == 2
+    assert assignments[1] == "Tank"
+    assert assignments[3] == "Tank"
+    assert assignments[2] == "Support"
+    assert assignments[4] == "Support"
+
+
+def test_balance_teams_assigns_every_player_exactly_once(balance_setup):
+    players = [FakeMember(i) for i in (1, 2, 3, 4, 5, 6)]
+    roles_by_id = {
+        1: ["Tank"], 2: ["Support"], 3: ["Tank"],
+        4: ["Support"], 5: ["Flex"], 6: ["Flex"],
+    }
+    elo_by_id = {i: 1000 for i in (1, 2, 3, 4, 5, 6)}
+
+    team_a, team_b, assignments = matchmaking.balance_teams(
+        "fakegame", players, elo_by_id, roles_by_id
+    )
+
+    all_ids = {m.id for m in team_a} | {m.id for m in team_b}
+    assert all_ids == {1, 2, 3, 4, 5, 6}
+    assert len(team_a) == len(team_b) == 3
+    assert set(assignments.keys()) == all_ids
