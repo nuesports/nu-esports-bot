@@ -981,6 +981,7 @@ class BetModal(discord.ui.Modal):
                 await self.session.message.edit(embed=generate_match_embed(self.session))
             except (discord.NotFound, discord.HTTPException):
                 pass
+        await refresh_admin_panels(self.session)
 
 class SwapSelectView(discord.ui.View):
     def __init__(self, session):
