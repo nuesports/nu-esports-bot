@@ -323,10 +323,18 @@ def has_privilege(interaction: discord.Interaction) -> bool:
     
     True if they have a role with "game head" in its name (case-insensitive, substring match), 
     or if they're an admin."""
-    if (interaction.user.guild_permissions.administrator 
+    if (interaction.user.guild_permissions.administrator
         or any("game head" in role.name.lower() for role in interaction.user.roles)):
         return True
     return False
+
+def must_forfeit_bet_on_declare(interaction: discord.Interaction) -> bool:
+    """Whether this user is subject to the self-officiating forfeit rule: has the
+    "game head" role but isn't a server admin. Admins skip this check -- same trust
+    call as has_privilege's own admin carve-out -- so a bet they place settles normally
+    even if they're the one who declares the winner."""
+    return (not interaction.user.guild_permissions.administrator
+            and any("game head" in role.name.lower() for role in interaction.user.roles))
 
 async def refresh_admin_panels(session: "MatchmakingSession") -> None:
     """Re-render every currently-open admin panel so they reflect the latest lobby state.
@@ -858,11 +866,12 @@ class LobbyView(discord.ui.View):
     async def bet(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
         """Open the team-choice view for placing/raising a bet on this match.
 
-        Game heads/admins can bet like anyone else, but they're warned up front: if
-        *they* end up being the one to press Winner later, their bet gets wiped rather
-        than settled (see WinnerSelectView) -- since deciding a result you have points
-        riding on is exactly the throwing incentive betting-on-yourself-only is meant
-        to avoid for players.
+        Game heads/admins can bet like anyone else, but non-admin game heads are warned
+        up front: if *they* end up being the one to press Winner later, their bet gets
+        wiped rather than settled (see WinnerSelectView) -- since deciding a result you
+        have points riding on is exactly the throwing incentive betting-on-yourself-only
+        is meant to avoid for players. Admins skip this consequence, so they skip the
+        warning too.
         """
         if not self.session.role_assignments:
             await interaction.response.send_message("Betting opens once the lobby's been shuffled!", ephemeral=True)
@@ -872,7 +881,7 @@ class LobbyView(discord.ui.View):
             return
 
         prompt = f"Bet on **{self.session.team_names[0]}** or **{self.session.team_names[1]}**?"
-        if has_privilege(interaction):
+        if must_forfeit_bet_on_declare(interaction):
             prompt += (
                 "\n\n⚠️ You're a game head -- if *you* press Winner to declare this match's "
                 "result, your bet will be wiped instead of paid out or refunded."
@@ -1091,16 +1100,17 @@ class WinnerSelectView(discord.ui.View):
         await self._declare_or_confirm(interaction, team_a_won=False)
 
     async def _declare_or_confirm(self, interaction: discord.Interaction, team_a_won: bool) -> None:
-        """Declare a winner, unless whoever clicked is themselves holding an active bet
-        on this match -- then detour through a confirmation step first, since declaring
-        wipes that bet. Applies to any game head/admin with a bet, not just the lobby's
-        original owner."""
+        """Declare a winner, unless whoever clicked is a non-admin game head themselves
+        holding an active bet on this match -- then detour through a confirmation step
+        first, since declaring wipes that bet. Applies to any non-admin game head with
+        a bet, not just the lobby's original owner; admins skip this check entirely and
+        just declare normally."""
         if not has_privilege(interaction):
             await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
             return
 
         bet = self.session.bets.get(interaction.user.id)
-        if bet is not None:
+        if bet is not None and must_forfeit_bet_on_declare(interaction):
             await interaction.response.edit_message(
                 embed=generate_embed(self.session),
                 view=BetForfeitConfirmView(self.session, team_a_won, bet["points"]),
