@@ -1087,72 +1087,50 @@ class WinnerSelectView(discord.ui.View):
 
     async def team_a(self, interaction: discord.Interaction) -> None:
         """Declare team_a the winner."""
-        await self._declare_or_confirm(interaction, team_a_won=True)
+        await declare_winner(self.session, interaction, team_a_won=True)
 
     async def team_b(self, interaction: discord.Interaction) -> None:
         """Declare team_b the winner."""
-        await self._declare_or_confirm(interaction, team_a_won=False)
-
-    async def _declare_or_confirm(self, interaction: discord.Interaction, team_a_won: bool) -> None:
-        """Declare a winner, unless whoever clicked is a non-admin game head themselves
-        holding an active bet on this match -- then detour through a confirmation step
-        first, since declaring wipes that bet. Applies to any non-admin game head with
-        a bet, not just the lobby's original owner; admins skip this check entirely and
-        just declare normally."""
-        if not has_privilege(interaction):
-            await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
-            return
-
-        bet = self.session.bets.get(interaction.user.id)
-        if bet is not None and must_forfeit_bet_on_declare(interaction):
-            await interaction.response.edit_message(
-                embed=generate_embed(self.session),
-                view=BetForfeitConfirmView(self.session, team_a_won, bet["points"]),
-            )
-            return
-
-        await declare_winner(self.session, interaction, team_a_won)
+        await declare_winner(self.session, interaction, team_a_won=False)
 
     async def back(self, interaction: discord.Interaction) -> None:
         """Return to the admin panel without declaring a winner."""
         if not has_privilege(interaction):
             await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
             return
-        await interaction.response.edit_message(embed=generate_embed(self.session), view=AdminView(self.session))
+        await interaction.response.edit_message(content=None, embed=generate_embed(self.session), view=AdminView(self.session))
 
-class BetForfeitConfirmView(discord.ui.View):
-    """Extra confirmation step when whoever's declaring a winner is themselves holding
-    an active bet on this match.
-
-    Confirming wipes their bet outright (no payout, no refund) rather than letting it
-    settle normally -- they'd otherwise be the one deciding a result they have points
-    riding on. Applies to any game head/admin with an active bet, not just the lobby's
-    original owner.
+class SelfBetForfeitWarningView(discord.ui.View):
+    """Shown instead of WinnerSelectView when a non-admin game head with an active bet
+    presses Winner -- warns immediately and requires confirmation before letting them
+    pick a winner at all, since declaring forfeits that bet outright (no payout, no
+    refund). Buttons, not a dropdown -- a Select's option text can get visually
+    truncated in Discord's client on narrow/mobile views, which buttons don't do.
     """
-    def __init__(self, session: "MatchmakingSession", team_a_won: bool, stake: int):
+    def __init__(self, session: "MatchmakingSession", stake: int):
         super().__init__(timeout=180)
         self.session = session
-        self.team_a_won = team_a_won
 
-        options = [
-            discord.SelectOption(label=f"Yes, declare anyway (forfeit my {stake}-point bet)", value="confirm", emoji="⚠️"),
-            discord.SelectOption(label="No, go back", value="back", emoji="↩️"),
-        ]
-        self.select = discord.ui.Select(placeholder="Declaring will wipe your bet on this match -- continue?", options=options)
-        self.select.callback = self.on_select
-        self.add_item(self.select)
+        continue_button = discord.ui.Button(label=f"Continue (forfeit my {stake}-point bet)", style=discord.ButtonStyle.danger)
+        continue_button.callback = self.confirm
+        self.add_item(continue_button)
 
-    async def on_select(self, interaction: discord.Interaction) -> None:
+        cancel_button = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.secondary)
+        cancel_button.callback = self.cancel
+        self.add_item(cancel_button)
+
+    async def confirm(self, interaction: discord.Interaction) -> None:
         if not has_privilege(interaction):
             await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
             return
-
-        if self.select.values[0] == "back":
-            await interaction.response.edit_message(embed=generate_embed(self.session), view=WinnerSelectView(self.session))
-            return
-
         self.session.bets.pop(interaction.user.id, None)
-        await declare_winner(self.session, interaction, self.team_a_won)
+        await interaction.response.edit_message(content=None, embed=generate_embed(self.session), view=WinnerSelectView(self.session))
+
+    async def cancel(self, interaction: discord.Interaction) -> None:
+        if not has_privilege(interaction):
+            await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
+            return
+        await interaction.response.edit_message(content=None, embed=generate_embed(self.session), view=AdminView(self.session))
 
 class PostgameView(discord.ui.View):
     """Post-game view that allows for rematching."""
@@ -1215,14 +1193,30 @@ class AdminView(discord.ui.View):
     
     @discord.ui.button(label="Winner", style=discord.ButtonStyle.success)
     async def winner(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
-        """Open the team picker to declare a winner. Requires a shuffle to have happened first."""
+        """Open the team picker to declare a winner. Requires a shuffle to have happened first.
+
+        If the clicker is a non-admin game head with an active bet on this match, warns
+        immediately and requires confirmation before opening the team picker at all --
+        see SelfBetForfeitWarningView."""
         if not has_privilege(interaction):
             await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
             return
         if not self.session.role_assignments:
             await interaction.response.send_message("Shuffle first before deciding a winner!", ephemeral=True)
             return
-        
+
+        bet = self.session.bets.get(interaction.user.id)
+        if bet is not None and must_forfeit_bet_on_declare(interaction):
+            await interaction.response.edit_message(
+                content=(
+                    "⚠️ **You have an active bet on this match.** Declaring the winner "
+                    "yourself will **forfeit it immediately** -- no payout, no refund."
+                ),
+                embed=generate_embed(self.session),
+                view=SelfBetForfeitWarningView(self.session, bet["points"]),
+            )
+            return
+
         await interaction.response.edit_message(embed=generate_embed(self.session), view=WinnerSelectView(self.session))
 
     @discord.ui.button(label="Delete", style=discord.ButtonStyle.danger)
