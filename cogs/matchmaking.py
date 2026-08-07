@@ -50,11 +50,13 @@ def generate_embed(session: "MatchmakingSession") -> discord.Embed:
     embed.add_field(name=f"{session.team_names[1]}", value="\n".join(right_rows), inline=True)
     return embed
 
-def generate_postgame_embed(session: "MatchmakingSession", team: str, players: list[discord.Member]) -> discord.Embed:
+def generate_postgame_embed(session: "MatchmakingSession", team: str, players: list[discord.Member], richest_chatter: str | None = None) -> discord.Embed:
     """Build the "X team wins" embed after a winner is declared.
 
     team: the winning team's display name (not team_a/team_b, the actual name string).
     players: list of players on the winning team.
+    richest_chatter: pre-built "Richest Chatter" field value (see build_richest_chatter_field),
+    or None to omit the field -- nobody bet on this match.
     """
     embed = discord.Embed(
         title = f"{team} Win!",
@@ -67,6 +69,8 @@ def generate_postgame_embed(session: "MatchmakingSession", team: str, players: l
         rows.append(entry)
 
     embed.add_field(name="Players", value="\n".join(rows), inline=True)
+    if richest_chatter is not None:
+        embed.add_field(name="Richest Chatter", value=richest_chatter, inline=True)
     return embed
 
 def generate_cancelled_embed(session: "MatchmakingSession") -> discord.Embed:
@@ -608,22 +612,51 @@ async def settle_bets(session: "MatchmakingSession", team_a_won: bool) -> dict |
         "UPDATE users SET points = points + %s WHERE discordid = %s;",
         [(amount, uid) for uid, amount in payouts.items()],
     )
+    # Same multiplier for every winner here, so the biggest stake is also the
+    # biggest payout and the biggest profit -- one comparison covers all three.
+    richest_id = max(winning_bets, key=lambda uid: winning_bets[uid])
     return {
         "refunded": False,
-        "winning_pot": winning_pot,
-        "losing_pot": losing_pot,
         "multiplier": multiplier,
+        "num_winners": len(winning_bets),
+        "num_losers": len(losing_bets),
+        "richest_bettor_id": richest_id,
+        "richest_bettor_stake": winning_bets[richest_id],
+        "richest_bettor_payout": payouts[richest_id],
     }
 
-def format_bet_settlement(winning_team_name: str, summary: dict | None) -> str | None:
-    """Build the channel announcement for a settled match's bets, or None if there's nothing to say."""
+async def build_richest_chatter_field(interaction: discord.Interaction, summary: dict | None) -> str | None:
+    """Build the "Richest Chatter" embed field value for a settled match's bets.
+
+    None omits the field entirely (nobody bet on this match). A refund (nobody backed
+    the losing side) gets a short explanatory line instead of the usual four.
+    """
     if summary is None:
         return None
     if summary["refunded"]:
-        return f"🎲 {summary['total']} points refunded -- no bets on the losing side."
+        return "All bets refunded -- nobody backed the losing side."
+
+    richest_id = summary["richest_bettor_id"]
+    profit = summary["richest_bettor_payout"] - summary["richest_bettor_stake"]
+
+    tag_row = await db.fetch_one("SELECT tag FROM profiles WHERE discordid = %s;", (richest_id,))
+    tag = tag_row[0] if tag_row and tag_row[0] else DEFAULT_TAG.get("Winner")
+
+    name = None
+    if interaction.guild is not None:
+        try:
+            member = await interaction.guild.fetch_member(richest_id)
+            name = member.display_name
+        except (discord.NotFound, discord.HTTPException):
+            pass
+    if name is None:
+        name = f"<@{richest_id}>"
+
     return (
-        f"🎲 {summary['losing_pot']} points paid out to backers of **{winning_team_name}** "
-        f"({round(summary['multiplier'], 2)}x payout)."
+        f"{tag} {name}\n"
+        f"{profit} points made\n"
+        f"x{summary['multiplier']:.2f} payout\n"
+        f"{summary['num_winners']} big winners - {summary['num_losers']} sore losers"
     )
 
 class MatchmakingSession:
@@ -961,16 +994,14 @@ class WinnerSelectView(discord.ui.View):
         await apply_elo_changes(self.session, team_a_won=True)
         stop_betting_window(self.session)
         bet_summary = await settle_bets(self.session, team_a_won=True)
+        richest_chatter = await build_richest_chatter_field(interaction, bet_summary)
         await interaction.response.defer()
         # result's already recorded above, so a failed edit here still needs surfacing, not swallowing
         try:
             await self.session.message.edit(
-                embed=generate_postgame_embed(self.session, self.session.team_names[0], self.session.team_a),
+                embed=generate_postgame_embed(self.session, self.session.team_names[0], self.session.team_a, richest_chatter),
                 view=PostgameView(self.session),
             )
-            settlement_message = format_bet_settlement(self.session.team_names[0], bet_summary)
-            if settlement_message:
-                await self.session.message.reply(settlement_message)
         except (discord.NotFound, discord.HTTPException):
             await interaction.followup.send("Result recorded, but I couldn't update the lobby embed.", ephemeral=True)
 
@@ -988,15 +1019,13 @@ class WinnerSelectView(discord.ui.View):
         await apply_elo_changes(self.session, team_a_won=False)
         stop_betting_window(self.session)
         bet_summary = await settle_bets(self.session, team_a_won=False)
+        richest_chatter = await build_richest_chatter_field(interaction, bet_summary)
         await interaction.response.defer()
         try:
             await self.session.message.edit(
-                embed=generate_postgame_embed(self.session, self.session.team_names[1], self.session.team_b),
+                embed=generate_postgame_embed(self.session, self.session.team_names[1], self.session.team_b, richest_chatter),
                 view=PostgameView(self.session),
             )
-            settlement_message = format_bet_settlement(self.session.team_names[1], bet_summary)
-            if settlement_message:
-                await self.session.message.reply(settlement_message)
         except (discord.NotFound, discord.HTTPException):
             await interaction.followup.send("Result recorded, but I couldn't update the lobby embed.", ephemeral=True)
 
