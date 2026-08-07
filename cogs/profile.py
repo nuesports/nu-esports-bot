@@ -8,20 +8,30 @@ from pathlib import Path
 
 from utils import config
 from utils import db
+from utils import game_apis
 from utils.images import get_character_image, image_attachment
+from utils.ranks import get_tiers, get_divisions, tier_has_divisions, compute_rank_value, format_rank_label, validate_tier_division
 
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
 GAME_CHOICES = list(config.game_data.keys())
 CUSTOM_EMOJI_RE = re.compile(r"^<a?:\w+:(?P<id>\d+)>$")
 
-def get_tiers(game: str) -> list[str]:
-    """Returns the ordered list of rank tiers for a game, lowest to highest."""
-    return config.game_data[game]["tiers"]
+ACCOUNT_EXAMPLE_CATEGORY = {
+    "league": "riot-ids",
+    "valorant": "riot-ids",
+    "overwatch": "battle-tags",
+    "deadlock": "steam-ids",
+}
 
-def get_divisions(game: str) -> int:
-    """Return how many divisions each tier has for a game (e.g. 4 for League)."""
-    return config.game_data[game]["divisions"]
+def account_placeholder(game: str) -> str:
+    """A random example identifier in this game's format (Riot ID / BattleTag / Steam),
+    for the Account modal's placeholder -- freshly rolled each time the modal opens."""
+    category = ACCOUNT_EXAMPLE_CATEGORY.get(game)
+    if not category:
+        return "e.g. Name#Tag"
+    return f"e.g. {random.choice(config.fun_data[category])}"
+
 
 def get_roles(game: str) -> list[str]:
     """Return the selectable roles for a game (includes "Flex")."""
@@ -34,10 +44,6 @@ def get_mains(game: str) -> list[str]:
 def effective_primary(mains: list[str], primary: str | None) -> str | None:
     """The primary to display: explicit if set, else the first main."""
     return primary or (mains[0] if mains else None)
-
-def tier_has_divisions(game: str, tier: str) -> bool:
-    """Return whether a given tier is divided (e.g. "Gold 3") rather than flat (e.g. "Challenger")."""
-    return tier not in config.game_data[game]["no_division_tiers"]
 
 def normalize_tag(value: str | None, bot: discord.Bot) -> str | None:
     """Validate and normalize a user-supplied emoji tag.
@@ -55,32 +61,6 @@ def normalize_tag(value: str | None, bot: discord.Bot) -> str | None:
     if len(matches) == 1 and sum(len(m["emoji"]) for m in matches) == len(value):
         return value
     return None
-
-def compute_rank_value(game: str, tier: str, division: int) -> int:
-    """Convert a tier+division into a single comprable integer."""
-    index = get_tiers(game).index(tier)
-    divisions = get_divisions(game)
-    if tier_has_divisions(game, tier):
-        return index * divisions + (division - 1)
-    else:
-        return index * divisions
-    
-def format_rank_label(game: str, tier: str, division: int) -> str:
-    """Format a tier+division as a human-readable string, e.g. "Gold 3" or "Challenger"."""
-    return f"{tier} {division}" if tier_has_divisions(game, tier) else tier
-
-def validate_tier_division(game: str, tier: str | None, division: str) -> tuple[int, None] | tuple[None, str]:
-    """Validate a tier+division pair. Returns (division_int, None) on success, or
-    (None, error_message) to show the user on failure."""
-    if tier is None or tier not in get_tiers(game):
-        return None, "Invalid tier. Please select from dropdown."
-    try:
-        division_int = int(division)
-    except ValueError:
-        return None, "Invalid division. Please select from dropdown."
-    if division_int > get_divisions(game):
-        return None, "Invalid division. Please select from dropdown."
-    return division_int, None
 
 
 async def tier_autocomplete(ctx: discord.AutocompleteContext) -> list[discord.OptionChoice]:
@@ -150,6 +130,10 @@ async def fetch_profile_data(discordid: int) -> dict:
         "SELECT game, role, rank_label FROM profile_role_ranks WHERE discordid = %s;",
         (discordid,)
     )
+    account_rows = await db.fetch_all(
+        "SELECT game, display_name, external_id FROM game_accounts WHERE discordid = %s;",
+        (discordid,)
+    )
 
     stats_by_game = {row[0]: row for row in stats_rows}
     roles_by_game = {}
@@ -162,6 +146,11 @@ async def fetch_profile_data(discordid: int) -> dict:
     role_ranks_by_game = {}
     for g, r, label in role_rank_rows:
         role_ranks_by_game.setdefault(g, {})[r] = label
+    account_by_game = {g: name for g, name, _ in account_rows}
+    # display_name can be markdown (e.g. Deadlock's "[persona](profileurl)" link) -- fine
+    # for showing on the embed, but not for pre-filling a text input to re-edit, so keep
+    # the plain external_id around separately for that
+    external_id_by_game = {g: external_id for g, _, external_id in account_rows}
 
     return {
         "profile_row": profile_row,
@@ -172,7 +161,45 @@ async def fetch_profile_data(discordid: int) -> dict:
         "role_ranks_by_game": role_ranks_by_game,
         "total_wins": sum(row[2] for row in stats_rows),
         "total_losses": sum(row[3] for row in stats_rows),
+        "account_by_game": account_by_game,
+        "external_id_by_game": external_id_by_game,
     }
+
+async def link_account(discordid: int, game: str, result: "game_apis.LinkResult") -> None:
+    """Upserts a linked game account and immediately force-refreshes it, so the player
+    doesn't have to wait out the staleness TTL to see a rank right after linking.
+    Shared by /profile set account and the setup-flow AccountModal so the two never drift."""
+    await db.perform_one(
+        """
+        INSERT INTO game_accounts (discordid, game, external_id, display_name, region, provider_account_id, provider_secondary_id, linked_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+        ON CONFLICT (discordid, game) DO UPDATE SET
+            external_id = EXCLUDED.external_id, display_name = EXCLUDED.display_name, region = EXCLUDED.region,
+            provider_account_id = EXCLUDED.provider_account_id, provider_secondary_id = EXCLUDED.provider_secondary_id,
+            linked_at = CURRENT_TIMESTAMP;
+        """,
+        (discordid, game, result.external_id, result.display_name, result.region, result.provider_account_id, result.provider_secondary_id),
+    )
+    await game_apis.force_refresh(discordid, game)
+
+async def reset_game_profile(discordid: int, game: str) -> None:
+    """Wipes everything a player customizes for one game -- rank, roles, mains,
+    primary main, linked account -- but leaves elo and win/loss record alone.
+    Those are the club's matchmaking history, not something a casual reset should erase.
+
+    Runs on one shared cursor so it's a single transaction -- db.perform_one commits
+    per call, which would let a mid-sequence failure leave a half-wiped profile."""
+    async with db.cursor() as cur:
+        await cur.execute(
+            "UPDATE profile_stats SET rank_value = NULL, rank_label = NULL, updated_at = CURRENT_TIMESTAMP "
+            "WHERE discordid = %s AND game = %s;",
+            (discordid, game),
+        )
+        await cur.execute("DELETE FROM profile_role_ranks WHERE discordid = %s AND game = %s;", (discordid, game))
+        await cur.execute("DELETE FROM profile_roles WHERE discordid = %s AND game = %s;", (discordid, game))
+        await cur.execute("DELETE FROM profile_primary_mains WHERE discordid = %s AND game = %s;", (discordid, game))
+        await cur.execute("DELETE FROM profile_mains WHERE discordid = %s AND game = %s;", (discordid, game))
+        await cur.execute("DELETE FROM game_accounts WHERE discordid = %s AND game = %s;", (discordid, game))
 
 def build_home_embed(target: discord.Member, profile_row: tuple | None, total_pages: int, total_wins: int, total_losses: int, setup: bool) -> discord.Embed:
     """Build the first page of a profile: bio, win/loss record, and member-since date."""
@@ -212,21 +239,21 @@ def build_game_embed(
                      page_number: int,
                      total_pages: int,
                      setup: bool,
-                     role_ranks: dict[str, str] | None = None) -> tuple[discord.Embed, "Path | None"]:
+                     role_ranks: dict[str, str] | None = None,
+                     account_name: str | None = None) -> tuple[discord.Embed, "Path | None"]:
     """Build one per-game profile page: rank, roles, mains, wins/losses, and a champion thumbnail if one exists.
 
     For per-role-ranks games, pass `role_ranks` (role -> rank_label) to render one
     rank line per role instead of the single game-wide rank_label in `row`."""
     if role_ranks is not None:
-        rank_label = "\n".join(
-            f"{r} — {role_ranks.get(r, 'Not set')}" for r in config.rankable_roles(game)
-        )
+        set_roles = [(r, role_ranks[r]) for r in config.rankable_roles(game) if role_ranks.get(r)]
+        rank_label = "\n".join(f"{r} — {label}" for r, label in set_roles) if set_roles else "-"
     else:
-        rank_label = row[1] if row else "Not set"
+        rank_label = (row[1] if row else None) or "-"
     wins = row[2] if row else "N/A"
     losses = row[3] if row else "N/A"
-    role_display = ", ".join(roles) if roles else "Not set"
-    main_display = ", ".join(mains) if mains else "Not set"
+    role_display = ", ".join(roles) if roles else "-"
+    main_display = "\n".join(", ".join(mains[i:i + 3]) for i in range(0, len(mains), 3)) if mains else "-"
     if not setup:
             embed = discord.Embed(
                     title=f"{tag} {target.display_name} - {game.title()}",
@@ -241,11 +268,13 @@ def build_game_embed(
     embed.add_field(name="Rank", value=rank_label, inline=True)
     if has_roles:
         embed.add_field(name="Role", value=role_display, inline=True)
-    embed.add_field(name="Main", value=main_display, inline=True)
+    embed.add_field(name="Main" if len(mains) == 1 else "Mains", value=main_display, inline=True)
     if not has_roles:
         embed.add_field(name="​", value="​", inline=True)
     embed.add_field(name="Wins", value=f"{wins}", inline=True)
     embed.add_field(name="Losses", value=f"{losses}", inline=True)
+    if account_name:
+        embed.add_field(name="Account", value=account_name, inline=True)
 
     image_path = None
     if primary_main:
@@ -382,6 +411,46 @@ class Profile(commands.Cog):
             await ctx.followup.send(embed=embed, ephemeral=True)
         except discord.HTTPException:
             await ctx.followup.send("Picture saved, but but Discord couldn't render that image — double check the link works in a browser.", ephemeral=True)
+
+    @set_grp.command(
+            name = "account",
+            guild_ids = [GUILD_ID]
+    )
+    async def account(
+        self, 
+        ctx: discord.ApplicationContext, 
+        game: discord.Option(
+            str, 
+            choices=GAME_CHOICES
+          ),
+        identifier: discord.Option(
+            str,
+            description="Riot ID/BattleTag/Steam ID or vanity"
+        )
+    ) -> None:
+        """Sets your account for a game"""
+        await ctx.defer(ephemeral=True)
+
+        client = game_apis.CLIENTS.get(game)
+
+        if client is None:
+            await ctx.followup.send(f"{game.title()} doesn't support account linking yet.", ephemeral=True)
+            return
+        try:
+            result = await client.link(identifier)
+        except game_apis.LinkError as e:
+            await ctx.followup.send(f"Couldn't link account: {e}", ephemeral=True)
+            return
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            await ctx.followup.send("Something went wrong reaching the game's API. Try again soon", ephemeral=True)
+            return
+
+        await link_account(ctx.author.id, game, result)
+
+        embed = discord.Embed(title="Account Linked", description=f"{game.title()}: **{result.display_name}**", color=discord.Color.from_rgb(78, 42, 132))
+        await ctx.followup.send(embed=embed, ephemeral=True)
 
     @set_grp.command(
             name = "rank",
@@ -642,6 +711,8 @@ class Profile(commands.Cog):
 
         target = user or ctx.author
 
+        await game_apis.refresh_stale_ranks(target.id)
+
         data = await fetch_profile_data(target.id)
         profile_row = data["profile_row"]
         stats_by_game = data["stats_by_game"]
@@ -655,7 +726,7 @@ class Profile(commands.Cog):
         games_with_data = {
             g for g in GAME_CHOICES
             if g in stats_by_game or roles_by_game.get(g) or mains_by_game.get(g)
-            or g in primary_by_game or role_ranks_by_game.get(g)
+            or g in primary_by_game or role_ranks_by_game.get(g) or g in data["account_by_game"]
         }
         if game is not None:
             games_with_data.add(game)
@@ -671,7 +742,7 @@ class Profile(commands.Cog):
             primary_main = effective_primary(mains, primary_by_game.get(g))
             role_ranks = role_ranks_by_game.get(g, {}) if config.is_per_role_ranks(g) else None
             tag = profile_row[3] if profile_row and profile_row[3] else "💬"
-            pages.append(build_game_embed(target, g, row, roles, mains, primary_main, tag, i, total_pages, setup=False, role_ranks=role_ranks))
+            pages.append(build_game_embed(target, g, row, roles, mains, primary_main, tag, i, total_pages, setup=False, role_ranks=role_ranks, account_name=data["account_by_game"].get(g)))
 
         if game is not None:
             start_index = pages_games.index(game) +1
@@ -900,7 +971,8 @@ class MainsModal(discord.ui.Modal):
         raw = self.children[0].value or ""
         candidates = [c.strip() for c in raw.split(",") if c.strip()]
 
-        lookup = {m.lower(): m for m in get_mains(self.game)}
+        lookup = {alias.lower(): canonical for alias, canonical in config.main_aliases(self.game).items()}
+        lookup.update({m.lower(): m for m in get_mains(self.game)})
         resolved, invalid = [], []
         for c in candidates:
             match = lookup.get(c.lower())
@@ -1237,6 +1309,70 @@ class PictureModal(discord.ui.Modal):
         await db.perform_one(sql, (self.requester_id, url))
         await self.on_done(interaction)
 
+class AccountModal(discord.ui.Modal):
+    """Single-field modal for linking an external game account, via /profile setup."""
+    def __init__(self, requester_id: int, game: str, current_identifier: str | None, on_done) -> None:
+        super().__init__(title=f"Link your {game.title()} account")
+        self.requester_id = requester_id
+        self.game = game
+        self.on_done = on_done
+        self.add_item(
+            discord.ui.InputText(
+                label="Riot ID / BattleTag / Steam ID",
+                placeholder=account_placeholder(game),
+                value=current_identifier or "",
+                required=False,
+            )
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        identifier = (self.children[0].value or "").strip()
+        if not identifier:
+            await interaction.response.send_message("Nothing entered, account unchanged.", ephemeral=True)
+            return
+
+        client = game_apis.CLIENTS.get(self.game)
+        if client is None:
+            await interaction.response.send_message(f"{self.game.title()} doesn't support account linking yet.", ephemeral=True)
+            return
+
+        # linking + the initial refresh can take several sequential API calls (Valorant's
+        # mains-seeding alone can be 4+), well past Discord's 3s response window; defer
+        # before doing any of that, so on_done -> refresh_page has time to finish
+        await interaction.response.defer()
+
+        try:
+            result = await client.link(identifier)
+        except game_apis.LinkError as e:
+            await interaction.followup.send(f"Couldn't link account: {e}", ephemeral=True)
+            return
+        except Exception:
+            await interaction.followup.send("Something went wrong reaching the game's API. Try again soon", ephemeral=True)
+            return
+
+        await link_account(self.requester_id, self.game, result)
+        await self.on_done(interaction)
+
+class ResetConfirmView(discord.ui.View):
+    """Confirm/cancel guard in front of the destructive per-game reset button."""
+    def __init__(self, requester_id: int, game: str, on_done) -> None:
+        super().__init__(timeout=60)
+        self.requester_id = requester_id
+        self.game = game
+        self.on_done = on_done
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.requester_id
+
+    @discord.ui.button(label="Reset", style=discord.ButtonStyle.danger)
+    async def confirm(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+        await reset_game_profile(self.requester_id, self.game)
+        await self.on_done(interaction)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+        await self.on_done(interaction)
+
 class ProfileSetupView(discord.ui.View):
     """Paginated profile editor: left/right buttons, plus edit buttons for whatever page is currently shown.
 
@@ -1279,7 +1415,7 @@ class ProfileSetupView(discord.ui.View):
         mains = data["mains_by_game"].get(game, [])
         primary_main = effective_primary(mains, data["primary_by_game"].get(game))
         role_ranks = data["role_ranks_by_game"].get(game, {}) if config.is_per_role_ranks(game) else None
-        return build_game_embed(self.target, game, row, roles, mains, primary_main, tag, self.index + 1, self.total_pages, setup=True, role_ranks=role_ranks)
+        return build_game_embed(self.target, game, row, roles, mains, primary_main, tag, self.index + 1, self.total_pages, setup=True, role_ranks=role_ranks, account_name=data["account_by_game"].get(game))
 
     def build_buttons(self) -> None:
         """Clear and rebuild every button: nav buttons plus this page's field-edit buttons."""
@@ -1316,6 +1452,11 @@ class ProfileSetupView(discord.ui.View):
         self.add_item(pic_btn)
 
     def add_game_buttons(self, game: str) -> None:
+        if game in game_apis.CLIENTS:
+            account_btn = discord.ui.Button(label="Account", style=discord.ButtonStyle.success)
+            account_btn.callback = self.on_edit_account
+            self.add_item(account_btn)
+
         rank_btn = discord.ui.Button(label="Rank", style=discord.ButtonStyle.primary)
         rank_btn.callback = self.on_edit_rank
         self.add_item(rank_btn)
@@ -1335,6 +1476,10 @@ class ProfileSetupView(discord.ui.View):
         primary_btn.callback = self.on_edit_primary
         self.add_item(primary_btn)
 
+        reset_btn = discord.ui.Button(label="Reset", style=discord.ButtonStyle.danger)
+        reset_btn.callback = self.on_edit_reset
+        self.add_item(reset_btn)
+
     async def on_back(self, interaction: discord.Interaction) -> None:
         self.index -= 1
         await self.refresh_page(interaction)
@@ -1352,7 +1497,12 @@ class ProfileSetupView(discord.ui.View):
         embed, image_path = await self.build_embed()
         self.build_buttons()
         file = image_attachment(image_path)
-        await interaction.response.edit_message(content=None, embed=embed, view=self, file=file, attachments=[])
+        if interaction.response.is_done():
+            # already deferred (e.g. AccountModal, which can run long before getting here) --
+            # edit_message would raise InteractionResponded, this is the deferred equivalent
+            await interaction.edit_original_response(content=None, embed=embed, view=self, file=file, attachments=[])
+        else:
+            await interaction.response.edit_message(content=None, embed=embed, view=self, file=file, attachments=[])
 
     async def on_edit_tag(self, interaction: discord.Interaction) -> None:
         data = await fetch_profile_data(self.target.id)
@@ -1403,6 +1553,21 @@ class ProfileSetupView(discord.ui.View):
         current_primary = effective_primary(mains, data["primary_by_game"].get(game))
         view = PrimarySelectView(requester_id=self.requester_id, game=game, mains=mains, current_primary=current_primary, on_done=self.on_field_done)
         await interaction.response.edit_message(content="Pick your primary main:", embed=None, view=view, attachments=[])
+
+    async def on_edit_account(self, interaction: discord.Interaction) -> None:
+        game = GAME_CHOICES[self.index - 1]
+        data = await fetch_profile_data(self.target.id)
+        current_identifier = data["external_id_by_game"].get(game)
+        await interaction.response.send_modal(AccountModal(self.requester_id, game, current_identifier, self.on_field_done))
+
+    async def on_edit_reset(self, interaction: discord.Interaction) -> None:
+        game = GAME_CHOICES[self.index - 1]
+        view = ResetConfirmView(requester_id=self.requester_id, game=game, on_done=self.on_field_done)
+        await interaction.response.edit_message(
+            content=f"Reset your entire {game.title()} profile? This clears rank, roles, mains, and your linked "
+            "account -- but not your win/loss record or elo. Can't be undone.",
+            embed=None, view=view, attachments=[],
+        )
 
     async def on_field_done(self, interaction: discord.Interaction) -> None:
         """Called by field modals after a successful save; refresh this same page in place."""
