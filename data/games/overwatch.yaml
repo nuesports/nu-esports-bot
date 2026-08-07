@@ -38,6 +38,44 @@ role_icons:
   Damage: ⚔️
   Support: ➕
 
+# Current standard-mode pool (Control/Escort/Hybrid/Push/Flashpoint/Clash) as of
+# the removal of seasonal map rotation -- everything's active except Paris and
+# Horizon Lunar Colony, which stayed out pending updates. Excludes Stadium
+# variants, retired Assault maps, and non-standard modes (Deathmatch, Arcade, etc).
+maps:
+  - "King's Row"
+  - "Watchpoint: Gibraltar"
+  - Numbani
+  - Dorado
+  - Hollywood
+  - Lijiang Tower
+  - Ilios
+  - Nepal
+  - Route 66
+  - Eichenwalde
+  - Oasis
+  - Junkertown
+  - Blizzard World
+  - Rialto
+  - Busan
+  - Havana
+  - New Queen Street
+  - Circuit Royal
+  - Colosseo
+  - Midtown
+  - Paraíso
+  - Esperança
+  - Shambali Monastery
+  - Antarctic Peninsula
+  - New Junk City
+  - Suravasa
+  - Samoa
+  - Runasapi
+  - Hanaoka
+  - Throne of Anubis
+  - Aatlis
+  - Neon Junction
+
 characters: # Alphabetically
   - Ana
   - Anran
