@@ -56,8 +56,7 @@ def generate_postgame_embed(session: "MatchmakingSession", team: str, players: l
 
     team: the winning team's display name (not team_a/team_b, the actual name string).
     players: list of players on the winning team.
-    richest_chatter: pre-built "Richest Chatter" field value (see build_richest_chatter_field),
-    or None to omit the field -- nobody bet on this match.
+    richest_chatter: pre-built field value from build_richest_chatter_field, or None if nobody bet.
     """
     embed = discord.Embed(
         title = f"{team} Win!",
@@ -71,8 +70,8 @@ def generate_postgame_embed(session: "MatchmakingSession", team: str, players: l
 
     embed.add_field(name="Players", value="\n".join(rows), inline=True)
     if richest_chatter is not None:
-        # Discord rejects embed fields with an empty name/value (min 1 char each) --
-        # zero-width space matches the existing blank-spacer convention in cogs/pcs.py.
+        # Discord requires a non-empty name and value for embed fields. Zero-width
+        # space matches the spacer pattern already used in cogs/pcs.py.
         embed.add_field(name="​", value="​", inline=True)
         embed.add_field(name="Richest Chatter", value=richest_chatter, inline=True)
     return embed
@@ -103,9 +102,8 @@ def generate_chatters_field(session: "MatchmakingSession") -> str:
             else:
                 rows.append(f"<@{user_id}> - {bet['points']} points")
 
-        # Cap the list at one team's worth of rows -- matching the two team columns'
-        # own natural length -- so a heavily-bet match doesn't dwarf them with a huge
-        # Chatters column. Keeps the highest stakes (already sorted first).
+        # Cap the list at one team's worth of rows so a heavily-bet match doesn't
+        # dwarf the two team columns. Keeps the highest stakes since they're sorted first.
         team_size = LOBBY_SIZE[session.game] // 2
         if len(rows) > team_size:
             omitted = len(rows) - (team_size - 1)
@@ -324,10 +322,8 @@ def has_privilege(interaction: discord.Interaction) -> bool:
     return False
 
 def must_forfeit_bet_on_declare(interaction: discord.Interaction) -> bool:
-    """Whether this user is subject to the self-officiating forfeit rule: has the
-    "game head" role but isn't a server admin. Admins skip this check -- same trust
-    call as has_privilege's own admin carve-out -- so a bet they place settles normally
-    even if they're the one who declares the winner."""
+    """True if this user has the "game head" role but isn't a server admin.
+    Admins skip the self-officiating forfeit rule, same trust call has_privilege already makes."""
     return (not interaction.user.guild_permissions.administrator
             and any("game head" in role.name.lower() for role in interaction.user.roles))
 
@@ -346,12 +342,8 @@ async def refresh_admin_panels(session: "MatchmakingSession") -> None:
 
 async def start_betting_window(session: "MatchmakingSession") -> None:
     """Refund any bets from the previous shuffle and open a fresh betting window.
-
-    Cancels a previous window's close-timer first, so re-shuffling twice in a row
-    doesn't leave an orphaned task from the first shuffle running alongside the new one.
-    Refunding (not just wiping) matters because those points were already deducted from
-    real balances when the bets were placed -- reshuffling voids the bet, it shouldn't
-    also keep the stake.
+    Cancels a previous close-timer first so re-shuffling twice doesn't leave an
+    orphaned task, and refunds rather than wipes since those points were already deducted.
     """
     if session.betting_close_task is not None:
         session.betting_close_task.cancel()
@@ -361,13 +353,9 @@ async def start_betting_window(session: "MatchmakingSession") -> None:
     session.betting_close_task = asyncio.create_task(close_betting_after_delay(session))
 
 async def close_betting_after_delay(session: "MatchmakingSession") -> None:
-    """Close betting BETTING_WINDOW_SECONDS after a shuffle, then refresh the public message
-    so the Bet button visibly disables. Cancelled (via stop_betting_window) if the match
-    ends or reshuffles before the window elapses.
-
-    Keeps session.betting_close_task pointing at this task until the very end, even while
-    awaiting the message edit -- so a stop_betting_window call landing mid-edit can still
-    find and cancel this task instead of letting its stale embed race the winner-declare edit.
+    """Close betting BETTING_WINDOW_SECONDS after a shuffle and refresh the public message
+    so the Bet button disables. Keeps the task reference alive through the message edit
+    so a mid-edit cancel from stop_betting_window can still interrupt it.
     """
     try:
         await asyncio.sleep(BETTING_WINDOW_SECONDS)
@@ -384,8 +372,8 @@ async def close_betting_after_delay(session: "MatchmakingSession") -> None:
     session.betting_close_task = None
 
 def stop_betting_window(session: "MatchmakingSession") -> None:
-    """Cancel any pending betting-close timer without reopening it, since the match is
-    ending (winner declared or lobby cancelled) rather than just being reshuffled."""
+    """Cancel any pending betting-close timer without reopening it.
+    Used when the match is ending, not just being reshuffled."""
     if session.betting_close_task is not None:
         session.betting_close_task.cancel()
         session.betting_close_task = None
@@ -393,9 +381,7 @@ def stop_betting_window(session: "MatchmakingSession") -> None:
 
 async def refund_bets(session: "MatchmakingSession") -> None:
     """Refund every outstanding bet's stake back to the bettor.
-
-    Used when a lobby is cancelled before a winner is declared -- nobody should lose
-    points on a match that never concluded.
+    Used when a lobby is cancelled before a winner is declared.
     """
     if not session.bets:
         return
@@ -616,14 +602,9 @@ async def apply_elo_changes(session: 'MatchmakingSession', team_a_won: bool) -> 
     )
 
 async def settle_bets(session: "MatchmakingSession", team_a_won: bool) -> dict | None:
-    """Pay out (or refund) every bet placed on the match, based on which team won.
-
-    Winners split the losing team's pot proportionally to their own stake's share of
-    the winning team's pot -- same formula as the /points prediction feature
-    (cogs/points.py's Prediction, via utils/payout.py). If only one side has bets (or
-    there are none at all), everyone just gets their stake back; there's no house edge.
-    Returns a summary for the announcement message, or None if nobody bet on this match.
-    Always clears session.bets before returning -- these bets are settled either way.
+    """Pay out or refund every bet, based on which team won. Winners split the losing
+    pot proportionally to their stake, same formula as cogs/points.py's Prediction.
+    Refunds everyone if only one side bet. Clears session.bets before returning either way.
     """
     if not session.bets:
         return None
@@ -649,8 +630,8 @@ async def settle_bets(session: "MatchmakingSession", team_a_won: bool) -> dict |
         "UPDATE users SET points = points + %s WHERE discordid = %s;",
         [(amount, uid) for uid, amount in payouts.items()],
     )
-    # Same multiplier for every winner here, so the biggest stake is also the
-    # biggest payout and the biggest profit -- one comparison covers all three.
+    # Multiplier is the same for every winner, so the biggest stake is also
+    # the biggest payout and profit.
     richest_id = max(winning_bets, key=lambda uid: winning_bets[uid])
     summary = {
         "refunded": False,
@@ -665,10 +646,8 @@ async def settle_bets(session: "MatchmakingSession", team_a_won: bool) -> dict |
     return summary
 
 async def build_richest_chatter_field(summary: dict | None) -> str | None:
-    """Build the "Richest Chatter" embed field value for a settled match's bets.
-
-    None omits the field entirely (nobody bet on this match). A refund (nobody backed
-    the losing side) gets a short explanatory line instead of the usual four.
+    """Build the "Richest Chatter" embed field value. Returns None if nobody bet,
+    or a short refund line if nobody backed the losing side.
     """
     if summary is None:
         return None
@@ -849,14 +828,9 @@ class LobbyView(discord.ui.View):
 
     @discord.ui.button(label="Bet", style=discord.ButtonStyle.secondary)
     async def bet(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
-        """Open the team-choice view for placing/raising a bet on this match.
-
-        Game heads/admins can bet like anyone else, but non-admin game heads are warned
-        up front: if *they* end up being the one to press Winner later, their bet gets
-        wiped rather than settled (see WinnerSelectView) -- since deciding a result you
-        have points riding on is exactly the throwing incentive betting-on-yourself-only
-        is meant to avoid for players. Admins skip this consequence, so they skip the
-        warning too.
+        """Open the team-choice view for placing or raising a bet.
+        Non-admin game heads get a warning: declaring the winner themselves later
+        forfeits this bet. Admins are exempt from both the warning and the forfeit.
         """
         if not self.session.role_assignments:
             await interaction.response.send_message("Betting opens once the lobby's been shuffled!", ephemeral=True)
@@ -879,11 +853,8 @@ class LobbyView(discord.ui.View):
         )
 
 class BetTeamSelectView(discord.ui.View):
-    """Ephemeral team picker for placing/raising a bet, shown after clicking Bet.
-
-    Players already on a team can only ever bet on themselves; the button for the
-    opposing team is disabled outright. Once someone has a bet locked to a team, the
-    button for the *other* team disables too, since bets can't switch sides.
+    """Ephemeral team picker shown after clicking Bet. Players on a team can only
+    bet on themselves, and once a bet is placed the opposing team's button disables too.
     """
     def __init__(self, session: "MatchmakingSession", user: discord.Member):
         super().__init__(timeout=120)
@@ -915,18 +886,10 @@ class BetTeamSelectView(discord.ui.View):
         return callback
 
 class BetModal(discord.ui.Modal):
-    """Ephemeral wager-amount prompt.
-
-    The field is the bettor's new *total* stake, not an amount to add on top -- that's
-    what makes "raise but not lower" an enforced rule instead of an automatic one.
-
-    current_bet/balance are only a snapshot for the label text at modal-open time.
-    callback() re-reads the live bet under session.bet_locks[user.id] so two bet flows
-    for the same user in THIS lobby can't overwrite session.bets or double-count a
-    raise, and deducts via an atomic conditional UPDATE (not a SELECT-then-UPDATE) so
-    the balance itself can never go negative even from a race the lock can't see --
-    e.g. the same user betting in a different lobby, or on a /points prediction,
-    at the same time.
+    """Ephemeral wager-amount prompt. The field is the new total stake, not an amount
+    to add. current_bet/balance are just a label hint; callback() re-reads live state
+    under a per-user lock and deducts with an atomic conditional UPDATE so the balance
+    can't go negative even across lobbies.
     """
     def __init__(self, session: "MatchmakingSession", user: discord.Member, team: str, current_bet: int, balance: int):
         super().__init__(title="Place your bet")
@@ -970,11 +933,9 @@ class BetModal(discord.ui.Modal):
                 await interaction.response.send_message("Betting closed while you were typing -- too slow!", ephemeral=True)
                 return
 
-            # Atomic conditional UPDATE, not a SELECT-then-UPDATE: session.bet_locks only
-            # serializes bet submissions within THIS lobby, so it can't stop a user from
-            # overdrafting by betting in two lobbies (or a /points prediction) at once.
-            # The WHERE guard makes the deduction itself race-proof regardless of what
-            # else might be spending the same balance concurrently.
+            # Atomic conditional UPDATE, not SELECT-then-UPDATE. The lock only covers
+            # this lobby, so the WHERE guard is what actually stops overdrafting across
+            # lobbies or predictions.
             deducted = await db.perform_one(
                 "UPDATE users SET points = points - %s WHERE discordid = %s AND points >= %s;",
                 (delta, self.user.id, delta),
@@ -1030,12 +991,9 @@ class SwapSelectView(discord.ui.View):
         await interaction.response.edit_message(embed=generate_embed(self.session), view=AdminView(self.session))
 
 async def declare_winner(session: "MatchmakingSession", interaction: discord.Interaction, team_a_won: bool) -> None:
-    """Shared implementation for WinnerSelectView.team_a/team_b: record the result,
-    settle bets, post the postgame embed, and end the session.
-
-    Defers immediately after the privilege check, before any DB work -- update_record,
-    apply_elo_changes, and settle_bets previously ran before the interaction was
-    acknowledged at all, risking Discord's ~3s interaction-response deadline.
+    """Shared implementation for declaring a winner: record the result, settle bets,
+    post the postgame embed, end the session. Defers immediately after the privilege
+    check, before any DB work, to stay under Discord's interaction-response deadline.
     """
     if not has_privilege(interaction):
         await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
@@ -1102,10 +1060,8 @@ class WinnerSelectView(discord.ui.View):
 
 class SelfBetForfeitWarningView(discord.ui.View):
     """Shown instead of WinnerSelectView when a non-admin game head with an active bet
-    presses Winner -- warns immediately and requires confirmation before letting them
-    pick a winner at all, since declaring forfeits that bet outright (no payout, no
-    refund). Buttons, not a dropdown -- a Select's option text can get visually
-    truncated in Discord's client on narrow/mobile views, which buttons don't do.
+    presses Winner. Requires confirmation first since declaring forfeits the bet outright.
+    Uses buttons instead of a dropdown, since Select option text can get cut off on Discord's client.
     """
     def __init__(self, session: "MatchmakingSession", stake: int):
         super().__init__(timeout=180)
@@ -1194,10 +1150,8 @@ class AdminView(discord.ui.View):
     @discord.ui.button(label="Winner", style=discord.ButtonStyle.success)
     async def winner(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
         """Open the team picker to declare a winner. Requires a shuffle to have happened first.
-
-        If the clicker is a non-admin game head with an active bet on this match, warns
-        immediately and requires confirmation before opening the team picker at all --
-        see SelfBetForfeitWarningView."""
+        If the clicker is a non-admin game head with an active bet, shows a confirm
+        warning first instead of opening the team picker."""
         if not has_privilege(interaction):
             await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
             return
