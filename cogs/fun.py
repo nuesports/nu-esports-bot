@@ -274,8 +274,7 @@ class Fun(commands.Cog):
         if output := chess(self, message):
             await message.add_reaction(output)
 
-
-        if await ty_stan(message):
+        if output := await ty_stan(message):
             await message.reply(output)
 
         if output := i_love_osu(message):
@@ -289,8 +288,12 @@ class Fun(commands.Cog):
                 await message.add_reaction(emoji)
 
 
-def chess(self, message):
-    if self.bot.user.mentioned_in(message):
+def chess(cog, message):
+    """Reacts with a random chess-piece emoji when the bot is @mentioned.
+
+    Plain function, not a cog method -- takes `cog` explicitly just to reach
+    `cog.bot.user`. Called as chess(self, message) from on_message."""
+    if cog.bot.user.mentioned_in(message):
         if message.mention_everyone:
             return None
 
@@ -300,6 +303,9 @@ def chess(self, message):
         return output
 
 async def ty_stan(message):
+    """Returns a string for on_message to reply with, or None/False if there's
+    nothing more to do -- including when a sticker was found, since that branch
+    already sends its own reply and shouldn't also get echoed by the caller."""
     lower_content = message.content.lower()
     if random.randint(1, 100) <= 10 and ("thank you shannon tan" in lower_content or "tyst" in lower_content):
         sticker = discord.utils.get(message.guild.stickers, id=TYST_STICKER_ID)
@@ -308,9 +314,8 @@ async def ty_stan(message):
                 "THANK YOU SHANNON TAN THANK YOU SHANNON TAN",
                 stickers=[sticker]
             )
-        else:
-            return "THANK YOU SHANNON TAN"
-        return True
+            return None
+        return "THANK YOU SHANNON TAN"
     return False
 
 def i_love_osu(message):
