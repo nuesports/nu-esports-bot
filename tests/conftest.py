@@ -22,6 +22,48 @@ _stage("config.example.yaml", "config.yaml")
 _stage("secrets.example.yaml", "secrets.yaml")
 
 
+class FakeMessage:
+    """Stands in for whatever ctx.followup.send()/channel.send() returns -- just
+    enough surface for callers that edit or delete the message afterwards."""
+    def __init__(self):
+        self.edit_calls = []
+        self.deleted = False
+
+    async def edit(self, **kwargs):
+        self.edit_calls.append(kwargs)
+
+    async def delete(self):
+        self.deleted = True
+
+
+class FakeFollowup:
+    def __init__(self):
+        self.send_calls = []
+
+    async def send(self, *args, **kwargs):
+        self.send_calls.append(kwargs)
+        return FakeMessage()
+
+
+class FakeApplicationContext:
+    """Stands in for discord.ApplicationContext -- covers the handful of attributes
+    and methods command handlers actually touch (defer/respond/followup, author/user,
+    channel), shared across test files since several commands need the same shape."""
+    def __init__(self, author, channel=None):
+        self.author = author
+        self.user = author
+        self.channel = channel
+        self.deferred = False
+        self.respond_calls = []
+        self.followup = FakeFollowup()
+
+    async def defer(self, *args, **kwargs):
+        self.deferred = True
+
+    async def respond(self, *args, **kwargs):
+        self.respond_calls.append(kwargs)
+
+
 @pytest_asyncio.fixture(scope="session")
 async def migrated_db():
     """Applies real migrations and opens the connection pool, once per test session,
