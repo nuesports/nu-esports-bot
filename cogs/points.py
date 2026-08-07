@@ -3,7 +3,7 @@ import random
 import discord
 from discord.ext import commands, tasks
 
-from utils import config, db
+from utils import config, db, payout
 
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
@@ -267,17 +267,11 @@ class PredictionView(discord.ui.View):
         # TODO: add odds
         self.embed.clear_fields()
         format = "{} points\n{} users\n{}x payout"
-        self.odds_a = (
-            1
-            + (sum(self.option_b_points.values()) / sum(self.option_a_points.values()))
-            if self.option_a_points
-            else 1
+        self.odds_a = payout.payout_multiplier(
+            sum(self.option_a_points.values()), sum(self.option_b_points.values())
         )
-        self.odds_b = (
-            1
-            + (sum(self.option_a_points.values()) / sum(self.option_b_points.values()))
-            if self.option_b_points
-            else 1
+        self.odds_b = payout.payout_multiplier(
+            sum(self.option_b_points.values()), sum(self.option_a_points.values())
         )
         self.embed.add_field(
             name=self.option_a,
@@ -309,6 +303,14 @@ class PredictionView(discord.ui.View):
         await self.message.edit(view=self)
 
     async def modal_callback(self, user, points, option):
+        # Atomic conditional UPDATE. PredictionModal's earlier balance check is a stale
+        # snapshot, so this guard is what actually prevents overdrafting.
+        sql = "UPDATE users SET points = points - %s WHERE discordid = %s AND points >= %s;"
+        deducted = await db.perform_one(sql, (points, user.id, points))
+        if not deducted:
+            await self.message.reply(f"{user.mention} tried to bet more points than they have!")
+            return
+
         if option == self.option_a:
             prev = self.option_a_points.pop(user.id, 0)
             self.option_a_points[user.id] = prev + points
@@ -323,10 +325,6 @@ class PredictionView(discord.ui.View):
         message = format.format(user.mention, prev + points, option)
         if prev > 0:
             message += format_prev.format(prev)
-
-        sql = "UPDATE users SET points = points - %s WHERE discordid = %s;"
-        data = [points, user.id]
-        await db.perform_one(sql, data)
 
         await self.message.reply(message)
 

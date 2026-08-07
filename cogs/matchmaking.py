@@ -1,10 +1,13 @@
+import asyncio
 import discord
 import random
+import time
 from discord.ext import commands
 
 from utils import config
 from utils import db
 from utils import elo
+from utils import payout
 
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
@@ -16,6 +19,7 @@ LOBBY_SIZE = {game: data.get("lobby_size", 10) for game, data in config.game_dat
 RANK_JITTER = 200        # half-width of the jitter range for a player exactly at the lobby average
 JITTER_PULL_SCALE = 1500 # elo deviation from average that fully saturates the pull toward one side
 _GAME_WIDE_ELO = "__game__" # elo-dict key balance_teams uses for games without per-role ranks
+BETTING_WINDOW_SECONDS = 120 # how long after a shuffle betting stays open
 
 
 def generate_embed(session: "MatchmakingSession") -> discord.Embed:
@@ -37,7 +41,7 @@ def generate_embed(session: "MatchmakingSession") -> discord.Embed:
     right_rows = ["-"] * rows_per_column
     for i, member in enumerate(session.joined):
         tag = session.tags.get(member.id, DEFAULT_TAG.get("Lobby"))
-        entry = f"{tag} {member.display_name}"
+        entry = f"{tag} <@{member.id}>"
         row = i // 2
         if i % 2 == 0:
             left_rows[row] = entry
@@ -47,11 +51,12 @@ def generate_embed(session: "MatchmakingSession") -> discord.Embed:
     embed.add_field(name=f"{session.team_names[1]}", value="\n".join(right_rows), inline=True)
     return embed
 
-def generate_postgame_embed(session: "MatchmakingSession", team: str, players: list[discord.Member]) -> discord.Embed:
+def generate_postgame_embed(session: "MatchmakingSession", team: str, players: list[discord.Member], richest_chatter: str | None = None) -> discord.Embed:
     """Build the "X team wins" embed after a winner is declared.
 
     team: the winning team's display name (not team_a/team_b, the actual name string).
     players: list of players on the winning team.
+    richest_chatter: pre-built field value from build_richest_chatter_field, or None if nobody bet.
     """
     embed = discord.Embed(
         title = f"{team} Win!",
@@ -60,10 +65,15 @@ def generate_postgame_embed(session: "MatchmakingSession", team: str, players: l
     rows = []
     for i, member in enumerate(players):
         tag = session.tags.get(member.id, DEFAULT_TAG.get("Winner"))
-        entry = f"{tag} {member.display_name}"
+        entry = f"{tag} <@{member.id}>"
         rows.append(entry)
 
     embed.add_field(name="Players", value="\n".join(rows), inline=True)
+    if richest_chatter is not None:
+        # Discord requires a non-empty name and value for embed fields. Zero-width
+        # space matches the spacer pattern already used in cogs/pcs.py.
+        embed.add_field(name="​", value="​", inline=True)
+        embed.add_field(name="Richest Chatter", value=richest_chatter, inline=True)
     return embed
 
 def generate_cancelled_embed(session: "MatchmakingSession") -> discord.Embed:
@@ -74,9 +84,46 @@ def generate_cancelled_embed(session: "MatchmakingSession") -> discord.Embed:
         color=discord.Color.from_rgb(78, 42, 132),
     )
 
+def generate_chatters_field(session: "MatchmakingSession") -> str:
+    """Build the "Chatters" field value: bettors sorted by stake (highest first).
+
+    Team A backers read "{points} points - @user" (points-first, reading toward the
+    Team A column); Team B backers read "@user - {points} points" (username-first,
+    reading toward the Team B column), so the whole list visually splits by side.
+    """
+    if not session.bets:
+        rows = ["No bets yet"]
+    else:
+        ordered = sorted(session.bets.items(), key=lambda item: item[1]["points"], reverse=True)
+        rows = []
+        for user_id, bet in ordered:
+            if bet["team"] == "a":
+                rows.append(f"{bet['points']} points - <@{user_id}>")
+            else:
+                rows.append(f"<@{user_id}> - {bet['points']} points")
+
+        # Cap the list at one team's worth of rows so a heavily-bet match doesn't
+        # dwarf the two team columns. Keeps the highest stakes since they're sorted first.
+        team_size = LOBBY_SIZE[session.game] // 2
+        if len(rows) > team_size:
+            omitted = len(rows) - (team_size - 1)
+            rows = rows[: team_size - 1] + [f"...and {omitted} more"]
+
+    if session.betting_open and session.betting_closes_at:
+        status = f"*Betting closes <t:{int(session.betting_closes_at)}:R>*"
+    elif session.betting_closes_at:
+        status = "*Betting closed*"
+    else:
+        status = None
+
+    value = "\n".join(rows)
+    if status:
+        value += f"\n\n{status}"
+    return value
+
 def generate_match_embed(session: "MatchmakingSession") -> discord.Embed:
     """Build the embed for a lobby that's already been shuffled into teams.
-    
+
     Players are grouped by team and ordered by role (via ROLE_REQUIREMENTS), not join order.
     """
     embed = discord.Embed(
@@ -95,12 +142,13 @@ def generate_match_embed(session: "MatchmakingSession") -> discord.Embed:
             tag = session.tags.get(member.id, DEFAULT_TAG.get("Lobby"))
             if has_roles:
                 lane = session.role_assignments.get(member.id, "?")
-                rows.append(f"**{lane}** — {tag} {member.display_name}")
+                rows.append(f"**{lane}** — {tag} <@{member.id}>")
             else:
-                rows.append(f"{tag} {member.display_name}")
+                rows.append(f"{tag} <@{member.id}>")
         return "\n".join(rows) if rows else "-"
     embed.add_field(name=session.team_names[0], value=team_rows(session.team_a), inline=True)
     embed.add_field(name=session.team_names[1], value=team_rows(session.team_b), inline=True)
+    embed.add_field(name="Chatters", value=generate_chatters_field(session), inline=True)
     return embed
 
 
@@ -268,10 +316,16 @@ def has_privilege(interaction: discord.Interaction) -> bool:
     
     True if they have a role with "game head" in its name (case-insensitive, substring match), 
     or if they're an admin."""
-    if (interaction.user.guild_permissions.administrator 
+    if (interaction.user.guild_permissions.administrator
         or any("game head" in role.name.lower() for role in interaction.user.roles)):
         return True
     return False
+
+def must_forfeit_bet_on_declare(interaction: discord.Interaction) -> bool:
+    """True if this user has the "game head" role but isn't a server admin.
+    Admins skip the self-officiating forfeit rule, same trust call has_privilege already makes."""
+    return (not interaction.user.guild_permissions.administrator
+            and any("game head" in role.name.lower() for role in interaction.user.roles))
 
 async def refresh_admin_panels(session: "MatchmakingSession") -> None:
     """Re-render every currently-open admin panel so they reflect the latest lobby state.
@@ -285,6 +339,57 @@ async def refresh_admin_panels(session: "MatchmakingSession") -> None:
         except (discord.NotFound, discord.HTTPException):
             pass
     session.admin_panels = still_open
+
+async def start_betting_window(session: "MatchmakingSession") -> None:
+    """Refund any bets from the previous shuffle and open a fresh betting window.
+    Cancels a previous close-timer first so re-shuffling twice doesn't leave an
+    orphaned task, and refunds rather than wipes since those points were already deducted.
+    """
+    if session.betting_close_task is not None:
+        session.betting_close_task.cancel()
+    await refund_bets(session)
+    session.betting_open = True
+    session.betting_closes_at = time.time() + BETTING_WINDOW_SECONDS
+    session.betting_close_task = asyncio.create_task(close_betting_after_delay(session))
+
+async def close_betting_after_delay(session: "MatchmakingSession") -> None:
+    """Close betting BETTING_WINDOW_SECONDS after a shuffle and refresh the public message
+    so the Bet button disables. Keeps the task reference alive through the message edit
+    so a mid-edit cancel from stop_betting_window can still interrupt it.
+    """
+    try:
+        await asyncio.sleep(BETTING_WINDOW_SECONDS)
+    except asyncio.CancelledError:
+        return
+    session.betting_open = False
+    if session.message is not None:
+        try:
+            await session.message.edit(embed=generate_embed(session), view=LobbyView(session))
+        except asyncio.CancelledError:
+            return
+        except (discord.NotFound, discord.HTTPException):
+            pass
+    session.betting_close_task = None
+
+def stop_betting_window(session: "MatchmakingSession") -> None:
+    """Cancel any pending betting-close timer without reopening it.
+    Used when the match is ending, not just being reshuffled."""
+    if session.betting_close_task is not None:
+        session.betting_close_task.cancel()
+        session.betting_close_task = None
+    session.betting_open = False
+
+async def refund_bets(session: "MatchmakingSession") -> None:
+    """Refund every outstanding bet's stake back to the bettor.
+    Used when a lobby is cancelled before a winner is declared.
+    """
+    if not session.bets:
+        return
+    await db.perform_many(
+        "UPDATE users SET points = points + %s WHERE discordid = %s;",
+        [(bet["points"], user_id) for user_id, bet in session.bets.items()],
+    )
+    session.bets = {}
 
 def swap_slots(session: "MatchmakingSession", id_a: int, id_b: int) -> bool:
     """Swap two players' team+lane slots.
@@ -496,6 +601,75 @@ async def apply_elo_changes(session: 'MatchmakingSession', team_a_won: bool) -> 
         [(delta, discordid, session.game) for discordid, delta in deltas.items()],
     )
 
+async def settle_bets(session: "MatchmakingSession", team_a_won: bool) -> dict | None:
+    """Pay out or refund every bet, based on which team won. Winners split the losing
+    pot proportionally to their stake, same formula as cogs/points.py's Prediction.
+    Refunds everyone if only one side bet. Clears session.bets before returning either way.
+    """
+    if not session.bets:
+        return None
+
+    team_a_bets = {uid: bet["points"] for uid, bet in session.bets.items() if bet["team"] == "a"}
+    team_b_bets = {uid: bet["points"] for uid, bet in session.bets.items() if bet["team"] == "b"}
+    winning_bets, losing_bets = (team_a_bets, team_b_bets) if team_a_won else (team_b_bets, team_a_bets)
+    winning_pot = sum(winning_bets.values())
+    losing_pot = sum(losing_bets.values())
+
+    if not winning_bets or not losing_bets:
+        refunds = {**team_a_bets, **team_b_bets}
+        await db.perform_many(
+            "UPDATE users SET points = points + %s WHERE discordid = %s;",
+            [(points, uid) for uid, points in refunds.items()],
+        )
+        session.bets = {}
+        return {"refunded": True, "total": sum(refunds.values())}
+
+    multiplier = payout.payout_multiplier(winning_pot, losing_pot)
+    payouts = {uid: round(points * multiplier) for uid, points in winning_bets.items()}
+    await db.perform_many(
+        "UPDATE users SET points = points + %s WHERE discordid = %s;",
+        [(amount, uid) for uid, amount in payouts.items()],
+    )
+    # Multiplier is the same for every winner, so the biggest stake is also
+    # the biggest payout and profit.
+    richest_id = max(winning_bets, key=lambda uid: winning_bets[uid])
+    summary = {
+        "refunded": False,
+        "multiplier": multiplier,
+        "num_winners": len(winning_bets),
+        "num_losers": len(losing_bets),
+        "richest_bettor_id": richest_id,
+        "richest_bettor_stake": winning_bets[richest_id],
+        "richest_bettor_payout": payouts[richest_id],
+    }
+    session.bets = {}
+    return summary
+
+async def build_richest_chatter_field(summary: dict | None) -> str | None:
+    """Build the "Richest Chatter" embed field value. Returns None if nobody bet,
+    or a short refund line if nobody backed the losing side.
+    """
+    if summary is None:
+        return None
+    if summary["refunded"]:
+        return "Nobody backed the losing side!\nAll bets refunded."
+
+    richest_id = summary["richest_bettor_id"]
+    profit = summary["richest_bettor_payout"] - summary["richest_bettor_stake"]
+
+    tag_row = await db.fetch_one("SELECT tag FROM profiles WHERE discordid = %s;", (richest_id,))
+    tag = tag_row[0] if tag_row and tag_row[0] else DEFAULT_TAG.get("Winner")
+
+    winners_word = "big winner" if summary["num_winners"] == 1 else "big winners"
+    losers_word = "sore loser" if summary["num_losers"] == 1 else "sore losers"
+
+    return (
+        f"{tag} <@{richest_id}>\n"
+        f"*{profit} points gained*\n"
+        f"**x{summary['multiplier']:.2f} payout**\n"
+        f"{summary['num_winners']} {winners_word} - {summary['num_losers']} {losers_word}"
+    )
+
 class MatchmakingSession:
     """Tracks the state of one matchmaking lobby for one (channel, game) pair."""
 
@@ -511,6 +685,11 @@ class MatchmakingSession:
         self.admin_panels: dict[int, discord.InteractionMessage] = {}
         self.owner: discord.Member | None = None
         self.key: tuple[int, str] | None = None
+        self.bets: dict[int, dict] = {} # member.id to {"team": "a"|"b", "points": int}
+        self.betting_open: bool = False
+        self.betting_closes_at: float | None = None
+        self.betting_close_task: asyncio.Task | None = None
+        self.bet_locks: dict[int, asyncio.Lock] = {} # member.id to a lock serializing that user's bet submissions
 
 class Matchmaking(commands.Cog):
     """Cog housing the /matchmaking command group and the active lobby state for all channels."""
@@ -589,6 +768,7 @@ class LobbyView(discord.ui.View):
         super().__init__(timeout=None)
         self.session = session
         self.join.disabled = len(session.joined) >= LOBBY_SIZE[session.game]
+        self.bet.disabled = not (session.role_assignments and session.betting_open)
 
     @discord.ui.button(label="Join", style=discord.ButtonStyle.success)
     async def join(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
@@ -646,6 +826,135 @@ class LobbyView(discord.ui.View):
         panel_message = await interaction.original_response()
         self.session.admin_panels[interaction.user.id] = panel_message
 
+    @discord.ui.button(label="Bet", style=discord.ButtonStyle.secondary)
+    async def bet(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+        """Open the team-choice view for placing or raising a bet.
+        Non-admin game heads get a warning: declaring the winner themselves later
+        forfeits this bet. Admins are exempt from both the warning and the forfeit.
+        """
+        if not self.session.role_assignments:
+            await interaction.response.send_message("Betting opens once the lobby's been shuffled!", ephemeral=True)
+            return
+        if not self.session.betting_open:
+            await interaction.response.send_message("Betting's closed for this match.", ephemeral=True)
+            return
+
+        prompt = f"Bet on **{self.session.team_names[0]}** or **{self.session.team_names[1]}**?"
+        if must_forfeit_bet_on_declare(interaction):
+            prompt += (
+                "\n\n⚠️ You're a game head -- if *you* press Winner to declare this match's "
+                "result, your bet will be wiped instead of paid out or refunded."
+            )
+
+        await interaction.response.send_message(
+            prompt,
+            view=BetTeamSelectView(self.session, interaction.user),
+            ephemeral=True,
+        )
+
+class BetTeamSelectView(discord.ui.View):
+    """Ephemeral team picker shown after clicking Bet. Players on a team can only
+    bet on themselves, and once a bet is placed the opposing team's button disables too.
+    """
+    def __init__(self, session: "MatchmakingSession", user: discord.Member):
+        super().__init__(timeout=120)
+        self.session = session
+
+        existing = session.bets.get(user.id)
+        on_team_a = any(m.id == user.id for m in session.team_a)
+        on_team_b = any(m.id == user.id for m in session.team_b)
+
+        team_a_button = discord.ui.Button(label=session.team_names[0], style=discord.ButtonStyle.primary)
+        team_a_button.disabled = on_team_b or (existing is not None and existing["team"] != "a")
+        team_a_button.callback = self.make_callback("a")
+        self.add_item(team_a_button)
+
+        team_b_button = discord.ui.Button(label=session.team_names[1], style=discord.ButtonStyle.primary)
+        team_b_button.disabled = on_team_a or (existing is not None and existing["team"] != "b")
+        team_b_button.callback = self.make_callback("b")
+        self.add_item(team_b_button)
+
+    def make_callback(self, team: str):
+        async def callback(interaction: discord.Interaction) -> None:
+            existing = self.session.bets.get(interaction.user.id)
+            current_bet = existing["points"] if existing else 0
+
+            row = await db.fetch_one("SELECT points FROM users WHERE discordid = %s;", (interaction.user.id,))
+            balance = row[0] if row else 0
+
+            await interaction.response.send_modal(BetModal(self.session, interaction.user, team, current_bet, balance))
+        return callback
+
+class BetModal(discord.ui.Modal):
+    """Ephemeral wager-amount prompt. The field is the new total stake, not an amount
+    to add. current_bet/balance are just a label hint; callback() re-reads live state
+    under a per-user lock and deducts with an atomic conditional UPDATE so the balance
+    can't go negative even across lobbies.
+    """
+    def __init__(self, session: "MatchmakingSession", user: discord.Member, team: str, current_bet: int, balance: int):
+        super().__init__(title="Place your bet")
+        self.session = session
+        self.user = user
+        self.team = team
+
+        if current_bet:
+            label = f"Total bet (currently {current_bet}, {balance} more available)"
+        else:
+            label = f"How many points? ({balance} available)"
+
+        self.add_item(discord.ui.InputText(
+            label=label,
+            required=True,
+            min_length=1,
+            placeholder="Enter your new total bet",
+        ))
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        value = self.children[0].value
+        try:
+            new_total = int(value)
+        except ValueError:
+            await interaction.response.send_message("You must wager a whole number of points!", ephemeral=True)
+            return
+
+        lock = self.session.bet_locks.setdefault(self.user.id, asyncio.Lock())
+        async with lock:
+            existing = self.session.bets.get(self.user.id)
+            current_bet = existing["points"] if existing else 0
+
+            if new_total <= current_bet:
+                message = "You can only raise your bet, not lower it!" if current_bet else "You must wager more than 0 points!"
+                await interaction.response.send_message(message, ephemeral=True)
+                return
+
+            delta = new_total - current_bet
+
+            if not self.session.betting_open:
+                await interaction.response.send_message("Betting closed while you were typing -- too slow!", ephemeral=True)
+                return
+
+            # Atomic conditional UPDATE, not SELECT-then-UPDATE. The lock only covers
+            # this lobby, so the WHERE guard is what actually stops overdrafting across
+            # lobbies or predictions.
+            deducted = await db.perform_one(
+                "UPDATE users SET points = points - %s WHERE discordid = %s AND points >= %s;",
+                (delta, self.user.id, delta),
+            )
+            if not deducted:
+                await interaction.response.send_message("You don't have enough points for that!", ephemeral=True)
+                return
+            self.session.bets[self.user.id] = {"team": self.team, "points": new_total}
+
+        team_name = self.session.team_names[0] if self.team == "a" else self.session.team_names[1]
+        await interaction.response.send_message(f"Bet placed: {new_total} points on **{team_name}**.", ephemeral=True)
+
+        if self.session.message is not None:
+            try:
+                await self.session.message.edit(embed=generate_match_embed(self.session))
+            except (discord.NotFound, discord.HTTPException):
+                pass
+        await refresh_admin_panels(self.session)
+
 class SwapSelectView(discord.ui.View):
     def __init__(self, session):
         super().__init__(timeout=180)
@@ -681,6 +990,39 @@ class SwapSelectView(discord.ui.View):
             return
         await interaction.response.edit_message(embed=generate_embed(self.session), view=AdminView(self.session))
 
+async def declare_winner(session: "MatchmakingSession", interaction: discord.Interaction, team_a_won: bool) -> None:
+    """Shared implementation for declaring a winner: record the result, settle bets,
+    post the postgame embed, end the session. Defers immediately after the privilege
+    check, before any DB work, to stay under Discord's interaction-response deadline.
+    """
+    if not has_privilege(interaction):
+        await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+
+    winners, losers = (session.team_a, session.team_b) if team_a_won else (session.team_b, session.team_a)
+    winning_team_name = session.team_names[0] if team_a_won else session.team_names[1]
+
+    await update_record(session, winners, losers)
+    await apply_elo_changes(session, team_a_won=team_a_won)
+    stop_betting_window(session)
+    bet_summary = await settle_bets(session, team_a_won=team_a_won)
+    richest_chatter = await build_richest_chatter_field(bet_summary)
+
+    # result's already recorded above, so a failed edit here still needs surfacing, not swallowing
+    try:
+        await session.message.edit(
+            embed=generate_postgame_embed(session, winning_team_name, winners, richest_chatter),
+            view=PostgameView(session),
+        )
+    except (discord.NotFound, discord.HTTPException):
+        await interaction.followup.send("Result recorded, but I couldn't update the lobby embed.", ephemeral=True)
+
+    cog = interaction.client.get_cog("Matchmaking")
+    cog.active_sessions.pop(session.key, None)
+    await interaction.delete_original_response()
+
 class WinnerSelectView(discord.ui.View):
     """Ephemeral team picker for declaring a winner.
     
@@ -702,54 +1044,49 @@ class WinnerSelectView(discord.ui.View):
         self.add_item(back_button)
 
     async def team_a(self, interaction: discord.Interaction) -> None:
-        """Declare team_a the winner: record wins/losses, post the postgame embed, end the session."""
-        if not has_privilege(interaction):
-            await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
-            return
-        
-        await update_record(self.session, self.session.team_a, self.session.team_b)
-        await apply_elo_changes(self.session, team_a_won=True)
-        await interaction.response.defer()
-        # result's already recorded above, so a failed edit here still needs surfacing, not swallowing
-        try:
-            await self.session.message.edit(
-                embed=generate_postgame_embed(self.session, self.session.team_names[0], self.session.team_a),
-                view=PostgameView(self.session),
-            )
-        except (discord.NotFound, discord.HTTPException):
-            await interaction.followup.send("Result recorded, but I couldn't update the lobby embed.", ephemeral=True)
-
-        cog = interaction.client.get_cog("Matchmaking")
-        cog.active_sessions.pop(self.session.key, None)
-        await interaction.delete_original_response()
+        """Declare team_a the winner."""
+        await declare_winner(self.session, interaction, team_a_won=True)
 
     async def team_b(self, interaction: discord.Interaction) -> None:
-        """Declare team_b the winner: record wins/losses, post the postgame embed, end the session."""
-        if not has_privilege(interaction):
-            await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
-            return
+        """Declare team_b the winner."""
+        await declare_winner(self.session, interaction, team_a_won=False)
 
-        await update_record(self.session, self.session.team_b, self.session.team_a)
-        await apply_elo_changes(self.session, team_a_won=False)
-        await interaction.response.defer()
-        try:
-            await self.session.message.edit(
-                embed=generate_postgame_embed(self.session, self.session.team_names[1], self.session.team_b),
-                view=PostgameView(self.session),
-            )
-        except (discord.NotFound, discord.HTTPException):
-            await interaction.followup.send("Result recorded, but I couldn't update the lobby embed.", ephemeral=True)
-
-        cog = interaction.client.get_cog("Matchmaking")
-        cog.active_sessions.pop(self.session.key, None)
-        await interaction.delete_original_response()
-    
     async def back(self, interaction: discord.Interaction) -> None:
         """Return to the admin panel without declaring a winner."""
         if not has_privilege(interaction):
             await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
             return
-        await interaction.response.edit_message(embed=generate_embed(self.session), view=AdminView(self.session))
+        await interaction.response.edit_message(content=None, embed=generate_embed(self.session), view=AdminView(self.session))
+
+class SelfBetForfeitWarningView(discord.ui.View):
+    """Shown instead of WinnerSelectView when a non-admin game head with an active bet
+    presses Winner. Requires confirmation first since declaring forfeits the bet outright.
+    Uses buttons instead of a dropdown, since Select option text can get cut off on Discord's client.
+    """
+    def __init__(self, session: "MatchmakingSession", stake: int):
+        super().__init__(timeout=180)
+        self.session = session
+
+        continue_button = discord.ui.Button(label=f"Continue (forfeit my {stake}-point bet)", style=discord.ButtonStyle.danger)
+        continue_button.callback = self.confirm
+        self.add_item(continue_button)
+
+        cancel_button = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.secondary)
+        cancel_button.callback = self.cancel
+        self.add_item(cancel_button)
+
+    async def confirm(self, interaction: discord.Interaction) -> None:
+        if not has_privilege(interaction):
+            await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
+            return
+        self.session.bets.pop(interaction.user.id, None)
+        await interaction.response.edit_message(content=None, embed=generate_embed(self.session), view=WinnerSelectView(self.session))
+
+    async def cancel(self, interaction: discord.Interaction) -> None:
+        if not has_privilege(interaction):
+            await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
+            return
+        await interaction.response.edit_message(content=None, embed=generate_embed(self.session), view=AdminView(self.session))
 
 class PostgameView(discord.ui.View):
     """Post-game view that allows for rematching."""
@@ -783,6 +1120,7 @@ class AdminView(discord.ui.View):
         self.session.team_a = team_a
         self.session.team_b = team_b
         self.session.role_assignments = assignments
+        await start_betting_window(self.session)
 
         await self.session.message.edit(embed=generate_embed(self.session), view=LobbyView(self.session))
         await interaction.response.edit_message(embed=generate_embed(self.session), view=self)
@@ -790,7 +1128,7 @@ class AdminView(discord.ui.View):
 
         unranked = await get_unranked(self.session.game, self.session.joined, self.session.role_assignments)
         if unranked:
-            names = ", ".join(m.display_name for m in unranked)
+            names = ", ".join(f"<@{m.id}>" for m in unranked)
             await interaction.followup.send(
                 f"⚠️ Warning: no rank set for {names}. They're seeded at the default, "
                 f"tell them to run `/profile rank` for a better shuffle.",
@@ -811,14 +1149,28 @@ class AdminView(discord.ui.View):
     
     @discord.ui.button(label="Winner", style=discord.ButtonStyle.success)
     async def winner(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
-        """Open the team picker to declare a winner. Requires a shuffle to have happened first."""
+        """Open the team picker to declare a winner. Requires a shuffle to have happened first.
+        If the clicker is a non-admin game head with an active bet, shows a confirm
+        warning first instead of opening the team picker."""
         if not has_privilege(interaction):
             await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
             return
         if not self.session.role_assignments:
             await interaction.response.send_message("Shuffle first before deciding a winner!", ephemeral=True)
             return
-        
+
+        bet = self.session.bets.get(interaction.user.id)
+        if bet is not None and must_forfeit_bet_on_declare(interaction):
+            await interaction.response.edit_message(
+                content=(
+                    "⚠️ **You have an active bet on this match.** Declaring the winner "
+                    "yourself will **forfeit it immediately** -- no payout, no refund."
+                ),
+                embed=generate_embed(self.session),
+                view=SelfBetForfeitWarningView(self.session, bet["points"]),
+            )
+            return
+
         await interaction.response.edit_message(embed=generate_embed(self.session), view=WinnerSelectView(self.session))
 
     @discord.ui.button(label="Delete", style=discord.ButtonStyle.danger)
@@ -856,6 +1208,9 @@ class CancelConfirmView(discord.ui.View):
         if self.select.values[0] == "back":
             await interaction.response.edit_message(embed=generate_embed(self.session), view=AdminView(self.session))
             return
+
+        stop_betting_window(self.session)
+        await refund_bets(self.session)
 
         try:
             await self.session.message.edit(embed=generate_cancelled_embed(self.session), view=None)
