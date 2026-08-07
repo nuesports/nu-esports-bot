@@ -303,6 +303,16 @@ class PredictionView(discord.ui.View):
         await self.message.edit(view=self)
 
     async def modal_callback(self, user, points, option):
+        # Atomic conditional UPDATE, not a plain UPDATE after PredictionModal's earlier
+        # self.user_points check -- that check is a stale snapshot from when the modal
+        # was opened, so without a DB-level guard a user could overdraft by placing two
+        # bets (here or in a matchmaking lobby's Bet) before either one lands.
+        sql = "UPDATE users SET points = points - %s WHERE discordid = %s AND points >= %s;"
+        deducted = await db.perform_one(sql, (points, user.id, points))
+        if not deducted:
+            await self.message.reply(f"{user.mention} tried to bet more points than they have!")
+            return
+
         if option == self.option_a:
             prev = self.option_a_points.pop(user.id, 0)
             self.option_a_points[user.id] = prev + points
@@ -317,10 +327,6 @@ class PredictionView(discord.ui.View):
         message = format.format(user.mention, prev + points, option)
         if prev > 0:
             message += format_prev.format(prev)
-
-        sql = "UPDATE users SET points = points - %s WHERE discordid = %s;"
-        data = [points, user.id]
-        await db.perform_one(sql, data)
 
         await self.message.reply(message)
 

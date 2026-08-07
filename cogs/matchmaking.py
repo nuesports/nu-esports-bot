@@ -71,7 +71,9 @@ def generate_postgame_embed(session: "MatchmakingSession", team: str, players: l
 
     embed.add_field(name="Players", value="\n".join(rows), inline=True)
     if richest_chatter is not None:
-        embed.add_field(name="", value="", inline=True)
+        # Discord rejects embed fields with an empty name/value (min 1 char each) --
+        # zero-width space matches the existing blank-spacer convention in cogs/pcs.py.
+        embed.add_field(name="​", value="​", inline=True)
         embed.add_field(name="Richest Chatter", value=richest_chatter, inline=True)
     return embed
 
@@ -918,10 +920,13 @@ class BetModal(discord.ui.Modal):
     The field is the bettor's new *total* stake, not an amount to add on top -- that's
     what makes "raise but not lower" an enforced rule instead of an automatic one.
 
-    current_bet/balance are only a snapshot for the label text at modal-open time --
-    the actual validation re-reads live state under session.bet_locks[user.id] in
-    callback(), so two bet flows opened back-to-back for the same user can't race each
-    other into overwriting session.bets or double-spending the same balance.
+    current_bet/balance are only a snapshot for the label text at modal-open time.
+    callback() re-reads the live bet under session.bet_locks[user.id] so two bet flows
+    for the same user in THIS lobby can't overwrite session.bets or double-count a
+    raise, and deducts via an atomic conditional UPDATE (not a SELECT-then-UPDATE) so
+    the balance itself can never go negative even from a race the lock can't see --
+    e.g. the same user betting in a different lobby, or on a /points prediction,
+    at the same time.
     """
     def __init__(self, session: "MatchmakingSession", user: discord.Member, team: str, current_bet: int, balance: int):
         super().__init__(title="Place your bet")
@@ -960,17 +965,23 @@ class BetModal(discord.ui.Modal):
                 return
 
             delta = new_total - current_bet
-            row = await db.fetch_one("SELECT points FROM users WHERE discordid = %s;", (self.user.id,))
-            balance = row[0] if row else 0
-            if delta > balance:
-                await interaction.response.send_message("You don't have enough points for that!", ephemeral=True)
-                return
 
             if not self.session.betting_open:
                 await interaction.response.send_message("Betting closed while you were typing -- too slow!", ephemeral=True)
                 return
 
-            await db.perform_one("UPDATE users SET points = points - %s WHERE discordid = %s;", (delta, self.user.id))
+            # Atomic conditional UPDATE, not a SELECT-then-UPDATE: session.bet_locks only
+            # serializes bet submissions within THIS lobby, so it can't stop a user from
+            # overdrafting by betting in two lobbies (or a /points prediction) at once.
+            # The WHERE guard makes the deduction itself race-proof regardless of what
+            # else might be spending the same balance concurrently.
+            deducted = await db.perform_one(
+                "UPDATE users SET points = points - %s WHERE discordid = %s AND points >= %s;",
+                (delta, self.user.id, delta),
+            )
+            if not deducted:
+                await interaction.response.send_message("You don't have enough points for that!", ephemeral=True)
+                return
             self.session.bets[self.user.id] = {"team": self.team, "points": new_total}
 
         team_name = self.session.team_names[0] if self.team == "a" else self.session.team_names[1]
