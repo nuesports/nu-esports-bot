@@ -4,6 +4,14 @@
 #
 # Plain `docker compose up --build` (no -f flags) is completely unaffected by this file.
 services:
+  db:
+    # Exposed to the host only in dev -- `uv run pytest` runs directly on this
+    # machine, not inside the compose network, so it needs a real port to reach
+    # postgres. Not in the base compose.yaml; production has no reason to expose this.
+    # Mapped to 5433, not 5432 -- avoids colliding with a local Postgres install, if
+    # you have one. Point secrets.yaml's database.port at 5433 to match.
+    ports:
+      - "5433:5432"
   bot:
     volumes:
       # Live source, so a restart (not a rebuild) picks up code edits.
