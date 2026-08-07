@@ -662,7 +662,7 @@ async def settle_bets(session: "MatchmakingSession", team_a_won: bool) -> dict |
     session.bets = {}
     return summary
 
-async def build_richest_chatter_field(interaction: discord.Interaction, summary: dict | None) -> str | None:
+async def build_richest_chatter_field(summary: dict | None) -> str | None:
     """Build the "Richest Chatter" embed field value for a settled match's bets.
 
     None omits the field entirely (nobody bet on this match). A refund (nobody backed
@@ -679,26 +679,13 @@ async def build_richest_chatter_field(interaction: discord.Interaction, summary:
     tag_row = await db.fetch_one("SELECT tag FROM profiles WHERE discordid = %s;", (richest_id,))
     tag = tag_row[0] if tag_row and tag_row[0] else DEFAULT_TAG.get("Winner")
 
-    name = None
-    if interaction.guild is not None:
-        member = interaction.guild.get_member(richest_id)
-        if member is None:
-            try:
-                member = await interaction.guild.fetch_member(richest_id)
-            except (discord.NotFound, discord.HTTPException):
-                member = None
-        if member is not None:
-            name = member.display_name
-    if name is None:
-        name = f"<@{richest_id}>"
-
     winners_word = "big winner" if summary["num_winners"] == 1 else "big winners"
     losers_word = "sore loser" if summary["num_losers"] == 1 else "sore losers"
 
     return (
-        f"{tag} {name}\n"
-        f"{profit} points gained\n"
-        f"x{summary['multiplier']:.2f} payout\n"
+        f"{tag} <@{richest_id}>\n"
+        f"*{profit} points gained*\n"
+        f"**x{summary['multiplier']:.2f} payout**\n"
         f"{summary['num_winners']} {winners_word} - {summary['num_losers']} {losers_word}"
     )
 
@@ -1034,10 +1021,9 @@ async def declare_winner(session: "MatchmakingSession", interaction: discord.Int
     """Shared implementation for WinnerSelectView.team_a/team_b: record the result,
     settle bets, post the postgame embed, and end the session.
 
-    Defers immediately after the privilege check, before any DB/API work -- update_record,
-    apply_elo_changes, settle_bets, and build_richest_chatter_field (which can itself hit
-    Discord's REST API) previously ran before the interaction was acknowledged at all,
-    risking Discord's ~3s interaction-response deadline.
+    Defers immediately after the privilege check, before any DB work -- update_record,
+    apply_elo_changes, and settle_bets previously ran before the interaction was
+    acknowledged at all, risking Discord's ~3s interaction-response deadline.
     """
     if not has_privilege(interaction):
         await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
@@ -1052,7 +1038,7 @@ async def declare_winner(session: "MatchmakingSession", interaction: discord.Int
     await apply_elo_changes(session, team_a_won=team_a_won)
     stop_betting_window(session)
     bet_summary = await settle_bets(session, team_a_won=team_a_won)
-    richest_chatter = await build_richest_chatter_field(interaction, bet_summary)
+    richest_chatter = await build_richest_chatter_field(bet_summary)
 
     # result's already recorded above, so a failed edit here still needs surfacing, not swallowing
     try:
