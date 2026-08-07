@@ -71,6 +71,7 @@ def generate_postgame_embed(session: "MatchmakingSession", team: str, players: l
 
     embed.add_field(name="Players", value="\n".join(rows), inline=True)
     if richest_chatter is not None:
+        embed.add_field(name="", value="", inline=True)
         embed.add_field(name="Richest Chatter", value=richest_chatter, inline=True)
     return embed
 
@@ -678,7 +679,7 @@ async def build_richest_chatter_field(interaction: discord.Interaction, summary:
     if summary is None:
         return None
     if summary["refunded"]:
-        return "All bets refunded -- nobody backed the losing side."
+        return "Nobody backed the losing side!\nAll bets refunded."
 
     richest_id = summary["richest_bettor_id"]
     profit = summary["richest_bettor_payout"] - summary["richest_bettor_stake"]
@@ -701,7 +702,7 @@ async def build_richest_chatter_field(interaction: discord.Interaction, summary:
 
     return (
         f"{tag} {name}\n"
-        f"{profit} points made\n"
+        f"{profit} points gained\n"
         f"x{summary['multiplier']:.2f} payout\n"
         f"{summary['num_winners']} big winners - {summary['num_losers']} sore losers"
     )
