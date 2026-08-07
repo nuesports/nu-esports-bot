@@ -106,7 +106,8 @@ def generate_chatters_field(session: "MatchmakingSession") -> str:
         # Chatters column. Keeps the highest stakes (already sorted first).
         team_size = LOBBY_SIZE[session.game] // 2
         if len(rows) > team_size:
-            rows = rows[: team_size - 1] + ["..."]
+            omitted = len(rows) - (team_size - 1)
+            rows = rows[: team_size - 1] + [f"...and {omitted} more"]
 
     if session.betting_open and session.betting_closes_at:
         status = f"*Betting closes <t:{int(session.betting_closes_at)}:R>*"
