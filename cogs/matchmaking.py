@@ -41,7 +41,7 @@ def generate_embed(session: "MatchmakingSession") -> discord.Embed:
     right_rows = ["-"] * rows_per_column
     for i, member in enumerate(session.joined):
         tag = session.tags.get(member.id, DEFAULT_TAG.get("Lobby"))
-        entry = f"{tag} {member.display_name}"
+        entry = f"{tag} <@{member.id}>"
         row = i // 2
         if i % 2 == 0:
             left_rows[row] = entry
@@ -66,7 +66,7 @@ def generate_postgame_embed(session: "MatchmakingSession", team: str, players: l
     rows = []
     for i, member in enumerate(players):
         tag = session.tags.get(member.id, DEFAULT_TAG.get("Winner"))
-        entry = f"{tag} {member.display_name}"
+        entry = f"{tag} <@{member.id}>"
         rows.append(entry)
 
     embed.add_field(name="Players", value="\n".join(rows), inline=True)
@@ -142,9 +142,9 @@ def generate_match_embed(session: "MatchmakingSession") -> discord.Embed:
             tag = session.tags.get(member.id, DEFAULT_TAG.get("Lobby"))
             if has_roles:
                 lane = session.role_assignments.get(member.id, "?")
-                rows.append(f"**{lane}** — {tag} {member.display_name}")
+                rows.append(f"**{lane}** — {tag} <@{member.id}>")
             else:
-                rows.append(f"{tag} {member.display_name}")
+                rows.append(f"{tag} <@{member.id}>")
         return "\n".join(rows) if rows else "-"
     embed.add_field(name=session.team_names[0], value=team_rows(session.team_a), inline=True)
     embed.add_field(name=session.team_names[1], value=team_rows(session.team_b), inline=True)
@@ -1182,7 +1182,7 @@ class AdminView(discord.ui.View):
 
         unranked = await get_unranked(self.session.game, self.session.joined, self.session.role_assignments)
         if unranked:
-            names = ", ".join(m.display_name for m in unranked)
+            names = ", ".join(f"<@{m.id}>" for m in unranked)
             await interaction.followup.send(
                 f"⚠️ Warning: no rank set for {names}. They're seeded at the default, "
                 f"tell them to run `/profile rank` for a better shuffle.",
