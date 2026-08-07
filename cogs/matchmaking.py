@@ -101,6 +101,13 @@ def generate_chatters_field(session: "MatchmakingSession") -> str:
             else:
                 rows.append(f"<@{user_id}> - {bet['points']} points")
 
+        # Cap the list at one team's worth of rows -- matching the two team columns'
+        # own natural length -- so a heavily-bet match doesn't dwarf them with a huge
+        # Chatters column. Keeps the highest stakes (already sorted first).
+        team_size = LOBBY_SIZE[session.game] // 2
+        if len(rows) > team_size:
+            rows = rows[: team_size - 1] + ["..."]
+
     if session.betting_open and session.betting_closes_at:
         status = f"*Betting closes <t:{int(session.betting_closes_at)}:R>*"
     elif session.betting_closes_at:
@@ -108,23 +115,7 @@ def generate_chatters_field(session: "MatchmakingSession") -> str:
     else:
         status = None
 
-    # Discord caps embed field values at 1024 characters. A full lobby's worth of
-    # bettors can blow past that, so keep the highest stakes (already sorted first)
-    # and note how many got cut instead of letting the whole field silently stop updating.
-    suffix_budget = 24  # generous reservation for "\n…and NNN more"
-    budget = 1024 - (len(status) + 2 if status else 0) - suffix_budget
-    kept, used, omitted = [], 0, 0
-    for i, row in enumerate(rows):
-        row_len = len(row) + (1 if kept else 0)  # +1 for the joining newline
-        if used + row_len > budget:
-            omitted = len(rows) - i
-            break
-        kept.append(row)
-        used += row_len
-
-    value = "\n".join(kept)
-    if omitted:
-        value += f"\n…and {omitted} more"
+    value = "\n".join(rows)
     if status:
         value += f"\n\n{status}"
     return value
