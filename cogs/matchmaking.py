@@ -692,11 +692,14 @@ async def build_richest_chatter_field(interaction: discord.Interaction, summary:
     if name is None:
         name = f"<@{richest_id}>"
 
+    winners_word = "big winner" if summary["num_winners"] == 1 else "big winners"
+    losers_word = "sore loser" if summary["num_losers"] == 1 else "sore losers"
+
     return (
         f"{tag} {name}\n"
         f"{profit} points gained\n"
         f"x{summary['multiplier']:.2f} payout\n"
-        f"{summary['num_winners']} big winners - {summary['num_losers']} sore losers"
+        f"{summary['num_winners']} {winners_word} - {summary['num_losers']} {losers_word}"
     )
 
 class MatchmakingSession:
