@@ -38,9 +38,14 @@ class Gameroom(commands.Cog):
                            description="(optional) End date in YYYY-MM-DD format",
                            required=False
                        ),
-                       hours: discord.Option(
+                       regular_hours: discord.Option(
                            str,
-                           description="Hours text, or leave blank to clear override",
+                           description="Text to display, leave blank to clear override(s)",
+                           required=False
+                       ),
+                       weekend_hours: discord.Option(
+                           str,
+                           description="Text to display, on Fri/Sat/Sun",
                            required=False
                        )
                     ):
@@ -80,21 +85,37 @@ class Gameroom(commands.Cog):
         #wipe past-due rows
         await db.perform_one("DELETE FROM gameroom_hours_overrides WHERE date < CURRENT_DATE")
 
-        if hours:
-            dates = [start + datetime.timedelta(days=i) for i in range(span_days)]
+        dates = [start + datetime.timedelta(days=i) for i in range(span_days)]
+
+        def target_value(day):
+            if day.weekday() in (4, 5, 6): #Fri, Sat, Sun
+                return weekend_hours if weekend_hours else regular_hours
+            return regular_hours
+
+        to_set = []
+        to_clear = []
+        for d in dates:
+            value = target_value(d)
+            if value:
+                to_set.append((d, value))
+            else:
+                to_clear.append(d)
+
+        if to_set:
             await db.perform_many(
                 """
                 INSERT INTO gameroom_hours_overrides (date, hours)
                 VALUES (%s, %s)
                 ON CONFLICT (date) DO UPDATE SET hours = EXCLUDED.hours
                 """,
-                [(d, hours) for d in dates]
+                to_set,
             )
-        else:
+        if to_clear:
             await db.perform_one(
-                "DELETE FROM gameroom_hours_overrides WHERE date BETWEEN %s AND %s",
-                (start, end),
+                "DELETE FROM gameroom_hours_overrides WHERE date = any(%s)",
+                (to_clear,)
             )
+
 
         date_range = (
             start.strftime("%-m/%-d/%Y")
@@ -102,8 +123,12 @@ class Gameroom(commands.Cog):
             else f"{start.strftime('%-m/%-d/%Y')} - {end.strftime('%-m/%-d/%Y')}"
         )
         day_word = "day" if span_days == 1 else "days"
-        if hours:
-            await ctx.respond(f"Set hours for {date_range} ({span_days} {day_word}) to: {hours}")
+        if weekend_hours:
+            weekday_part = f"weekdays: {regular_hours}" if regular_hours else "weekdays: cleared"
+            weekend_part = f"Fri-Sun: {weekend_hours}"
+            await ctx.respond(f"Updated hours for {date_range} ({span_days} {day_word}) 📆 {weekday_part}, {weekend_part}")
+        elif regular_hours:
+            await ctx.respond(f"Set hours for {date_range} ({span_days} {day_word}) to: {regular_hours}")
         else:
             await ctx.respond(f"Cleared overrides for {date_range} ({span_days} {day_word})")
         
