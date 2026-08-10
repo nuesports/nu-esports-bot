@@ -38,12 +38,12 @@ class Gameroom(commands.Cog):
                            description="(optional) End date in YYYY-MM-DD format",
                            required=False
                        ),
-                       regular_hours: discord.Option(
+                       regular_text: discord.Option(
                            str,
                            description="Text to display, leave blank to clear override(s)",
                            required=False
                        ),
-                       weekend_hours: discord.Option(
+                       weekend_text: discord.Option(
                            str,
                            description="Text to display, on Fri/Sat/Sun",
                            required=False
@@ -92,16 +92,16 @@ class Gameroom(commands.Cog):
         to_set = []
         to_clear = []
 
-        if regular_hours:
-            to_set += [(d, regular_hours) for d in weekday_dates]
-        elif not weekend_hours:
+        if regular_text:
+            to_set += [(d, regular_text) for d in weekday_dates]
+        elif not weekend_text:
             to_clear += weekday_dates
-        # else: regular_hours blank, weekend_hours set -- leave weekdays untouched
+        # else: regular_text blank, weekend_text set -- leave weekdays untouched
 
-        if weekend_hours:
-            to_set += [(d, weekend_hours) for d in weekend_dates]
-        elif regular_hours:
-            to_set += [(d, regular_hours) for d in weekend_dates]
+        if weekend_text:
+            to_set += [(d, weekend_text) for d in weekend_dates]
+        elif regular_text:
+            to_set += [(d, regular_text) for d in weekend_dates]
         else:
             to_clear += weekend_dates
 
@@ -127,14 +127,14 @@ class Gameroom(commands.Cog):
             else f"{start.strftime('%-m/%-d/%Y')} - {end.strftime('%-m/%-d/%Y')}"
         )
         day_word = "day" if span_days == 1 else "days"
-        if not regular_hours and not weekend_hours:
+        if not regular_text and not weekend_text:
             await ctx.respond(f"Cleared overrides for {date_range} ({span_days} {day_word})")
-        elif weekend_hours and not regular_hours:
-            await ctx.respond(f"Set Fri-Sun hours for {date_range} ({span_days} {day_word}) to: {weekend_hours} (weekdays left unchanged)")
-        elif regular_hours and not weekend_hours:
-            await ctx.respond(f"Set hours for {date_range} ({span_days} {day_word}) to: {regular_hours}")
+        elif weekend_text and not regular_text:
+            await ctx.respond(f"Set Fri-Sun hours for {date_range} ({span_days} {day_word}) to: {weekend_text} (weekdays left unchanged)")
+        elif regular_text and not weekend_text:
+            await ctx.respond(f"Set hours for {date_range} ({span_days} {day_word}) to: {regular_text}")
         else:
-            await ctx.respond(f"Updated hours for {date_range} ({span_days} {day_word}) -- weekdays: {regular_hours}, Fri-Sun: {weekend_hours}")
+            await ctx.respond(f"Updated hours for {date_range} ({span_days} {day_word}) -- weekdays: {regular_text}, Fri-Sun: {weekend_text}")
         
 
 
