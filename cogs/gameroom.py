@@ -25,6 +25,82 @@ class Gameroom(commands.Cog):
     )
 
     @gameroom.command(
+            name="sethours", description="Set or clear an hours override for a date", guild_ids=[GUILD_ID]
+    )
+    async def sethours(self, 
+                       ctx: discord.ApplicationContext,
+                       start_date: discord.Option(
+                            str,
+                            description="Start date in YYYY-MM-DD format"
+                        ),
+                       end_date: discord.Option(
+                           str,
+                           description="(optional) End date in YYYY-MM-DD format",
+                           required=False
+                       ),
+                       hours: discord.Option(
+                           str,
+                           description="Hours text, or leave blank to clear override",
+                           required=False
+                       )
+                    ):
+        is_gameroom_staff = any(
+            "gameroom staff" in role.name.lower() for role in ctx.author.roles
+        )
+        if not is_gameroom_staff:
+            await ctx.respond("You do not have permission to use this command.", ephemeral=True)
+            return
+
+        try:
+            start = datetime.datetime.strptime(start_date, "%Y-%m-%d").date()
+        except ValueError:
+            await ctx.respond("Invalid start date. Use YYYY-MM-DD.", ephemeral=True)
+            return
+
+        if end_date:
+            try:
+                end = datetime.datetime.strptime(end_date, "%Y-%m-%d").date()
+            except ValueError:
+                await ctx.respond("Invalid end date. Use YYYY-MM-DD.", ephemeral=True)
+                return
+        else:
+            end = start
+
+        if end < start:
+            await ctx.respond("End date can't be before start date.", ephemeral=True)
+            return
+
+        span_days = (end - start).days + 1
+        if span_days > 90:
+            await ctx.respond("Range too large (max 90 days) double check your range", ephemeral=True)
+            return
+
+        adjusted_hours = config.gameroom_data.setdefault("adjusted_hours", {})
+        current = start
+        while current <= end:
+            date_str = current.strftime("%Y-%m-%d")
+            if hours:
+                adjusted_hours[date_str] = hours
+            else:
+                adjusted_hours.pop(date_str, None)
+            current += datetime.timedelta(days=1)
+
+        config.save_gameroom_data(config.gameroom_data)
+
+        date_range = (
+            start.strftime("%-m/%-d/%Y")
+            if span_days == 1
+            else f"{start.strftime('%-m/%-d/%Y')} - {end.strftime('%-m/%-d/%Y')}"
+        )
+        day_word = "day" if span_days == 1 else "days"
+        if hours:
+            await ctx.respond(f"Set hours for {date_range} ({span_days} {day_word}) to: {hours}")
+        else:
+            await ctx.respond(f"Cleared overrides for {date_range} ({span_days} {day_word})")
+        
+
+
+    @gameroom.command(
         name="hours", description="Lists current game room hours", guild_ids=[GUILD_ID]
     )
     async def hours(self, ctx):
