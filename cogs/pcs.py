@@ -173,13 +173,10 @@ class PCs(commands.Cog):
         return dt.astimezone(CENTRAL_TZ)
 
     def get_gameroom_hours_for_date(
-        self, target_date: date
+        self, target_date: date, overrides: dict
     ) -> Tuple[datetime, datetime] | None:
         """Return open/close datetimes in Central, or None if closed."""
-        adjusted_hours = config.gameroom_data.get("adjusted_hours", {})
-        hours = adjusted_hours.get(target_date)
-        if hours is None:
-            hours = adjusted_hours.get(target_date.strftime("%Y-%m-%d"))
+        hours = overrides.get(target_date)
         if hours is None:
             hours = config.gameroom_data["default_hours"][target_date.weekday()]
 
@@ -195,12 +192,20 @@ class PCs(commands.Cog):
         start_time, end_time = self.parse_time_range(hours_str)
         return start_time, end_time
 
-    def get_next_open_time(self, now: datetime) -> datetime | None:
+    async def get_next_open_time(self, now: datetime) -> datetime | None:
         """Find the next opening datetime in Central, if any."""
         search_days = 14
+        start_date = now.date()
+        end_date = start_date + timedelta(days=search_days - 1)
+        rows = await db.fetch_all(
+            "SELECT date, hours FROM gameroom_hours_overrides WHERE date BETWEEN %s AND %s",
+            (start_date, end_date),
+        )
+        overrides = {row[0]: row[1] for row in rows}
+
         for offset in range(search_days):
-            day = now.date() + timedelta(days=offset)
-            hours = self.get_gameroom_hours_for_date(day)
+            day = start_date + timedelta(days=offset)
+            hours = self.get_gameroom_hours_for_date(day, overrides)
             if not hours:
                 continue
             open_time, close_time = hours
@@ -1049,9 +1054,14 @@ class PCs(commands.Cog):
         in_bot_channel = ctx.channel.id == BOT_CHANNEL_ID
         await ctx.defer(ephemeral=(not in_bot_channel))
         now = datetime.now(CENTRAL_TZ)
-        hours = self.get_gameroom_hours_for_date(now.date())
+        rows = await db.fetch_all(
+            "SELECT date, hours FROM gameroom_hours_overrides WHERE date = %s",
+            (now.date(),),
+        )
+        overrides = {row[0]: row[1] for row in rows}
+        hours = self.get_gameroom_hours_for_date(now.date(), overrides)
         if not hours or not (hours[0] <= now <= hours[1]):
-            next_open = self.get_next_open_time(now)
+            next_open = await self.get_next_open_time(now)
             if next_open:
                 next_open_text = next_open.strftime("%A, %B %d at %I:%M %p CST")
                 description = f"Check back after we open at {next_open_text}."

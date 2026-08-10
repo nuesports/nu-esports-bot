@@ -86,20 +86,24 @@ class Gameroom(commands.Cog):
         await db.perform_one("DELETE FROM gameroom_hours_overrides WHERE date < CURRENT_DATE")
 
         dates = [start + datetime.timedelta(days=i) for i in range(span_days)]
-
-        def target_value(day):
-            if day.weekday() in (4, 5, 6): #Fri, Sat, Sun
-                return weekend_hours if weekend_hours else regular_hours
-            return regular_hours
+        weekday_dates = [d for d in dates if d.weekday() not in (4, 5, 6)]  # Fri, Sat, Sun
+        weekend_dates = [d for d in dates if d.weekday() in (4, 5, 6)]
 
         to_set = []
         to_clear = []
-        for d in dates:
-            value = target_value(d)
-            if value:
-                to_set.append((d, value))
-            else:
-                to_clear.append(d)
+
+        if regular_hours:
+            to_set += [(d, regular_hours) for d in weekday_dates]
+        elif not weekend_hours:
+            to_clear += weekday_dates
+        # else: regular_hours blank, weekend_hours set -- leave weekdays untouched
+
+        if weekend_hours:
+            to_set += [(d, weekend_hours) for d in weekend_dates]
+        elif regular_hours:
+            to_set += [(d, regular_hours) for d in weekend_dates]
+        else:
+            to_clear += weekend_dates
 
         if to_set:
             await db.perform_many(
@@ -123,14 +127,14 @@ class Gameroom(commands.Cog):
             else f"{start.strftime('%-m/%-d/%Y')} - {end.strftime('%-m/%-d/%Y')}"
         )
         day_word = "day" if span_days == 1 else "days"
-        if weekend_hours:
-            weekday_part = f"weekdays: {regular_hours}" if regular_hours else "weekdays: cleared"
-            weekend_part = f"Fri-Sun: {weekend_hours}"
-            await ctx.respond(f"Updated hours for {date_range} ({span_days} {day_word}) 📆 {weekday_part}, {weekend_part}")
-        elif regular_hours:
+        if not regular_hours and not weekend_hours:
+            await ctx.respond(f"Cleared overrides for {date_range} ({span_days} {day_word})")
+        elif weekend_hours and not regular_hours:
+            await ctx.respond(f"Set Fri-Sun hours for {date_range} ({span_days} {day_word}) to: {weekend_hours} (weekdays left unchanged)")
+        elif regular_hours and not weekend_hours:
             await ctx.respond(f"Set hours for {date_range} ({span_days} {day_word}) to: {regular_hours}")
         else:
-            await ctx.respond(f"Cleared overrides for {date_range} ({span_days} {day_word})")
+            await ctx.respond(f"Updated hours for {date_range} ({span_days} {day_word}) -- weekdays: {regular_hours}, Fri-Sun: {weekend_hours}")
         
 
 
