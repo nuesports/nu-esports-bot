@@ -3,7 +3,7 @@ import datetime
 import discord
 from discord.ext import commands
 
-from utils import config
+from utils import config, db
 
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
@@ -75,17 +75,26 @@ class Gameroom(commands.Cog):
             await ctx.respond("Range too large (max 90 days) double check your range", ephemeral=True)
             return
 
-        adjusted_hours = config.gameroom_data.setdefault("adjusted_hours", {})
-        current = start
-        while current <= end:
-            date_str = current.strftime("%Y-%m-%d")
-            if hours:
-                adjusted_hours[date_str] = hours
-            else:
-                adjusted_hours.pop(date_str, None)
-            current += datetime.timedelta(days=1)
+        await ctx.defer()
 
-        config.save_gameroom_data(config.gameroom_data)
+        #wipe past-due rows
+        await db.perform_one("DELETE FROM gameroom_hours_overrides WHERE date < CURRENT_DATE")
+
+        if hours:
+            dates = [start + datetime.timedelta(days=i) for i in range(span_days)]
+            await db.perform_many(
+                """
+                INSERT INTO gameroom_hours_overrides (date, hours)
+                VALUES (%s, %s)
+                ON CONFLICT (date) DO UPDATE SET hours = EXCLUDED.hours
+                """,
+                [(d, hours) for d in dates]
+            )
+        else:
+            await db.perform_one(
+                "DELETE FROM gameroom_hours_overrides WHERE date BETWEEN %s AND %s",
+                (start, end),
+            )
 
         date_range = (
             start.strftime("%-m/%-d/%Y")
@@ -105,12 +114,18 @@ class Gameroom(commands.Cog):
     )
     async def hours(self, ctx):
         default_hours = config.gameroom_data["default_hours"]
-        adjusted_hours = config.gameroom_data.get("adjusted_hours", {})
 
         today = datetime.date.today()
         start = today - datetime.timedelta(days=today.weekday())
         end = start + datetime.timedelta(days=6)
         week = [start + datetime.timedelta(days=i) for i in range(7)]
+
+        
+        rows = await db.fetch_all(
+            "SELECT date, hours FROM gameroom_hours_overrides WHERE date BETWEEN %s AND %s",
+            (start, end),
+        )
+        adjusted_hours = {row[0]: row[1] for row in rows}
 
         embed = discord.Embed(
             title="Game Room Hours",
