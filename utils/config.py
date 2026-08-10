@@ -35,6 +35,11 @@ def load_gameroom_data():
         raise FileNotFoundError("data/gameroom.yaml not found in local directory")
     with open(gameroom_file, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+def save_gameroom_data(data):
+    gameroom_file = Path("data/gameroom.yaml")
+    with open(gameroom_file, "w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, sort_keys=False, allow_unicode=True)
     
 def load_matchmaking_data():
     matchmaking_file = Path("data/matchmaking.yaml")
