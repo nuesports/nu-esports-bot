@@ -91,7 +91,7 @@ def is_game_head(member: discord.Member) -> bool:
 def gamehead_email(username: str) -> str | None:
     """Look up a gamehead's email by Discord username across every game's roster."""
     for roster in config["gameheads"].values():
-        if username in roster:
+        if roster and username in roster:
             return roster[username]
     return None
 
