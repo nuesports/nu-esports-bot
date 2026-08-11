@@ -81,7 +81,8 @@ class Gameroom(commands.Cog):
 
         await ctx.defer()
 
-        #wipe past-due rows, using Central time's "today" rather than the DB server's own timezone
+        #wipe past-due rows table-wide (not just this range) -- piggybacks on every sethours call
+        #instead of a separate cleanup job, using Central time's "today" rather than the DB server's own timezone
         today_central = datetime.datetime.now(CENTRAL_TZ).date()
         await db.perform_one(
             "DELETE FROM gameroom_hours_overrides WHERE date < %s", (today_central,)
