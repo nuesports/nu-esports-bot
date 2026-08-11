@@ -1,4 +1,5 @@
 import datetime
+from zoneinfo import ZoneInfo
 
 import discord
 from discord.ext import commands
@@ -7,6 +8,7 @@ from utils import config, db
 
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
+CENTRAL_TZ = ZoneInfo("America/Chicago")
 
 
 class Gameroom(commands.Cog):
@@ -79,8 +81,11 @@ class Gameroom(commands.Cog):
 
         await ctx.defer()
 
-        #wipe past-due rows
-        await db.perform_one("DELETE FROM gameroom_hours_overrides WHERE date < CURRENT_DATE")
+        #wipe past-due rows, using Central time's "today" rather than the DB server's own timezone
+        today_central = datetime.datetime.now(CENTRAL_TZ).date()
+        await db.perform_one(
+            "DELETE FROM gameroom_hours_overrides WHERE date < %s", (today_central,)
+        )
 
         dates = [start + datetime.timedelta(days=i) for i in range(span_days)]
         weekday_dates = [d for d in dates if d.weekday() not in (4, 5, 6)]  # Fri, Sat, Sun
