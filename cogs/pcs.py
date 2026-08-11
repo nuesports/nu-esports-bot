@@ -175,7 +175,8 @@ class PCs(commands.Cog):
     def get_gameroom_hours_for_date(
         self, target_date: date, overrides: dict
     ) -> Tuple[datetime, datetime] | None:
-        """Return open/close datetimes in Central, or None if closed."""
+        """Return open/close datetimes in Central, or None if closed or the hours text
+        isn't a parseable time range (e.g. a free-text override like "Reduced hours")."""
         hours = overrides.get(target_date)
         if hours is None:
             hours = config.gameroom_data["default_hours"][target_date.weekday()]
@@ -189,8 +190,10 @@ class PCs(commands.Cog):
         # Strip annotations like "(Finals Week)"
         hours = hours.split("(")[0].strip()
         hours_str = f"{target_date.strftime('%Y-%m-%d')} {hours.replace(' ', '')}"
-        start_time, end_time = self.parse_time_range(hours_str)
-        return start_time, end_time
+        try:
+            return self.parse_time_range(hours_str)
+        except ValueError:
+            return None
 
     async def get_next_open_time(self, now: datetime) -> datetime | None:
         """Find the next opening datetime in Central, if any."""
