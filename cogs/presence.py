@@ -1,5 +1,6 @@
 import discord
 import random
+import traceback
 from discord.ext import commands, tasks
 
 from utils import config
@@ -60,6 +61,7 @@ class Presence(commands.Cog):
             try:
                 self.cycle_status.start()
             except RuntimeError:
+                traceback.print_exc()
                 await ctx.respond("❌ Something went wrong. Try again!", ephemeral=True)
                 return
             await ctx.respond("🤖 Resumed cycling status!", ephemeral=True)
