@@ -54,6 +54,18 @@ async def test_fetch_and_store_raises_on_unrecognized_rank(monkeypatch, skip_mai
 
 
 @pytest.mark.asyncio
+async def test_fetch_and_store_flat_tier_without_rank_field(fake_db, skip_mains_seed, monkeypatch):
+    # Master/Grandmaster/Challenger have no division; Riot omits the `rank` field for them.
+    _entries_client(monkeypatch, [{"queueType": "RANKED_SOLO_5x5", "tier": "MASTER"}])
+    client = league.LeagueClient()
+    await client.fetch_and_store(123, ACCOUNT_ROW)  # must not raise
+
+    # Real compute/format run here: Master is tier index 7, flat tiers ignore division,
+    # so rank_value = 7 * 4 = 28 and the label is just "Master".
+    assert fake_db.perform_one_calls == [(123, "league", 28, "Master")]
+
+
+@pytest.mark.asyncio
 async def test_fetch_and_store_maps_roman_division_correctly(
     monkeypatch, fake_db, skip_mains_seed, stub_rank_formatting
 ):

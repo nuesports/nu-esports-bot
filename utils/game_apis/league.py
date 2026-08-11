@@ -1,7 +1,7 @@
 import aiohttp
 
 from utils import config, db
-from utils.ranks import compute_rank_value, format_rank_label
+from utils.ranks import compute_rank_value, format_rank_label, tier_has_divisions
 from .base import LinkError, LinkResult, has_profile_mains, seed_mains
 from .http import fetch_json_with_retries
 
@@ -77,10 +77,17 @@ class LeagueClient:
         solo_entry = next((e for e in entries if e.get("queueType") == RANKED_SOLO_QUEUE), None)
         if solo_entry is not None:
             tier = solo_entry["tier"].title()
-            rank_key = solo_entry.get("rank")
-            if rank_key not in ROMAN_TO_DIVISION:
-                raise ValueError(f"Unrecognized League division {rank_key!r} in ranked solo entry")
-            division = ROMAN_TO_DIVISION[rank_key]
+            if tier_has_divisions("league", tier):
+                # Divisioned tiers (Iron through Diamond) carry a Roman-numeral division;
+                # anything unrecognized is a data error and must not be silently defaulted.
+                rank_key = solo_entry.get("rank")
+                if rank_key not in ROMAN_TO_DIVISION:
+                    raise ValueError(f"Unrecognized League division {rank_key!r} in ranked solo entry")
+                division = ROMAN_TO_DIVISION[rank_key]
+            else:
+                # Flat tiers (Master/Grandmaster/Challenger) have no division; Riot may or
+                # may not send a `rank` field for them, and compute/format ignore it anyway.
+                division = 1
             rank_value = compute_rank_value("league", tier, division)
             rank_label = format_rank_label("league", tier, division)
 
