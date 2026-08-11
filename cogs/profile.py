@@ -255,10 +255,6 @@ def build_game_embed(
     embed.set_footer(text=f"Page {page_number}/{total_pages}")
     return embed, image_path
 
-def is_game_head(member: discord.Member) -> bool:
-    """Check if a member has a role with "game head" in its name (case-insensitive, substring match)"""
-    return member.guild_permissions.administrator or any("game head" in role.name.lower() for role in member.roles)
-
 class Profile(commands.Cog):
     """Cog housing the /profile command group:"""
     def __init__(self, bot):
@@ -700,7 +696,7 @@ class Profile(commands.Cog):
         """Show a player's elo for every game they've played. Game heads only."""
         await ctx.defer(ephemeral=True)
 
-        if not is_game_head(ctx.author):
+        if not config.is_game_head(ctx.author):
             await ctx.followup.send("You're not a game head! Feel free to apply though...", ephemeral=True)
             return
         

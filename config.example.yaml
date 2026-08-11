@@ -1,4 +1,6 @@
 fun:
+  stickers:
+    TYST: #<sticker_id>
   hannah: #<userid>
   hannah-haters: #<role_id>
   chess_emojis:
@@ -14,25 +16,60 @@ fun:
     #- ["<emoji1>", "<emoji2>", ...]
     #- ...
 
-gameroom:
-  staff:
-  - #<user_id>
-  
+roles:
+  bot_devs:
+    users:
+      - #<user_id>
+    role: #<role_id>
+  gameroom_staff:
+    users:
+      - #<user_id>
+    role: #<role_id>
+  leadership:
+    role: #<role_id>
+  stream_team:
+    role: #<role_id>
+  gameheads:
+    invisible: #<role_id> # people who should have gamehead-equivalent perms without being a game head for a specific game
+    valorant: #<role_id>
+    league: #<role_id>
+    overwatch: #<role_id>
+    smash: #<role_id>
+    deadlock: #<role_id>
+    cs2: #<role_id>
+    rocket_league: #<role_id>
+    mario_kart: #<role_id>
+    rivals: #<role_id>
+    rhythm_games: #<role_id>
+    apex: #<role_id>
+
 reservations:
   # where the outputs of reservations gets sent to (ie gameroom staff channel)
   channel: #<channel_id>
-  # who can invoke the reserve command
-  roles:
-    - #<role_id>
-    - #<role_id>
-    # - ...
 
 gameheads:
-  #<account_id>: "corresponding email"
-  example: "example@email.com"
-
-bot_devs:
-  - #<user_id>
+  valorant:
+    #<discord_username>: "<email>"
+  league:
+    #<discord_username>: "<email>"
+  overwatch:
+    #<discord_username>: "<email>"
+  smash:
+    #<discord_username>: "<email>"
+  deadlock:
+    #<discord_username>: "<email>"
+  cs2:
+    #<discord_username>: "<email>"
+  rocket_league:
+    #<discord_username>: "<email>"
+  mario_kart:
+    #<discord_username>: "<email>"
+  rivals:
+    #<discord_username>: "<email>"
+  rhythm_games:
+    #<discord_username>: "<email>"
+  apex:
+    #<discord_username>: "<email>"
 
 github_backlog:
   pr_channel: #<channel_id>
