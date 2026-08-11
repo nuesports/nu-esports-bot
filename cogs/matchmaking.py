@@ -264,14 +264,8 @@ def balance_teams(game: str,
     return team_a, team_b, assignments
 
 def has_privilege(interaction: discord.Interaction) -> bool:
-    """Check wether whoever clicked a button is allowed to use admin controls.
-    
-    True if they have a role with "game head" in its name (case-insensitive, substring match), 
-    or if they're an admin."""
-    if (interaction.user.guild_permissions.administrator 
-        or any("game head" in role.name.lower() for role in interaction.user.roles)):
-        return True
-    return False
+    """Check whether whoever clicked a button is allowed to use admin controls."""
+    return config.is_game_head(interaction.user)
 
 async def refresh_admin_panels(session: "MatchmakingSession") -> None:
     """Re-render every currently-open admin panel so they reflect the latest lobby state.
