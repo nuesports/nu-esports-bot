@@ -28,11 +28,15 @@ roles:
   leadership:
     role: #<role_id>
   gameheads:
-    overwatch: #<role_id>
-    league: #<role_id>
     valorant: #<role_id>
+    league: #<role_id>
+    overwatch: #<role_id>
+    smash: #<role_id>
     deadlock: #<role_id>
+    cs2: #<role_id>
     rocket_league: #<role_id>
+    mario_kart: #<role_id>
+    rivals: #<role_id>
     rhythm_games: #<role_id>
     apex: #<role_id>
 
@@ -41,15 +45,23 @@ reservations:
   channel: #<channel_id>
 
 gameheads:
-  overwatch:
+  valorant:
     #<discord_username>: "<email>"
   league:
     #<discord_username>: "<email>"
-  valorant:
+  overwatch:
+    #<discord_username>: "<email>"
+  smash:
     #<discord_username>: "<email>"
   deadlock:
     #<discord_username>: "<email>"
+  cs2:
+    #<discord_username>: "<email>"
   rocket_league:
+    #<discord_username>: "<email>"
+  mario_kart:
+    #<discord_username>: "<email>"
+  rivals:
     #<discord_username>: "<email>"
   rhythm_games:
     #<discord_username>: "<email>"
