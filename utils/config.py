@@ -1,3 +1,4 @@
+import discord
 import yaml
 from pathlib import Path
 
@@ -50,6 +51,54 @@ secrets = load_secrets()
 game_data = load_game_data()
 gameroom_data = load_gameroom_data()
 matchmaking_data = load_matchmaking_data()
+
+def _role_ids(value) -> set[int]:
+    """Normalize a roles config value (int, list, or None) to a set of role IDs."""
+    if value is None:
+        return set()
+    if isinstance(value, int):
+        return {value}
+    return set(value)
+
+def _in_role_group(member: discord.Member, group: dict) -> bool:
+    """True for admins, or if member is in the group's explicit user list or holds its role(s)."""
+    if member.guild_permissions.administrator:
+        return True
+    if member.id in (group.get("users") or []):
+        return True
+    member_role_ids = {r.id for r in member.roles}
+    return bool(member_role_ids & _role_ids(group.get("role")))
+
+def is_bot_dev(member: discord.Member) -> bool:
+    return _in_role_group(member, config["roles"]["bot_devs"])
+
+def is_gameroom_staff(member: discord.Member) -> bool:
+    return _in_role_group(member, config["roles"]["gameroom_staff"])
+
+def has_leadership(member: discord.Member) -> bool:
+    return _in_role_group(member, config["roles"]["leadership"])
+
+def is_stream_team(member: discord.Member) -> bool:
+    return _in_role_group(member, config["roles"]["stream_team"])
+
+def can_reserve(member: discord.Member) -> bool:
+    """Who can invoke reservation commands: bot devs, gameroom staff, leadership, or gameheads."""
+    return is_bot_dev(member) or is_gameroom_staff(member) or has_leadership(member) or is_game_head(member)
+
+def is_game_head(member: discord.Member) -> bool:
+    """True for admins or anyone holding any per-game gamehead role."""
+    if member.guild_permissions.administrator:
+        return True
+    member_role_ids = {r.id for r in member.roles}
+    gamehead_role_ids = {r for r in config["roles"]["gameheads"].values() if r}
+    return bool(member_role_ids & gamehead_role_ids)
+
+def gamehead_email(username: str) -> str | None:
+    """Look up a gamehead's email by Discord username across every game's roster."""
+    for roster in config["gameheads"].values():
+        if roster and username in roster:
+            return roster[username]
+    return None
 
 def is_per_role_ranks(game: str) -> bool:
     """Whether a game tracks rank (and elo) separately per role instead of once per game."""

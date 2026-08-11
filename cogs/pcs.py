@@ -31,9 +31,7 @@ MAIN_ROOM_PCS = list(range(1, 11))
 PRIME_TIME_WEEKDAY_HOUR = 19  # 7 PM
 PRIME_TIME_WEEKEND_HOUR = 18  # 6 PM
 
-GAME_HEAD_EMAILS = config.config["gameheads"]
-STAFF_LIST = config.config["gameroom"]["staff"]
-BOT_DEV_IDS = config.config["bot_devs"]
+STAFF_LIST = config.config["roles"]["gameroom_staff"]["users"]
 
 STATE_TO_EMOJI = {
     "ReadyForUser": ":green_square:",
@@ -1045,7 +1043,7 @@ class PCs(commands.Cog):
 
     @staticmethod
     def pcs_cooldown(ctx):
-        if ctx.author.id in STAFF_LIST:
+        if config.is_gameroom_staff(ctx.author):
             return None
         return commands.Cooldown(1, 300)
 
@@ -1473,20 +1471,14 @@ class PCs(commands.Cog):
             required=True,
         ),
     ):
-        # Check if user is a bot dev
-        is_bot_dev = ctx.author.id in BOT_DEV_IDS
+        is_bot_dev = config.is_bot_dev(ctx.author)
 
-        # Check if user has required role (skip if bot dev)
-        if not is_bot_dev:
-            allowed_role_ids = config.config["reservations"]["roles"]
-            user_role_ids = [role.id for role in ctx.author.roles]
-
-            if not any(role_id in allowed_role_ids for role_id in user_role_ids):
-                await ctx.respond(
-                    "❌ You don't have permission to reserve PCs. Contact a team manager.",
-                    ephemeral=True,
-                )
-                return
+        if not config.can_reserve(ctx.author):
+            await ctx.respond(
+                "❌ You don't have permission to reserve PCs. Contact a team manager.",
+                ephemeral=True,
+            )
+            return
 
         # Show modal for time input
         modal = ReservationTimeModal(self, team, num_pcs, res_type, is_bot_dev)
@@ -1499,7 +1491,7 @@ class PCs(commands.Cog):
     )
     async def reserve_external(self, ctx):
         # Check if user is staff
-        if ctx.author.id not in STAFF_LIST:
+        if not config.is_gameroom_staff(ctx.author):
             await ctx.respond(
                 "❌ Only game room staff can make external reservations.",
                 ephemeral=True,
@@ -1526,20 +1518,14 @@ class PCs(commands.Cog):
             required=True,
         ),
     ):
-        # Check if user is a bot dev
-        is_bot_dev = ctx.author.id in BOT_DEV_IDS
+        is_bot_dev = config.is_bot_dev(ctx.author)
 
-        # Check if user has required role (skip if bot dev)
-        if not is_bot_dev:
-            allowed_role_ids = config.config["reservations"]["roles"]
-            user_role_ids = [role.id for role in ctx.author.roles]
-
-            if not any(role_id in allowed_role_ids for role_id in user_role_ids):
-                await ctx.respond(
-                    "You don't have permission to cancel reservations.",
-                    ephemeral=True,
-                )
-                return
+        if not config.can_reserve(ctx.author):
+            await ctx.respond(
+                "You don't have permission to cancel reservations.",
+                ephemeral=True,
+            )
+            return
 
         await ctx.defer(ephemeral=True)
 
@@ -1983,9 +1969,7 @@ class ReservationTimeModal(discord.ui.Modal):
                 )
                 embed.add_field(name="Team", value=self.team, inline=False)
                 embed.add_field(name="Res Type", value=self.res_type, inline=False)
-                manager_email = "Email not found"
-                if isinstance(GAME_HEAD_EMAILS, dict):
-                    manager_email = GAME_HEAD_EMAILS.get(manager, "Email not found")
+                manager_email = config.gamehead_email(manager) or "Email not found"
                 embed.add_field(
                     name="Manager Email",
                     value=manager_email,

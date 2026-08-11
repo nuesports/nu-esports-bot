@@ -49,10 +49,7 @@ class Gameroom(commands.Cog):
                            required=False
                        )
                     ):
-        is_gameroom_staff = any(
-            "gameroom staff" in role.name.lower() for role in ctx.author.roles
-        )
-        if not is_gameroom_staff:
+        if not config.is_gameroom_staff(ctx.author):
             await ctx.respond("You do not have permission to use this command.", ephemeral=True)
             return
 
