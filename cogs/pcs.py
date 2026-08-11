@@ -31,9 +31,7 @@ MAIN_ROOM_PCS = list(range(1, 11))
 PRIME_TIME_WEEKDAY_HOUR = 19  # 7 PM
 PRIME_TIME_WEEKEND_HOUR = 18  # 6 PM
 
-GAME_HEAD_EMAILS = config.config["gameheads"]
-STAFF_LIST = config.config["gameroom"]["staff"]
-BOT_DEV_IDS = config.config["bot_devs"]
+STAFF_LIST = config.config["roles"]["gameroom_staff"]["users"]
 
 STATE_TO_EMOJI = {
     "ReadyForUser": ":green_square:",
@@ -173,13 +171,11 @@ class PCs(commands.Cog):
         return dt.astimezone(CENTRAL_TZ)
 
     def get_gameroom_hours_for_date(
-        self, target_date: date
+        self, target_date: date, overrides: dict
     ) -> Tuple[datetime, datetime] | None:
-        """Return open/close datetimes in Central, or None if closed."""
-        adjusted_hours = config.gameroom_data.get("adjusted_hours", {})
-        hours = adjusted_hours.get(target_date)
-        if hours is None:
-            hours = adjusted_hours.get(target_date.strftime("%Y-%m-%d"))
+        """Return open/close datetimes in Central, or None if closed or the hours text
+        isn't a parseable time range (e.g. a free-text override like "Reduced hours")."""
+        hours = overrides.get(target_date)
         if hours is None:
             hours = config.gameroom_data["default_hours"][target_date.weekday()]
 
@@ -192,15 +188,25 @@ class PCs(commands.Cog):
         # Strip annotations like "(Finals Week)"
         hours = hours.split("(")[0].strip()
         hours_str = f"{target_date.strftime('%Y-%m-%d')} {hours.replace(' ', '')}"
-        start_time, end_time = self.parse_time_range(hours_str)
-        return start_time, end_time
+        try:
+            return self.parse_time_range(hours_str)
+        except ValueError:
+            return None
 
-    def get_next_open_time(self, now: datetime) -> datetime | None:
+    async def get_next_open_time(self, now: datetime) -> datetime | None:
         """Find the next opening datetime in Central, if any."""
         search_days = 14
+        start_date = now.date()
+        end_date = start_date + timedelta(days=search_days - 1)
+        rows = await db.fetch_all(
+            "SELECT date, hours FROM gameroom_hours_overrides WHERE date BETWEEN %s AND %s",
+            (start_date, end_date),
+        )
+        overrides = {row[0]: row[1] for row in rows}
+
         for offset in range(search_days):
-            day = now.date() + timedelta(days=offset)
-            hours = self.get_gameroom_hours_for_date(day)
+            day = start_date + timedelta(days=offset)
+            hours = self.get_gameroom_hours_for_date(day, overrides)
             if not hours:
                 continue
             open_time, close_time = hours
@@ -1037,7 +1043,7 @@ class PCs(commands.Cog):
 
     @staticmethod
     def pcs_cooldown(ctx):
-        if ctx.author.id in STAFF_LIST:
+        if config.is_gameroom_staff(ctx.author):
             return None
         return commands.Cooldown(1, 300)
 
@@ -1049,9 +1055,14 @@ class PCs(commands.Cog):
         in_bot_channel = ctx.channel.id == BOT_CHANNEL_ID
         await ctx.defer(ephemeral=(not in_bot_channel))
         now = datetime.now(CENTRAL_TZ)
-        hours = self.get_gameroom_hours_for_date(now.date())
+        rows = await db.fetch_all(
+            "SELECT date, hours FROM gameroom_hours_overrides WHERE date = %s",
+            (now.date(),),
+        )
+        overrides = {row[0]: row[1] for row in rows}
+        hours = self.get_gameroom_hours_for_date(now.date(), overrides)
         if not hours or not (hours[0] <= now <= hours[1]):
-            next_open = self.get_next_open_time(now)
+            next_open = await self.get_next_open_time(now)
             if next_open:
                 next_open_text = next_open.strftime("%A, %B %d at %I:%M %p CST")
                 description = f"Check back after we open at {next_open_text}."
@@ -1460,20 +1471,14 @@ class PCs(commands.Cog):
             required=True,
         ),
     ):
-        # Check if user is a bot dev
-        is_bot_dev = ctx.author.id in BOT_DEV_IDS
+        is_bot_dev = config.is_bot_dev(ctx.author)
 
-        # Check if user has required role (skip if bot dev)
-        if not is_bot_dev:
-            allowed_role_ids = config.config["reservations"]["roles"]
-            user_role_ids = [role.id for role in ctx.author.roles]
-
-            if not any(role_id in allowed_role_ids for role_id in user_role_ids):
-                await ctx.respond(
-                    "❌ You don't have permission to reserve PCs. Contact a team manager.",
-                    ephemeral=True,
-                )
-                return
+        if not config.can_reserve(ctx.author):
+            await ctx.respond(
+                "❌ You don't have permission to reserve PCs. Contact a team manager.",
+                ephemeral=True,
+            )
+            return
 
         # Show modal for time input
         modal = ReservationTimeModal(self, team, num_pcs, res_type, is_bot_dev)
@@ -1486,7 +1491,7 @@ class PCs(commands.Cog):
     )
     async def reserve_external(self, ctx):
         # Check if user is staff
-        if ctx.author.id not in STAFF_LIST:
+        if not config.is_gameroom_staff(ctx.author):
             await ctx.respond(
                 "❌ Only game room staff can make external reservations.",
                 ephemeral=True,
@@ -1513,20 +1518,14 @@ class PCs(commands.Cog):
             required=True,
         ),
     ):
-        # Check if user is a bot dev
-        is_bot_dev = ctx.author.id in BOT_DEV_IDS
+        is_bot_dev = config.is_bot_dev(ctx.author)
 
-        # Check if user has required role (skip if bot dev)
-        if not is_bot_dev:
-            allowed_role_ids = config.config["reservations"]["roles"]
-            user_role_ids = [role.id for role in ctx.author.roles]
-
-            if not any(role_id in allowed_role_ids for role_id in user_role_ids):
-                await ctx.respond(
-                    "You don't have permission to cancel reservations.",
-                    ephemeral=True,
-                )
-                return
+        if not config.can_reserve(ctx.author):
+            await ctx.respond(
+                "You don't have permission to cancel reservations.",
+                ephemeral=True,
+            )
+            return
 
         await ctx.defer(ephemeral=True)
 
@@ -1970,9 +1969,7 @@ class ReservationTimeModal(discord.ui.Modal):
                 )
                 embed.add_field(name="Team", value=self.team, inline=False)
                 embed.add_field(name="Res Type", value=self.res_type, inline=False)
-                manager_email = "Email not found"
-                if isinstance(GAME_HEAD_EMAILS, dict):
-                    manager_email = GAME_HEAD_EMAILS.get(manager, "Email not found")
+                manager_email = config.gamehead_email(manager) or "Email not found"
                 embed.add_field(
                     name="Manager Email",
                     value=manager_email,
