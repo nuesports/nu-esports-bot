@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS game_accounts (
     discordid BIGINT NOT NULL,
     game TEXT NOT NULL,
-    external_id TEXT NOT NULL ,         -- Name#Tag, Name#1234, SteamID/Vanity
+    external_id TEXT NOT NULL,          -- Name#Tag, Name#1234, SteamID/Vanity
 
     display_name TEXT,                  -- canonical form resolved from the API at link time
     region TEXT,                        -- routing value some APIs need alongside the id; NULL where unused
