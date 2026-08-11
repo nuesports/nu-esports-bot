@@ -16,7 +16,19 @@ CLIENTS = {
     "valorant": ValorantClient(),
 }
 
-_fetch_locks: dict[tuple[int, str], asyncio.Lock] = {}
+class _FetchLock:
+    """Per-(discordid, game) lock plus a waiter count. The dict entry is only removed
+    once the last waiter finishes: removing it while a blocked caller still holds the
+    lock would let a concurrent setdefault() create a fresh, already-unlocked lock and
+    run fetch_and_store in parallel -- defeating the dedup this lock exists for."""
+    __slots__ = ("lock", "waiters")
+
+    def __init__(self):
+        self.lock = asyncio.Lock()
+        self.waiters = 0
+
+
+_fetch_locks: dict[tuple[int, str], _FetchLock] = {}
 
 ACCOUNT_COLUMNS = "game, external_id, display_name, region, provider_account_id, provider_secondary_id"
 
@@ -38,13 +50,10 @@ async def _fetch_with_lock(discordid: int, game: str, account_row: tuple, force:
     client = CLIENTS.get(game)
     if not client:
         return
-    lock = _fetch_locks.setdefault((discordid, game), asyncio.Lock())
-    # popping must happen after the lock is actually released (outside `async with`),
-    # not while still held -- popping first lets a concurrent caller's setdefault()
-    # create a fresh, already-unlocked Lock and run fetch_and_store in parallel with
-    # this one, defeating the dedup this lock exists for
+    entry = _fetch_locks.setdefault((discordid, game), _FetchLock())
+    entry.waiters += 1
     try:
-        async with lock:
+        async with entry.lock:
             try:
                 if not force and not await _is_stale(discordid, game):
                     return # someone else refreshed
@@ -52,7 +61,9 @@ async def _fetch_with_lock(discordid: int, game: str, account_row: tuple, force:
             except Exception as e:
                 print(f"[game_apis] refresh failed for {discordid}/{game}: {e}")
     finally:
-        _fetch_locks.pop((discordid, game), None)
+        entry.waiters -= 1
+        if entry.waiters == 0:
+            _fetch_locks.pop((discordid, game), None)
 
 async def refresh_stale_ranks(discordid: int) -> None:
     """Called by `/profile view` before rendering. Refreshes all stale links,

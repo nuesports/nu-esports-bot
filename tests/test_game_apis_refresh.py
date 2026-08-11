@@ -6,9 +6,11 @@ from utils.game_apis import refresh
 
 
 class FakeClient:
-    def __init__(self, exc=None, delay=0.0):
+    def __init__(self, exc=None, delay=0.0, gates=None):
         self.exc = exc
         self.delay = delay
+        self.gates = list(gates or [])
+        self.entered = asyncio.Event()  # set each time a fetch begins
         self.calls = 0
         self.concurrent = 0
         self.max_concurrent = 0
@@ -17,7 +19,11 @@ class FakeClient:
         self.calls += 1
         self.concurrent += 1
         self.max_concurrent = max(self.max_concurrent, self.concurrent)
-        if self.delay:
+        self.entered.set()
+        if self.gates:
+            gate = self.gates.pop(0)
+            await gate.wait()  # hold the fetch until the test releases its gate
+        elif self.delay:
             await asyncio.sleep(self.delay)
         self.concurrent -= 1
         if self.exc:
@@ -88,3 +94,31 @@ async def test_fetch_with_lock_force_skips_staleness_check(monkeypatch):
 @pytest.mark.asyncio
 async def test_fetch_with_lock_returns_silently_for_unknown_game():
     await refresh._fetch_with_lock(123, "not-a-real-game", (), force=False)  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_fetch_with_lock_third_caller_waits_after_lock_entry_popped(monkeypatch):
+    """Regression: a third caller arriving after the first caller finished and popped its
+    lock entry must still wait on the second caller's lock -- not get a fresh unlocked
+    lock and run fetch_and_store in parallel with it."""
+    gates = [asyncio.Event(), asyncio.Event(), asyncio.Event()]
+    client = FakeClient(gates=gates)
+    monkeypatch.setitem(refresh.CLIENTS, "fakegame", client)
+    _always_stale(monkeypatch)
+
+    first = asyncio.create_task(refresh._fetch_with_lock(123, "fakegame", (), force=False))
+    await client.entered.wait()      # first is mid-fetch, holds the lock
+    second = asyncio.create_task(refresh._fetch_with_lock(123, "fakegame", (), force=False))
+
+    client.entered.clear()           # clear before first finishes so we can catch second's signal
+    gates[0].set()                   # let first finish; its finally pops the lock entry
+    await first
+    await client.entered.wait()      # second is now mid-fetch, holds the lock
+
+    third = asyncio.create_task(refresh._fetch_with_lock(123, "fakegame", (), force=False))
+    await asyncio.sleep(0.01)        # give third a chance to run if it can
+    assert client.max_concurrent == 1  # third must wait, not run alongside second
+
+    gates[1].set()
+    gates[2].set()
+    await asyncio.gather(second, third)
