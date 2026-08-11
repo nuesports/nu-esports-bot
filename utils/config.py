@@ -61,7 +61,9 @@ def _role_ids(value) -> set[int]:
     return set(value)
 
 def _in_role_group(member: discord.Member, group: dict) -> bool:
-    """True if member is in the group's explicit user list or holds its role(s)."""
+    """True for admins, or if member is in the group's explicit user list or holds its role(s)."""
+    if member.guild_permissions.administrator:
+        return True
     if member.id in (group.get("users") or []):
         return True
     member_role_ids = {r.id for r in member.roles}
