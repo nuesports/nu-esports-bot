@@ -103,8 +103,9 @@ class FakeGuildPermissions:
 
 
 class FakeRole:
-    def __init__(self, name):
+    def __init__(self, name, id=0):
         self.name = name
+        self.id = id
 
 
 class FakeUser:
@@ -118,16 +119,21 @@ class FakeInteraction:
         self.user = user
 
 
+@pytest.fixture
+def gamehead_roles(monkeypatch):
+    monkeypatch.setattr(matchmaking.config, "config", {"roles": {"gameheads": {"valorant": 111}}})
+
+
 def test_has_privilege_true_for_admin():
     interaction = FakeInteraction(FakeUser(administrator=True))
     assert matchmaking.has_privilege(interaction) is True
 
 
-def test_has_privilege_true_for_game_head_role():
-    interaction = FakeInteraction(FakeUser(roles=[FakeRole("Valorant Game Head")]))
+def test_has_privilege_true_for_game_head_role(gamehead_roles):
+    interaction = FakeInteraction(FakeUser(roles=[FakeRole("Valorant Game Head", id=111)]))
     assert matchmaking.has_privilege(interaction) is True
 
 
-def test_has_privilege_false_otherwise():
-    interaction = FakeInteraction(FakeUser(roles=[FakeRole("Member")]))
+def test_has_privilege_false_otherwise(gamehead_roles):
+    interaction = FakeInteraction(FakeUser(roles=[FakeRole("Member", id=222)]))
     assert matchmaking.has_privilege(interaction) is False

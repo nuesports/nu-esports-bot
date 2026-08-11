@@ -97,39 +97,6 @@ def test_effective_primary_no_mains_returns_none():
     assert profile.effective_primary([], None) is None
 
 
-# --- is_game_head ---
-
-class FakeGuildPermissions:
-    def __init__(self, administrator=False):
-        self.administrator = administrator
-
-
-class FakeRole:
-    def __init__(self, name):
-        self.name = name
-
-
-class FakeMember:
-    def __init__(self, roles=None, administrator=False):
-        self.roles = roles or []
-        self.guild_permissions = FakeGuildPermissions(administrator)
-
-
-def test_is_game_head_true_for_admin():
-    member = FakeMember(administrator=True)
-    assert profile.is_game_head(member) is True
-
-
-def test_is_game_head_true_for_matching_role_case_insensitive():
-    member = FakeMember(roles=[FakeRole("Valorant Game Head")])
-    assert profile.is_game_head(member) is True
-
-
-def test_is_game_head_false_otherwise():
-    member = FakeMember(roles=[FakeRole("Member")])
-    assert profile.is_game_head(member) is False
-
-
 # --- normalize_tag ---
 
 class FakeBot:
