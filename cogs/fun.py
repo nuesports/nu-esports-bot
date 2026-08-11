@@ -8,7 +8,7 @@ from utils import config
 
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
-TYST_STICKER_ID = 1500307023814721646
+TYST_STICKER_ID = config.config["fun"]["stickers"]["TYST"]
 
 class Fun(commands.Cog):
     def __init__(self, bot):

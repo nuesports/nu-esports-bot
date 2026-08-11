@@ -16,6 +16,8 @@ DEFAULT_TAG = {"Lobby": "🖱️", "Winner": "🏆"}
 TEAM_NAMES = [tuple(pair) for pair in config.matchmaking_data["team_names"]]
 ROLE_REQUIREMENTS = {game: data.get("role_requirements") or {} for game, data in config.game_data.items()}
 LOBBY_SIZE = {game: data.get("lobby_size", 10) for game, data in config.game_data.items()}
+# Full map pool, not just maps_active. Games with no maps list just skip shuffling.
+MAPS = {game: data["maps"] for game, data in config.game_data.items() if data.get("maps")}
 RANK_JITTER = 200        # half-width of the jitter range for a player exactly at the lobby average
 JITTER_PULL_SCALE = 1500 # elo deviation from average that fully saturates the pull toward one side
 _GAME_WIDE_ELO = "__game__" # elo-dict key balance_teams uses for games without per-role ranks
@@ -31,9 +33,12 @@ def generate_embed(session: "MatchmakingSession") -> discord.Embed:
     if session.role_assignments:
         return generate_match_embed(session)
     lobby_size = LOBBY_SIZE[session.game]
+    description = f"({len(session.joined)}/{lobby_size})"
+    if session.map:
+        description += f" - {session.map}"
     embed = discord.Embed(
         title=f"{session.game.title()} Lobby",
-        description=f"({len(session.joined)}/{lobby_size})",
+        description=description,
         color = discord.Color.from_rgb(78,42,132),
     )
     rows_per_column = -(-lobby_size // 2) # ceiling, so an odd lobby_size still fits
@@ -126,8 +131,9 @@ def generate_match_embed(session: "MatchmakingSession") -> discord.Embed:
 
     Players are grouped by team and ordered by role (via ROLE_REQUIREMENTS), not join order.
     """
+    title_suffix = session.map if session.map else "Teams"
     embed = discord.Embed(
-        title=f"{session.game.title()} Lobby — Teams",
+        title=f"{session.game.title()} Lobby — {title_suffix}",
         color=discord.Color.from_rgb(78, 42, 132),
     )
     has_roles = bool(ROLE_REQUIREMENTS[session.game])
@@ -312,20 +318,13 @@ def balance_teams(game: str,
     return team_a, team_b, assignments
 
 def has_privilege(interaction: discord.Interaction) -> bool:
-    """Check wether whoever clicked a button is allowed to use admin controls.
-    
-    True if they have a role with "game head" in its name (case-insensitive, substring match), 
-    or if they're an admin."""
-    if (interaction.user.guild_permissions.administrator
-        or any("game head" in role.name.lower() for role in interaction.user.roles)):
-        return True
-    return False
+    """Check whether whoever clicked a button is allowed to use admin controls."""
+    return config.is_game_head(interaction.user)
 
 def must_forfeit_bet_on_declare(interaction: discord.Interaction) -> bool:
-    """True if this user has the "game head" role but isn't a server admin.
+    """True if this user has a gamehead role but isn't a server admin.
     Admins skip the self-officiating forfeit rule, same trust call has_privilege already makes."""
-    return (not interaction.user.guild_permissions.administrator
-            and any("game head" in role.name.lower() for role in interaction.user.roles))
+    return not interaction.user.guild_permissions.administrator and config.is_game_head(interaction.user)
 
 async def refresh_admin_panels(session: "MatchmakingSession") -> None:
     """Re-render every currently-open admin panel so they reflect the latest lobby state.
@@ -681,6 +680,7 @@ class MatchmakingSession:
         self.team_b: list[discord.Member] = []
         self.team_names: tuple[(str, str)] = random.choice(TEAM_NAMES)
         self.role_assignments: dict[int, str] = {} #member.id to role
+        self.map: str | None = None
         self.message: discord.Message | None = None
         self.admin_panels: dict[int, discord.InteractionMessage] = {}
         self.owner: discord.Member | None = None
@@ -1023,6 +1023,39 @@ async def declare_winner(session: "MatchmakingSession", interaction: discord.Int
     cog.active_sessions.pop(session.key, None)
     await interaction.delete_original_response()
 
+class MapSelectView(discord.ui.View):
+    def __init__(self, session):
+        super().__init__(timeout=180)
+        self.session = session
+
+        options = [discord.SelectOption(label=m, default=(m == session.map)) for m in MAPS[session.game]]
+        # a Select caps out at 25 options (Overwatch has 32 maps), so split across as many selects as needed
+        chunks = [options[i:i + 25] for i in range(0, len(options), 25)]
+        for i, chunk in enumerate(chunks):
+            placeholder = "Pick a map." if len(chunks) == 1 else f"Pick a map ({i + 1}/{len(chunks)})."
+            select = discord.ui.Select(placeholder=placeholder, options=chunk)
+            select.callback = self.on_select
+            self.add_item(select)
+
+        back_button = discord.ui.Button(label="Back", style=discord.ButtonStyle.success)
+        back_button.callback = self.back
+        self.add_item(back_button)
+
+    async def on_select(self, interaction: discord.Interaction):
+        """Set the session's map and refresh every open view of this lobby."""
+        self.session.map = interaction.data["values"][0]
+
+        await self.session.message.edit(embed=generate_embed(self.session), view=LobbyView(self.session))
+        await interaction.response.edit_message(embed=generate_embed(self.session), view=AdminView(self.session))
+        await refresh_admin_panels(self.session)
+
+    async def back(self, interaction: discord.Interaction):
+        """Return to the admin panel without changing the map."""
+        if not has_privilege(interaction):
+            await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
+            return
+        await interaction.response.edit_message(embed=generate_embed(self.session), view=AdminView(self.session))
+
 class WinnerSelectView(discord.ui.View):
     """Ephemeral team picker for declaring a winner.
     
@@ -1120,6 +1153,8 @@ class AdminView(discord.ui.View):
         self.session.team_a = team_a
         self.session.team_b = team_b
         self.session.role_assignments = assignments
+        if MAPS.get(self.session.game):
+            self.session.map = random.choice(MAPS[self.session.game])
         await start_betting_window(self.session)
 
         await self.session.message.edit(embed=generate_embed(self.session), view=LobbyView(self.session))
@@ -1146,7 +1181,19 @@ class AdminView(discord.ui.View):
             return
         
         await interaction.response.edit_message(embed=generate_embed(self.session), view=SwapSelectView(self.session))
-    
+
+    @discord.ui.button(label="Map", style=discord.ButtonStyle.secondary)
+    async def map(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+        """Open the map picker. Only for games with a maps list configured."""
+        if not has_privilege(interaction):
+            await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
+            return
+        if not MAPS.get(self.session.game):
+            await interaction.response.send_message(f"{self.session.game.title()} doesn't have maps configured!", ephemeral=True)
+            return
+
+        await interaction.response.edit_message(embed=generate_embed(self.session), view=MapSelectView(self.session))
+
     @discord.ui.button(label="Winner", style=discord.ButtonStyle.success)
     async def winner(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
         """Open the team picker to declare a winner. Requires a shuffle to have happened first.
