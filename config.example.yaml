@@ -28,6 +28,7 @@ roles:
   leadership:
     role: #<role_id>
   gameheads:
+    invisible: #<role_id> # people who should have gamehead-equivalent perms without being a game head for a specific game
     valorant: #<role_id>
     league: #<role_id>
     overwatch: #<role_id>
