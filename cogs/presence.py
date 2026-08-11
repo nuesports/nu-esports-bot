@@ -7,7 +7,6 @@ from utils.statuses import load_statuses
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
 STREAM_LINK = "https://twitch.tv/NorthwesternEsports"
-STREAM_TEAM_ROLE_ID = 1170159172667584572
 CYCLE_MINS = 3
 
 class Presence(commands.Cog):
@@ -38,7 +37,7 @@ class Presence(commands.Cog):
                     ctx: discord.ApplicationContext, 
                     type: str = discord.Option(str, "What kind of status?", choices=["streaming", "default", "custom"]),
                     status: str = ""):
-        if (not config.is_bot_dev(ctx.author)) and (not discord.utils.get(ctx.author.roles, id=STREAM_TEAM_ROLE_ID)):
+        if not (config.is_bot_dev(ctx.author) or config.is_stream_team(ctx.author)):
             await ctx.respond("You don't have permission to use this command.", ephemeral=True)
             return
         

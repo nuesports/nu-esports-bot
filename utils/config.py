@@ -78,6 +78,9 @@ def is_gameroom_staff(member: discord.Member) -> bool:
 def has_leadership(member: discord.Member) -> bool:
     return _in_role_group(member, config["roles"]["leadership"])
 
+def is_stream_team(member: discord.Member) -> bool:
+    return _in_role_group(member, config["roles"]["stream_team"])
+
 def can_reserve(member: discord.Member) -> bool:
     """Who can invoke reservation commands: bot devs, gameroom staff, leadership, or gameheads."""
     return is_bot_dev(member) or is_gameroom_staff(member) or has_leadership(member) or is_game_head(member)
