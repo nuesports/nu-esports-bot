@@ -2,7 +2,7 @@ import aiohttp
 
 from utils import config, db
 from utils.ranks import compute_rank_value, format_rank_label
-from .base import LinkError, LinkResult
+from .base import LinkError, LinkResult, has_profile_mains, has_profile_roles, seed_mains, seed_roles
 from .http import fetch_json_with_retries
 
 OVERFAST_BASE_URL = "https://overfast-api.tekrop.fr"
@@ -72,11 +72,7 @@ class OverwatchClient:
     async def _maybe_seed_mains(self, discordid: int, player_id: str) -> None:
         """Seed mains from the 3 most-played heroes in competitive (by time_played), but
         only the first time -- once a player has any mains on file, refresh never overwrites them."""
-        existing = await db.fetch_one(
-            "SELECT 1 FROM profile_mains WHERE discordid = %s AND game = 'overwatch' LIMIT 1;",
-            (discordid,),
-        )
-        if existing:
+        if await has_profile_mains(discordid, "overwatch"):
             return
 
         career = await fetch_json_with_retries(
@@ -94,11 +90,7 @@ class OverwatchClient:
 
         top_heroes = sorted(played, key=lambda item: item[1], reverse=True)[:3]
         mains = [hero_keys[key] for key, _ in top_heroes]
-
-        await db.perform_many(
-            "INSERT INTO profile_mains (discordid, game, main) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING;",
-            [(discordid, "overwatch", m) for m in mains],
-        )
+        await seed_mains(discordid, "overwatch", mains)
 
         await self._maybe_seed_roles(discordid, [key for key, _ in top_heroes])
 
@@ -107,19 +99,9 @@ class OverwatchClient:
         -> just Support; Genji/Sigma/Juno -> all three), but only if the player has no
         roles on file -- checked separately from mains, since /profile set main allows
         clearing mains to empty without touching roles."""
-        existing = await db.fetch_one(
-            "SELECT 1 FROM profile_roles WHERE discordid = %s AND game = 'overwatch' LIMIT 1;",
-            (discordid,),
-        )
-        if existing:
+        if await has_profile_roles(discordid, "overwatch"):
             return
 
         hero_roles = config.game_data["overwatch"]["hero_roles"]
         roles = {hero_roles[key] for key in hero_keys_played if key in hero_roles}
-        if not roles:
-            return
-
-        await db.perform_many(
-            "INSERT INTO profile_roles (discordid, game, role) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING;",
-            [(discordid, "overwatch", r) for r in roles],
-        )
+        await seed_roles(discordid, "overwatch", roles)

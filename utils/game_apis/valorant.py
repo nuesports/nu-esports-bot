@@ -2,7 +2,7 @@ import aiohttp
 
 from utils import config, db
 from utils.ranks import compute_rank_value, format_rank_label
-from .base import LinkError, LinkResult
+from .base import LinkError, LinkResult, has_profile_mains, has_profile_roles, seed_mains, seed_roles
 from .http import fetch_json_with_retries
 
 HENRIK_BASE_URL = "https://api.henrikdev.xyz"
@@ -81,11 +81,7 @@ class ValorantClient:
         await self._maybe_seed_mains_and_roles(discordid, region, puuid, headers)
 
     async def _maybe_seed_mains_and_roles(self, discordid: int, region: str, puuid: str, headers: dict) -> None:
-        existing = await db.fetch_one(
-            "SELECT 1 FROM profile_mains WHERE discordid = %s AND game = 'valorant' LIMIT 1;",
-            (discordid,),
-        )
-        if existing:
+        if await has_profile_mains(discordid, "valorant"):
             return
 
         agent_counts: dict[str, int] = {}
@@ -110,19 +106,12 @@ class ValorantClient:
             return
 
         mains = [name for name, _ in sorted(agent_counts.items(), key=lambda item: item[1], reverse=True)[:3]]
-        await db.perform_many(
-            "INSERT INTO profile_mains (discordid, game, main) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING;",
-            [(discordid, "valorant", m) for m in mains],
-        )
+        await seed_mains(discordid, "valorant", mains)
 
         await self._maybe_seed_roles(discordid, mains)
 
     async def _maybe_seed_roles(self, discordid: int, mains: list[str]) -> None:
-        existing = await db.fetch_one(
-            "SELECT 1 FROM profile_roles WHERE discordid = %s AND game = 'valorant' LIMIT 1;",
-            (discordid,),
-        )
-        if existing:
+        if await has_profile_roles(discordid, "valorant"):
             return
 
         characters = config.game_data["valorant"]["characters"]
@@ -130,9 +119,4 @@ class ValorantClient:
         agent_to_role = {characters[idx]: role.title() for role, idxs in agents_roles.items() for idx in idxs}
 
         roles = {agent_to_role[m] for m in mains if m in agent_to_role}
-        if not roles:
-            return
-        await db.perform_many(
-            "INSERT INTO profile_roles (discordid, game, role) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING;",
-            [(discordid, "valorant", r) for r in roles],
-        )
+        await seed_roles(discordid, "valorant", roles)

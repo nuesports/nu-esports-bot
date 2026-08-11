@@ -4,7 +4,7 @@ import aiohttp
 
 from utils import config, db
 from utils.ranks import compute_rank_value, format_rank_label
-from .base import LinkError, LinkResult
+from .base import LinkError, LinkResult, has_profile_mains, seed_mains
 from .http import fetch_json_with_retries
 
 DEADLOCK_BASE_URL = "https://api.deadlock-api.com"
@@ -134,11 +134,7 @@ class DeadlockClient:
     async def _maybe_seed_mains(self, discordid: int, account_id: int) -> None:
         """Seed mains from the 3 most-played heroes (by time_played), but only the
         first time -- once a player has any mains on file, refresh never overwrites them."""
-        existing = await db.fetch_one(
-            "SELECT 1 FROM profile_mains WHERE discordid = %s AND game = 'deadlock' LIMIT 1;",
-            (discordid,),
-        )
-        if existing:
+        if await has_profile_mains(discordid, "deadlock"):
             return
 
         hero_stats = await fetch_json_with_retries(
@@ -150,10 +146,4 @@ class DeadlockClient:
         top_heroes = sorted(hero_stats, key=lambda h: h["time_played"], reverse=True)[:3]
         hero_names = config.game_data["deadlock"]["hero_ids"]
         mains = [hero_names[h["hero_id"]] for h in top_heroes if h["hero_id"] in hero_names]
-        if not mains:
-            return
-
-        await db.perform_many(
-            "INSERT INTO profile_mains (discordid, game, main) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING;",
-            [(discordid, "deadlock", m) for m in mains],
-        )
+        await seed_mains(discordid, "deadlock", mains)

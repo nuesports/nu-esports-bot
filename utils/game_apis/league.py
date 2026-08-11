@@ -2,7 +2,7 @@ import aiohttp
 
 from utils import config, db
 from utils.ranks import compute_rank_value, format_rank_label
-from .base import LinkError, LinkResult
+from .base import LinkError, LinkResult, has_profile_mains, seed_mains
 from .http import fetch_json_with_retries
 
 REGIONAL_ROUTING = "americas"
@@ -22,11 +22,7 @@ class LeagueClient:
 
     async def _maybe_seed_mains(self, discordid: int, puuid: str, headers: dict) -> None:
         """Seed mains via top 3 mastery, but only when mains is empty (aka the first time)"""
-        existing = await db.fetch_one(
-            "SELECT 1 from profile_mains WHERE discordid = %s and game = 'league' LIMIT 1;",
-            (discordid, ),
-        )
-        if existing:
+        if await has_profile_mains(discordid, "league"):
             return
 
         mastery_url = (
@@ -39,13 +35,7 @@ class LeagueClient:
 
         champion_names = config.game_data["league"]["champion_ids"]
         mains = [champion_names[c["championId"]] for c in top_champs if c["championId"] in champion_names]
-        if not mains:
-            return
-
-        await db.perform_many(
-            "INSERT INTO profile_mains (discordid, game, main) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING;",
-            [(discordid, "league", m) for m in mains]
-        )
+        await seed_mains(discordid, "league", mains)
 
     async def link(self, raw_identifier: str) -> LinkResult:
         if "#" not in raw_identifier:
@@ -87,7 +77,10 @@ class LeagueClient:
         solo_entry = next((e for e in entries if e.get("queueType") == RANKED_SOLO_QUEUE), None)
         if solo_entry is not None:
             tier = solo_entry["tier"].title()
-            division = ROMAN_TO_DIVISION.get(solo_entry.get("rank"), 1)
+            rank_key = solo_entry.get("rank")
+            if rank_key not in ROMAN_TO_DIVISION:
+                raise ValueError(f"Unrecognized League division {rank_key!r} in ranked solo entry")
+            division = ROMAN_TO_DIVISION[rank_key]
             rank_value = compute_rank_value("league", tier, division)
             rank_label = format_rank_label("league", tier, division)
 

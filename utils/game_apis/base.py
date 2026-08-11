@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from typing import Protocol
 
+from utils import db
+
 class LinkError(Exception):
     """Raised when a submitted identifier can't be resolved via the game's API"""
 
@@ -16,3 +18,37 @@ class GameAPIClient(Protocol):
     game: str
     async def link(self, raw_identifier: str) -> LinkResult: ...
     async def fetch_and_store(self, discordid: int, account_row: tuple) -> None: ...
+
+async def has_profile_mains(discordid: int, game: str) -> bool:
+    """True if the player already has any mains on file for this game."""
+    existing = await db.fetch_one(
+        "SELECT 1 FROM profile_mains WHERE discordid = %s AND game = %s LIMIT 1;",
+        (discordid, game),
+    )
+    return existing is not None
+
+async def seed_mains(discordid: int, game: str, mains: list[str]) -> None:
+    """Bulk-insert seeded mains; no-op if there aren't any."""
+    if not mains:
+        return
+    await db.perform_many(
+        "INSERT INTO profile_mains (discordid, game, main) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING;",
+        [(discordid, game, m) for m in mains],
+    )
+
+async def has_profile_roles(discordid: int, game: str) -> bool:
+    """True if the player already has any roles on file for this game."""
+    existing = await db.fetch_one(
+        "SELECT 1 FROM profile_roles WHERE discordid = %s AND game = %s LIMIT 1;",
+        (discordid, game),
+    )
+    return existing is not None
+
+async def seed_roles(discordid: int, game: str, roles) -> None:
+    """Bulk-insert seeded roles; no-op if there aren't any."""
+    if not roles:
+        return
+    await db.perform_many(
+        "INSERT INTO profile_roles (discordid, game, role) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING;",
+        [(discordid, game, r) for r in roles],
+    )
