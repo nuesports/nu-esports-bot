@@ -6,23 +6,6 @@ default_hours: # MTWTFSS
   - '12:00PM - 11:00PM'
   - '12:00PM - 11:00PM'
   - '2:30PM - 11:00PM'
-adjusted_hours:
-  2025-01-20: 'Closed (MLK Day)'
-  2025-03-17: "2:30PM - 9:00PM (Finals Week)"
-  2025-03-18: "2:30PM - 9:00PM (Finals Week)"
-  2025-03-19: "2:30PM - 9:00PM (Finals Week)"
-  2025-03-20: "2:30PM - 9:00PM (Finals Week)"
-  2025-03-21: "12:00PM - 5:00PM (Finals Week)"
-  2025-03-22: "Closed (Spring Break)"
-  2025-03-23: "Closed (Spring Break)"
-  2025-03-24: "Closed (Spring Break)"
-  2025-03-25: "Closed (Spring Break)"
-  2025-03-26: "Closed (Spring Break)"
-  2025-03-27: "Closed (Spring Break)"
-  2025-03-28: "Closed (Spring Break)"
-  2025-03-29: "Closed (Spring Break)"
-  2025-03-30: "Closed (Spring Break)"
-  2025-03-31: "Closed (Spring Break)"
 games:
   ps4:
     - 'Call of Duty: Black Ops 4'
