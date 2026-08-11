@@ -51,6 +51,39 @@ def test_load_secrets_raises_if_missing(tmp_path, monkeypatch):
         config.load_secrets()
 
 
+class FakeGuildPermissions:
+    def __init__(self, administrator=False):
+        self.administrator = administrator
+
+
+class FakeRole:
+    def __init__(self, id):
+        self.id = id
+
+
+class FakeMember:
+    def __init__(self, roles=None, administrator=False):
+        self.roles = roles or []
+        self.guild_permissions = FakeGuildPermissions(administrator)
+
+
+@pytest.fixture
+def gamehead_roles(monkeypatch):
+    monkeypatch.setattr(config, "config", {"roles": {"gameheads": {"valorant": 111}}})
+
+
+def test_is_game_head_true_for_admin(gamehead_roles):
+    assert config.is_game_head(FakeMember(administrator=True)) is True
+
+
+def test_is_game_head_true_for_matching_role(gamehead_roles):
+    assert config.is_game_head(FakeMember(roles=[FakeRole(111)])) is True
+
+
+def test_is_game_head_false_otherwise(gamehead_roles):
+    assert config.is_game_head(FakeMember(roles=[FakeRole(222)])) is False
+
+
 def test_load_game_data_raises_if_missing(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     with pytest.raises(FileNotFoundError):
