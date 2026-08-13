@@ -1384,3 +1384,89 @@ async def test_picking_a_map_is_gated_to_game_heads(betting_session, gamehead_ro
 
     assert "not a game head" in interaction.response.messages[0]["content"]
     assert betting_session.map is None
+
+
+# --- lineup changes void bets still in flight ---
+
+@pytest.mark.asyncio
+async def test_a_bet_is_rolled_back_when_a_reshuffle_lands_mid_deduction(betting_session, monkeypatch):
+    """A re-shuffle refunds the book and reopens betting, so betting_open is True again
+    by the time the modal resumes. Only the epoch tells the two apart."""
+    betting_session.betting_open = True
+    calls = []
+
+    async def perform_one(sql, parameters=None):
+        calls.append((sql, parameters))
+        betting_session.betting_epoch += 1   # a re-shuffle lands mid-UPDATE
+        return 1
+
+    async def perform_many(sql, parameters):
+        pass
+
+    monkeypatch.setattr(matchmaking.db, "perform_one", perform_one)
+    monkeypatch.setattr(matchmaking.db, "perform_many", perform_many)
+    user = FakeMember(7)
+    modal = make_bet_modal(betting_session, user, value="100")
+    interaction = FakeInteraction(user)
+
+    await modal.callback(interaction)
+
+    assert betting_session.bets == {}
+    assert "teams changed" in interaction.response.messages[0]["content"]
+    assert calls[1][1] == (100, 7)   # stake handed straight back
+
+
+@pytest.mark.asyncio
+async def test_a_raise_in_flight_during_a_refund_cannot_outrun_its_stake(betting_session, monkeypatch):
+    """Raising deducts only the delta. If the book is refunded mid-UPDATE, booking the
+    new total would leave the user staked 250 having paid 150."""
+    betting_session.betting_open = True
+    betting_session.bets = {7: {"team": "a", "points": 100}}
+    calls = []
+
+    async def perform_one(sql, parameters=None):
+        calls.append((sql, parameters))
+        if len(calls) == 1:
+            betting_session.bets = {}            # the refund clears the book
+            betting_session.betting_epoch += 1
+        return 1
+
+    async def perform_many(sql, parameters):
+        pass
+
+    monkeypatch.setattr(matchmaking.db, "perform_one", perform_one)
+    monkeypatch.setattr(matchmaking.db, "perform_many", perform_many)
+    user = FakeMember(7)
+    modal = make_bet_modal(betting_session, user, value="250", current_bet=100)
+    interaction = FakeInteraction(user)
+
+    await modal.callback(interaction)
+
+    assert betting_session.bets == {}
+    assert calls[0][1] == (150, 7, 150)   # only the delta was ever deducted
+    assert calls[1][1] == (150, 7)        # and only the delta comes back
+
+
+@pytest.mark.asyncio
+async def test_refund_bets_bumps_the_epoch_even_with_an_empty_book(betting_session, fake_db):
+    """A first-time bet mid-submission isn't in the book yet, so an empty-book early
+    return would let it through onto the new lineup."""
+    epoch_before = betting_session.betting_epoch
+
+    await matchmaking.refund_bets(betting_session)
+
+    assert betting_session.betting_epoch == epoch_before + 1
+
+
+def test_chatters_field_still_shows_a_row_in_a_one_versus_one_lobby(betting_session, monkeypatch):
+    """team_size of 1 used to slice rows[:0] and print nothing but the overflow line."""
+    monkeypatch.setitem(matchmaking.LOBBY_SIZE, "fakegame", 2)
+    betting_session.bets = {
+        7: {"team": "a", "points": 500},
+        8: {"team": "b", "points": 10},
+    }
+
+    rows = matchmaking.generate_chatters_field(betting_session).split("\n")
+
+    assert rows[0] == "500 points - <@7>"   # the top stake survives
+    assert rows[1] == "...and 1 more"

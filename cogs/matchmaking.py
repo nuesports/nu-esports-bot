@@ -112,8 +112,8 @@ def generate_chatters_field(session: "MatchmakingSession") -> str:
         # dwarf the two team columns. Keeps the highest stakes since they're sorted first.
         team_size = LOBBY_SIZE[session.game] // 2
         if len(rows) > team_size:
-            omitted = len(rows) - (team_size - 1)
-            rows = rows[: team_size - 1] + [f"...and {omitted} more"]
+            keep = max(team_size - 1, 1)   # a 1v1 game would otherwise show no rows at all
+            rows = rows[:keep] + [f"...and {len(rows) - keep} more"]
 
     if session.betting_open and session.betting_closes_at:
         status = f"*Betting closes <t:{int(session.betting_closes_at)}:R>*"
@@ -391,6 +391,10 @@ async def refund_bets(session: "MatchmakingSession") -> None:
     """Refund every outstanding bet's stake back to the bettor.
     Used when a lobby is cancelled before a winner is declared.
     """
+    # Every caller is a point where the lineup stopped matching what people bet on, so
+    # this doubles as the invalidation signal for bets still in flight. Bump before the
+    # empty check -- a first bet mid-submission isn't in the book yet but is just as stale.
+    session.betting_epoch += 1
     if not session.bets:
         return
     await db.perform_many(
@@ -699,6 +703,7 @@ class MatchmakingSession:
         self.betting_closes_at: float | None = None
         self.betting_close_task: asyncio.Task | None = None
         self.bet_locks: dict[int, asyncio.Lock] = {} # member.id to a lock serializing that user's bet submissions
+        self.betting_epoch: int = 0 # bumped whenever the lineup changes, to void bets still in flight
 
 class Matchmaking(commands.Cog):
     """Cog housing the /matchmaking command group and the active lobby state for all channels."""
@@ -939,6 +944,7 @@ class BetModal(discord.ui.Modal):
         async with lock:
             existing = self.session.bets.get(self.user.id)
             current_bet = existing["points"] if existing else 0
+            epoch = self.session.betting_epoch
 
             if new_total <= current_bet:
                 message = "You can only raise your bet, not lower it!" if current_bet else "You must wager more than 0 points!"
@@ -962,13 +968,19 @@ class BetModal(discord.ui.Modal):
                 await interaction.response.send_message("You don't have enough points for that!", ephemeral=True)
                 return
 
-            # The window can shut mid-UPDATE, and a bet booked post-settlement never pays out.
-            if not self.session.betting_open:
+            # A re-shuffle mid-UPDATE refunds the book and reopens betting, so betting_open
+            # alone can't tell "still valid" from "same window, different teams".
+            stale = self.session.betting_epoch != epoch
+            if stale or not self.session.betting_open:
                 await db.perform_one(
                     "UPDATE users SET points = points + %s WHERE discordid = %s;",
                     (delta, self.user.id),
                 )
-                await interaction.response.send_message("Betting closed while you were typing -- too slow!", ephemeral=True)
+                message = (
+                    "The teams changed while you were typing -- bet again on the new lineup."
+                    if stale else "Betting closed while you were typing -- too slow!"
+                )
+                await interaction.response.send_message(message, ephemeral=True)
                 return
             self.session.bets[self.user.id] = {"team": self.team, "points": new_total}
 
