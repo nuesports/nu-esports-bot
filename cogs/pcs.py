@@ -606,10 +606,9 @@ class PCs(commands.Cog):
 
         for attempt in range(max_attempts):
             try:
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.get(url) as resp:
-                        resp.raise_for_status()
-                        return await resp.json()
+                async with aiohttp.ClientSession(timeout=timeout) as session, session.get(url) as resp:
+                    resp.raise_for_status()
+                    return await resp.json()
             except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
                 if attempt == max_attempts - 1:
                     raise

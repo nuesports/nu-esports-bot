@@ -16,10 +16,9 @@ async def fetch_json_with_retries(url: str, headers: dict | None = None, params:
 
     for attempt in range(max_attempts):
         try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(url, headers=headers, params=params) as resp:
-                    resp.raise_for_status()
-                    return await resp.json()
+            async with aiohttp.ClientSession(timeout=timeout) as session, session.get(url, headers=headers, params=params) as resp:
+                resp.raise_for_status()
+                return await resp.json()
         except aiohttp.ClientResponseError as e:
             if e.status in NO_RETRY_STATUSES or attempt == max_attempts - 1:
                 raise

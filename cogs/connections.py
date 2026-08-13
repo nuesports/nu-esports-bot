@@ -164,8 +164,7 @@ class Connections(commands.Cog):
                 )
 
                 timeout = aiohttp.ClientTimeout(total=12)
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.get(url) as response:
+                async with aiohttp.ClientSession(timeout=timeout) as session, session.get(url) as response:
                         if response.status != 200:
                             raise ValueError(
                                 f"Apify returned status {response.status} for {requested_date}."
