@@ -1004,6 +1004,9 @@ class SwapSelectView(discord.ui.View):
 
     async def on_select(self, interaction: discord.Interaction):
         """Swap the two selected players' team+lane slots and refresh every open view of this lobby."""
+        if not has_privilege(interaction):
+            await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
+            return
         id_a, id_b = [int(v) for v in self.select.values]
         swap_slots(self.session, id_a, id_b)
         # Different lineup, so bets placed on the old one go back. The window keeps its
@@ -1077,6 +1080,9 @@ class MapSelectView(discord.ui.View):
 
     async def on_select(self, interaction: discord.Interaction):
         """Set the session's map and refresh every open view of this lobby."""
+        if not has_privilege(interaction):
+            await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
+            return
         self.session.map = interaction.data["values"][0]
 
         await self.session.message.edit(embed=generate_embed(self.session), view=LobbyView(self.session))

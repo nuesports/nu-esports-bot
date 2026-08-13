@@ -1336,7 +1336,7 @@ async def test_leaving_refunds_bets_placed_on_the_old_lineup(betting_session, fa
 
 
 @pytest.mark.asyncio
-async def test_swapping_refunds_bets_placed_on_the_old_lineup(betting_session, fake_db):
+async def test_swapping_refunds_bets_placed_on_the_old_lineup(betting_session, fake_db, gamehead_roles):
     await matchmaking.start_betting_window(betting_session)
     betting_session.bets = {7: {"team": "a", "points": 100}}
     fake_db.perform_many_calls.clear()
@@ -1346,7 +1346,7 @@ async def test_swapping_refunds_bets_placed_on_the_old_lineup(betting_session, f
     view.select._selected_values = ["1", "3"]
     view.select._interaction = object()
     try:
-        await view.on_select(FakeInteraction(FakeUser(id=5)))
+        await view.on_select(FakeInteraction(FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], id=5)))
 
         _, rows = fake_db.perform_many_calls[0]
         assert rows == [(100, 7)]
@@ -1356,3 +1356,31 @@ async def test_swapping_refunds_bets_placed_on_the_old_lineup(betting_session, f
         assert betting_session.betting_closes_at == deadline
     finally:
         matchmaking.stop_betting_window(betting_session)
+
+
+# --- select callbacks gate the same way their Back buttons do ---
+
+@pytest.mark.asyncio
+async def test_swapping_is_gated_to_game_heads(betting_session, fake_db, gamehead_roles):
+    view = matchmaking.SwapSelectView(betting_session)
+    view.select._selected_values = ["1", "3"]
+    view.select._interaction = object()
+    interaction = FakeInteraction(FakeUser(roles=[FakeRole("Member", id=222)], id=99))
+
+    await view.on_select(interaction)
+
+    assert "not a game head" in interaction.response.messages[0]["content"]
+    assert betting_session.team_a == [betting_session.joined[0], betting_session.joined[1]]
+    assert fake_db.perform_many_calls == []
+
+
+@pytest.mark.asyncio
+async def test_picking_a_map_is_gated_to_game_heads(betting_session, gamehead_roles, monkeypatch):
+    monkeypatch.setitem(matchmaking.MAPS, "fakegame", ["Ascent", "Bind"])
+    view = matchmaking.MapSelectView(betting_session)
+    interaction = FakeInteraction(FakeUser(roles=[FakeRole("Member", id=222)], id=99))
+
+    await view.on_select(interaction)
+
+    assert "not a game head" in interaction.response.messages[0]["content"]
+    assert betting_session.map is None
