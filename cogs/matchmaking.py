@@ -897,16 +897,20 @@ class BetModal(discord.ui.Modal):
         self.user = user
         self.team = team
 
+        # Labels cap at 45 characters, and both numbers are unbounded, so the balance
+        # lives in the placeholder (100 characters) instead of alongside the stake.
         if current_bet:
-            label = f"Total bet (currently {current_bet}, {balance} more available)"
+            label = f"New total bet (currently {current_bet})"
+            placeholder = f"{balance} more available"
         else:
-            label = f"How many points? ({balance} available)"
+            label = "How many points?"
+            placeholder = f"{balance} available"
 
         self.add_item(discord.ui.InputText(
             label=label,
             required=True,
             min_length=1,
-            placeholder="Enter your new total bet",
+            placeholder=placeholder,
         ))
 
     async def callback(self, interaction: discord.Interaction) -> None:
