@@ -633,7 +633,7 @@ class PCs(commands.Cog):
                     if desk_num == 0:
                         return (999, name)
                     return (desk_num, name)
-        except Exception:
+        except ValueError:
             pass
         return (10**9, name)
 
