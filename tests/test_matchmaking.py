@@ -954,7 +954,7 @@ async def test_cancelling_the_forfeit_keeps_the_bet(betting_session, gamehead_ro
 
 @pytest.mark.asyncio
 async def test_forfeiting_the_only_backer_of_a_side_refunds_the_rest(
-    betting_session, fake_db, gamehead_roles, no_record_keeping
+    betting_session, fake_db, gamehead_roles, no_record_keeping, declaring
 ):
     """The forfeit leaves one side unbacked, which collapses settlement into the
     refund-everyone branch rather than paying a 1x 'win'."""
@@ -969,7 +969,7 @@ async def test_forfeiting_the_only_backer_of_a_side_refunds_the_rest(
 
 @pytest.mark.asyncio
 async def test_declaring_forfeits_the_declarers_own_bet(
-    betting_session, fake_db, gamehead_roles, no_record_keeping
+    betting_session, fake_db, gamehead_roles, no_record_keeping, declaring
 ):
     """Closes the self-officiating hole: reaching declare_winner through a picker that
     was opened before the bet existed still forfeits, since AdminView never saw it."""
@@ -984,7 +984,7 @@ async def test_declaring_forfeits_the_declarers_own_bet(
 
 @pytest.mark.asyncio
 async def test_an_admin_declaring_still_gets_paid(
-    betting_session, fake_db, gamehead_roles, no_record_keeping
+    betting_session, fake_db, gamehead_roles, no_record_keeping, declaring
 ):
     betting_session.bets = {7: {"team": "a", "points": 100}, 8: {"team": "b", "points": 100}}
     interaction = declaring(admin(7))
@@ -1019,7 +1019,7 @@ async def test_declare_winner_is_gated_to_game_heads(betting_session, gamehead_r
 
 
 @pytest.mark.asyncio
-async def test_declare_winner_defers_before_doing_any_work(betting_session, fake_db, gamehead_roles, no_record_keeping):
+async def test_declare_winner_defers_before_doing_any_work(betting_session, fake_db, gamehead_roles, no_record_keeping, declaring):
     """Discord kills an interaction that isn't answered in 3 seconds, and settlement
     plus elo writes take longer than that."""
     interaction = declaring(gamehead(7))
@@ -1030,7 +1030,7 @@ async def test_declare_winner_defers_before_doing_any_work(betting_session, fake
 
 
 @pytest.mark.asyncio
-async def test_declare_winner_settles_bets_into_the_postgame_embed(betting_session, fake_db, gamehead_roles, no_record_keeping):
+async def test_declare_winner_settles_bets_into_the_postgame_embed(betting_session, fake_db, gamehead_roles, no_record_keeping, declaring):
     fake_db.fetch_one_result = ("👑",)
     betting_session.bets = {
         7: {"team": "a", "points": 100},
@@ -1048,7 +1048,7 @@ async def test_declare_winner_settles_bets_into_the_postgame_embed(betting_sessi
 
 
 @pytest.mark.asyncio
-async def test_declare_winner_stops_the_betting_timer(betting_session, fake_db, gamehead_roles, no_record_keeping):
+async def test_declare_winner_stops_the_betting_timer(betting_session, fake_db, gamehead_roles, no_record_keeping, declaring):
     await matchmaking.start_betting_window(betting_session)
     interaction = declaring(gamehead(5))
 
@@ -1059,17 +1059,17 @@ async def test_declare_winner_stops_the_betting_timer(betting_session, fake_db, 
 
 
 @pytest.mark.asyncio
-async def test_declare_winner_ends_the_session(betting_session, fake_db, gamehead_roles, no_record_keeping):
+async def test_declare_winner_ends_the_session(betting_session, fake_db, gamehead_roles, no_record_keeping, declaring):
     interaction = declaring(gamehead(5))
 
     await matchmaking.declare_winner(betting_session, interaction, team_a_won=True)
 
-    assert cog.active_sessions == {}
+    assert declaring.cog.active_sessions == {}
     assert interaction.original_response_deleted is True
 
 
 @pytest.mark.asyncio
-async def test_declare_winner_surfaces_a_failed_embed_edit(betting_session, fake_db, gamehead_roles, no_record_keeping):
+async def test_declare_winner_surfaces_a_failed_embed_edit(betting_session, fake_db, gamehead_roles, no_record_keeping, declaring):
     """The result is already written by this point, so a silent failure would leave
     the declarer thinking nothing happened."""
     import discord
@@ -1083,7 +1083,7 @@ async def test_declare_winner_surfaces_a_failed_embed_edit(betting_session, fake
     await matchmaking.declare_winner(betting_session, interaction, team_a_won=True)
 
     assert "couldn't update the lobby embed" in interaction.followup.send_calls[0]["content"]
-    assert cog.active_sessions == {}
+    assert declaring.cog.active_sessions == {}
 
 
 class _FakeResponse:
