@@ -234,9 +234,9 @@ def test_chatters_field_orients_each_row_toward_its_team_column(betting_session)
 
     rows = matchmaking.generate_chatters_field(betting_session).split("\n")
 
-    # Team A reads points-first (toward the left column), Team B name-first (toward the right)
-    assert rows[0] == "100 points - <@7>"
-    assert rows[1] == "<@8> - 50 points"
+    # The mention sits on the side of the team backed: A toward the left column, B the right
+    assert rows[0] == "<@7> - 100 points"
+    assert rows[1] == "50 points - <@8>"
 
 
 def test_chatters_field_sorts_by_stake_descending(betting_session):
@@ -248,7 +248,7 @@ def test_chatters_field_sorts_by_stake_descending(betting_session):
 
     rows = matchmaking.generate_chatters_field(betting_session).split("\n")
 
-    assert rows == ["900 points - <@8>", "250 points - <@9>", "10 points - <@7>"]
+    assert rows == ["<@8> - 900 points", "<@9> - 250 points", "<@7> - 10 points"]
 
 
 def test_chatters_field_truncates_to_one_teams_worth_of_rows(betting_session):
@@ -262,7 +262,7 @@ def test_chatters_field_truncates_to_one_teams_worth_of_rows(betting_session):
     assert len(rows) == 5
     assert rows[-1] == "...and 3 more"
     # The highest stakes survive the cut, since the list is sorted before truncating
-    assert rows[0] == "70 points - <@7>"
+    assert rows[0] == "<@7> - 70 points"
 
 
 def test_chatters_field_shows_a_countdown_while_betting_is_open(betting_session):
@@ -1340,7 +1340,7 @@ async def test_swapping_refunds_bets_placed_on_the_old_lineup(betting_session, f
     await matchmaking.start_betting_window(betting_session)
     betting_session.bets = {7: {"team": "a", "points": 100}}
     fake_db.perform_many_calls.clear()
-    deadline = betting_session.betting_closes_at
+    first_task = betting_session.betting_close_task
 
     view = matchmaking.SwapSelectView(betting_session)
     view.select._selected_values = ["1", "3"]
@@ -1351,9 +1351,10 @@ async def test_swapping_refunds_bets_placed_on_the_old_lineup(betting_session, f
         _, rows = fake_db.perform_many_calls[0]
         assert rows == [(100, 7)]
         assert betting_session.bets == {}
-        # Betting stays open on its original deadline, so repeat swaps can't extend it
+        # Swapping restarts the window, so bettors get a full one on the new lineup
         assert betting_session.betting_open is True
-        assert betting_session.betting_closes_at == deadline
+        assert first_task.done()
+        assert betting_session.betting_close_task is not first_task
     finally:
         matchmaking.stop_betting_window(betting_session)
 
@@ -1468,5 +1469,5 @@ def test_chatters_field_still_shows_a_row_in_a_one_versus_one_lobby(betting_sess
 
     rows = matchmaking.generate_chatters_field(betting_session).split("\n")
 
-    assert rows[0] == "500 points - <@7>"   # the top stake survives
+    assert rows[0] == "<@7> - 500 points"   # the top stake survives
     assert rows[1] == "...and 1 more"

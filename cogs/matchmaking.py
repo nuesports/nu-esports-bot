@@ -93,9 +93,9 @@ def generate_cancelled_embed(session: "MatchmakingSession") -> discord.Embed:
 def generate_chatters_field(session: "MatchmakingSession") -> str:
     """Build the "Chatters" field value: bettors sorted by stake (highest first).
 
-    Team A backers read "{points} points - @user" (points-first, reading toward the
-    Team A column); Team B backers read "@user - {points} points" (username-first,
-    reading toward the Team B column), so the whole list visually splits by side.
+    Each row puts the mention on the side of the team it backs: Team A reads
+    "@user - {points} points" (mention toward the left-hand Team A column), Team B
+    reads "{points} points - @user", so the list visually splits by side.
     """
     if not session.bets:
         rows = ["No bets yet"]
@@ -104,9 +104,9 @@ def generate_chatters_field(session: "MatchmakingSession") -> str:
         rows = []
         for user_id, bet in ordered:
             if bet["team"] == "a":
-                rows.append(f"{bet['points']} points - <@{user_id}>")
-            else:
                 rows.append(f"<@{user_id}> - {bet['points']} points")
+            else:
+                rows.append(f"{bet['points']} points - <@{user_id}>")
 
         # Cap the list at one team's worth of rows so a heavily-bet match doesn't
         # dwarf the two team columns. Keeps the highest stakes since they're sorted first.
@@ -1021,9 +1021,8 @@ class SwapSelectView(discord.ui.View):
             return
         id_a, id_b = [int(v) for v in self.select.values]
         swap_slots(self.session, id_a, id_b)
-        # Different lineup, so bets placed on the old one go back. The window keeps its
-        # original deadline rather than restarting, so swaps can't extend betting.
-        await refund_bets(self.session)
+        # Different lineup, so bets on the old one go back and the window restarts.
+        await start_betting_window(self.session)
 
         await self.session.message.edit(embed=generate_embed(self.session), view=LobbyView(self.session))
         await interaction.response.edit_message(embed=generate_embed(self.session), view=AdminView(self.session))
