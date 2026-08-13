@@ -102,6 +102,13 @@ class FakeInteraction:
         self.response = FakeInteractionResponse()
         self.followup = FakeFollowup()
         self.original_response_deleted = False
+        self.original_response_edits = []
+
+    async def edit_original_response(self, **kwargs):
+        """How a handler updates its message once it has deferred -- response.edit_message
+        is no longer available to it at that point, so these land in their own list."""
+        self.original_response_edits.append(kwargs)
+        return FakeMessage()
 
     async def delete_original_response(self):
         self.original_response_deleted = True

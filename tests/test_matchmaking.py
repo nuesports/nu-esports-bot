@@ -1250,6 +1250,70 @@ async def test_reshuffling_refunds_before_reopening(betting_session, fake_db, ga
         matchmaking.stop_betting_window(betting_session)
 
 
+@pytest.mark.asyncio
+async def test_shuffling_defers_before_doing_any_work(betting_session, fake_db, gamehead_roles, monkeypatch):
+    """The shuffle query, the refund and two message edits stack up past Discord's 3
+    second deadline, which kills the interaction even though the state already changed."""
+    deferred_at = []
+
+    async def fake_shuffle_data(joined, game):
+        deferred_at.append(interaction.response.deferred)
+        return {}, {}
+
+    async def no_unranked(game, joined, assignments):
+        return []
+
+    monkeypatch.setattr(matchmaking, "get_game_shuffle_data", fake_shuffle_data)
+    monkeypatch.setattr(matchmaking, "get_unranked", no_unranked)
+    monkeypatch.setattr(
+        matchmaking, "balance_teams",
+        lambda game, joined, elo, roles: (betting_session.team_a, betting_session.team_b, betting_session.role_assignments),
+    )
+
+    view = matchmaking.AdminView(betting_session)
+    interaction = FakeInteraction(gamehead(5))
+
+    await view.shuffle.callback(interaction)
+    try:
+        assert deferred_at == [True]   # deferred before even the first query
+        assert isinstance(interaction.original_response_edits[0]["view"], matchmaking.AdminView)
+        assert interaction.response.edits == []   # edit_message is unavailable post-defer
+    finally:
+        matchmaking.stop_betting_window(betting_session)
+
+
+@pytest.mark.asyncio
+async def test_shuffling_answers_a_non_game_head_without_deferring(betting_session, fake_db, gamehead_roles):
+    """The refusal is the whole response, so it has to stay a plain reply."""
+    view = matchmaking.AdminView(betting_session)
+    interaction = FakeInteraction(member(99))
+
+    await view.shuffle.callback(interaction)
+
+    assert "not a game head" in interaction.response.messages[0]["content"]
+    assert interaction.response.deferred is False
+    assert betting_session.betting_open is False
+
+
+@pytest.mark.asyncio
+async def test_swapping_defers_before_restarting_the_window(betting_session, fake_db, gamehead_roles):
+    """start_betting_window can await a close-timer that's mid-edit, then refund -- two
+    round trips before the panel would otherwise get its reply."""
+    view = matchmaking.SwapSelectView(betting_session)
+    view.select._selected_values = ["1", "3"]
+    view.select._interaction = object()
+    interaction = FakeInteraction(gamehead(5))
+
+    try:
+        await view.on_select(interaction)
+
+        assert interaction.response.deferred is True
+        assert isinstance(interaction.original_response_edits[0]["view"], matchmaking.AdminView)
+        assert interaction.response.edits == []
+    finally:
+        matchmaking.stop_betting_window(betting_session)
+
+
 # --- races closed by review ---
 
 @pytest.mark.asyncio

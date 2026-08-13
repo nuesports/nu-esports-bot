@@ -1029,13 +1029,17 @@ class SwapSelectView(discord.ui.View):
         if not has_privilege(interaction):
             await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
             return
+        # Restarting the window can await a close-timer that's mid-edit, and the refund is a
+        # DB round trip -- more than Discord's 3 second reply deadline allows for.
+        await interaction.response.defer()
+
         id_a, id_b = [int(v) for v in self.select.values]
         swap_slots(self.session, id_a, id_b)
         # Different lineup, so bets on the old one go back and the window restarts.
         await start_betting_window(self.session)
 
         await self.session.message.edit(embed=generate_embed(self.session), view=LobbyView(self.session))
-        await interaction.response.edit_message(embed=generate_embed(self.session), view=AdminView(self.session))
+        await interaction.edit_original_response(embed=generate_embed(self.session), view=AdminView(self.session))
         await refresh_admin_panels(self.session)
 
     async def back(self, interaction: discord.Interaction):
@@ -1208,7 +1212,11 @@ class AdminView(discord.ui.View):
         if not has_privilege(interaction):
             await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
             return
-        
+
+        # Same as declare_winner: defer before any DB or API work. The shuffle query, the
+        # refund and two message edits all stack up well past the 3 second deadline.
+        await interaction.response.defer()
+
         elo_by_id, roles_by_id = await get_game_shuffle_data(self.session.joined, self.session.game)
         team_a, team_b, assignments = balance_teams(self.session.game, self.session.joined, elo_by_id, roles_by_id)
         self.session.team_a = team_a
@@ -1219,7 +1227,7 @@ class AdminView(discord.ui.View):
         await start_betting_window(self.session)
 
         await self.session.message.edit(embed=generate_embed(self.session), view=LobbyView(self.session))
-        await interaction.response.edit_message(embed=generate_embed(self.session), view=self)
+        await interaction.edit_original_response(embed=generate_embed(self.session), view=self)
         await refresh_admin_panels(self.session)
 
         unranked = await get_unranked(self.session.game, self.session.joined, self.session.role_assignments)
