@@ -1,0 +1,35 @@
+name: Tests
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: bot
+          POSTGRES_PASSWORD: supersecurepassword
+          POSTGRES_DB: nu-esports-bot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.10"
+      - run: uv sync --frozen
+      - run: |
+          cp secrets.example.yaml secrets.yaml
+          sed -i 's/host: db/host: localhost/' secrets.yaml
+      - run: uv run pytest

@@ -15,8 +15,19 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pre-commit==4.3.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.0.0",
 ]
 
 [tool.uv]
 package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_mode = "strict"
+# One shared event loop for the whole session, not one per test. Needed so the
+# session-scoped DB pool (opened once in the migrated_db fixture) stays valid for
+# every test that uses it -- an async connection pool can't be reused across loops.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 

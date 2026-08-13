@@ -46,11 +46,19 @@ def load_matchmaking_data():
         data.setdefault("team_names", [])
         return data
 
+def load_fun_data():
+    fun_file = Path("data/fun.yaml")
+    if not fun_file.exists():
+        raise FileNotFoundError("data/fun.yaml not found in local directory")
+    with open(fun_file, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
 config = load_config()
 secrets = load_secrets()
 game_data = load_game_data()
 gameroom_data = load_gameroom_data()
 matchmaking_data = load_matchmaking_data()
+fun_data = load_fun_data()
 
 def _role_ids(value) -> set[int]:
     """Normalize a roles config value (int, list, or None) to a set of role IDs."""
@@ -111,3 +119,8 @@ def rankable_roles(game: str) -> list[str]:
 def role_icon(game: str, role: str) -> str:
     """Emoji for a role, shown next to a player's name on a mixed per-role leaderboard entry."""
     return game_data[game].get("role_icons", {}).get(role, "")
+
+def main_aliases(game: str) -> dict[str, str]:
+    """Alternate spellings accepted for /profile set main (e.g. old names after a rename),
+    mapped to the canonical entry in this game's characters list."""
+    return game_data[game].get("aliases", {})
