@@ -8,7 +8,7 @@ from discord.ext import commands
 from utils import config
 from utils import db
 from utils import elo
-from utils import payout
+from utils import wallet
 
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
@@ -397,11 +397,20 @@ async def refund_bets(session: "MatchmakingSession") -> None:
     session.betting_epoch += 1
     if not session.bets:
         return
-    await db.perform_many(
-        "UPDATE users SET points = points + %s WHERE discordid = %s;",
-        [(bet["points"], user_id) for user_id, bet in session.bets.items()],
-    )
+    await wallet.credit_many([(bet["points"], user_id) for user_id, bet in session.bets.items()])
     session.bets = {}
+
+async def reset_to_lobby(session: "MatchmakingSession") -> None:
+    """Drop the shuffled teams and put the lobby back in its waiting-room state.
+
+    Anyone who'd bet was backing a matchup that no longer exists, so their stakes go
+    back and the window closes -- there's nothing to bet on until the next shuffle.
+    """
+    session.team_a = []
+    session.team_b = []
+    session.role_assignments = {}
+    stop_betting_window(session)
+    await refund_bets(session)
 
 def swap_slots(session: "MatchmakingSession", id_a: int, id_b: int) -> bool:
     """Swap two players' team+lane slots.
@@ -629,19 +638,13 @@ async def settle_bets(session: "MatchmakingSession", team_a_won: bool) -> dict |
 
     if not winning_bets or not losing_bets:
         refunds = {**team_a_bets, **team_b_bets}
-        await db.perform_many(
-            "UPDATE users SET points = points + %s WHERE discordid = %s;",
-            [(points, uid) for uid, points in refunds.items()],
-        )
+        await wallet.credit_many([(amount, uid) for uid, amount in refunds.items()])
         session.bets = {}
         return {"refunded": True, "total": sum(refunds.values())}
 
-    multiplier = payout.payout_multiplier(winning_pot, losing_pot)
-    payouts = {uid: round(points * multiplier) for uid, points in winning_bets.items()}
-    await db.perform_many(
-        "UPDATE users SET points = points + %s WHERE discordid = %s;",
-        [(amount, uid) for uid, amount in payouts.items()],
-    )
+    multiplier = wallet.payout_multiplier(winning_pot, losing_pot)
+    payouts = {uid: round(stake * multiplier) for uid, stake in winning_bets.items()}
+    await wallet.credit_many([(amount, uid) for uid, amount in payouts.items()])
     # Multiplier is the same for every winner, so the biggest stake is also
     # the biggest payout and profit.
     richest_id = max(winning_bets, key=lambda uid: winning_bets[uid])
@@ -798,12 +801,7 @@ class LobbyView(discord.ui.View):
         self.session.tags[interaction.user.id] = row[0] if row and row[0] else DEFAULT_TAG.get("Lobby")
 
         self.session.joined.append(interaction.user)
-        self.session.team_a = []
-        self.session.team_b = []
-        self.session.role_assignments = {}
-        # Teams are gone, so nobody's bet is on the match they backed anymore.
-        stop_betting_window(self.session)
-        await refund_bets(self.session)
+        await reset_to_lobby(self.session)
         await interaction.response.edit_message(embed=generate_embed(self.session), view=self)
         await refresh_admin_panels(self.session)
 
@@ -817,12 +815,7 @@ class LobbyView(discord.ui.View):
 
         self.session.joined = [m for m in self.session.joined if m.id != interaction.user.id]
         self.session.tags.pop(interaction.user.id, None)
-        self.session.team_a = []
-        self.session.team_b = []
-        self.session.role_assignments = {}
-        # Teams are gone, so nobody's bet is on the match they backed anymore.
-        stop_betting_window(self.session)
-        await refund_bets(self.session)
+        await reset_to_lobby(self.session)
         await interaction.response.edit_message(embed=generate_embed(self.session), view=self)
         await refresh_admin_panels(self.session)
 
@@ -957,13 +950,7 @@ class BetModal(discord.ui.Modal):
                 await interaction.response.send_message("Betting closed while you were typing -- too slow!", ephemeral=True)
                 return
 
-            # Atomic conditional UPDATE, not SELECT-then-UPDATE. The lock only covers
-            # this lobby, so the WHERE guard is what actually stops overdrafting across
-            # lobbies or predictions.
-            deducted = await db.perform_one(
-                "UPDATE users SET points = points - %s WHERE discordid = %s AND points >= %s;",
-                (delta, self.user.id, delta),
-            )
+            deducted = await wallet.try_deduct(self.user.id, delta)
             if not deducted:
                 await interaction.response.send_message("You don't have enough points for that!", ephemeral=True)
                 return
@@ -972,10 +959,7 @@ class BetModal(discord.ui.Modal):
             # alone can't tell "still valid" from "same window, different teams".
             stale = self.session.betting_epoch != epoch
             if stale or not self.session.betting_open:
-                await db.perform_one(
-                    "UPDATE users SET points = points + %s WHERE discordid = %s;",
-                    (delta, self.user.id),
-                )
+                await wallet.credit(self.user.id, delta)
                 message = (
                     "The teams changed while you were typing -- bet again on the new lineup."
                     if stale else "Betting closed while you were typing -- too slow!"

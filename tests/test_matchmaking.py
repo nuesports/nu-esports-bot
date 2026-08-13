@@ -125,18 +125,36 @@ def gamehead_roles(monkeypatch):
     monkeypatch.setattr(matchmaking.config, "config", {"roles": {"gameheads": {"valorant": 111}}})
 
 
+GAMEHEAD_ROLE = FakeRole("Valorant Game Head", id=111)
+MEMBER_ROLE = FakeRole("Member", id=222)
+
+
+def gamehead(id=7):
+    """A non-admin game head -- privileged, but subject to the self-officiating rules."""
+    return FakeUser(roles=[GAMEHEAD_ROLE], id=id)
+
+
+def admin(id=7):
+    """A server admin, who is trusted past the self-officiating rules."""
+    return FakeUser(roles=[GAMEHEAD_ROLE], administrator=True, id=id)
+
+
+def member(id=99):
+    return FakeUser(roles=[MEMBER_ROLE], id=id)
+
+
 def test_has_privilege_true_for_admin():
     interaction = FakeInteraction(FakeUser(administrator=True))
     assert matchmaking.has_privilege(interaction) is True
 
 
 def test_has_privilege_true_for_game_head_role(gamehead_roles):
-    interaction = FakeInteraction(FakeUser(roles=[FakeRole("Valorant Game Head", id=111)]))
+    interaction = FakeInteraction(gamehead())
     assert matchmaking.has_privilege(interaction) is True
 
 
 def test_has_privilege_false_otherwise(gamehead_roles):
-    interaction = FakeInteraction(FakeUser(roles=[FakeRole("Member", id=222)]))
+    interaction = FakeInteraction(member())
     assert matchmaking.has_privilege(interaction) is False
 
 
@@ -144,18 +162,17 @@ def test_has_privilege_false_otherwise(gamehead_roles):
 
 def test_admins_are_exempt_from_the_forfeit_rule(gamehead_roles):
     """Admins keep their bet when they declare. Same trust call has_privilege makes."""
-    admin_gamehead = FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], administrator=True)
-    assert matchmaking.must_forfeit_bet_on_declare(FakeInteraction(admin_gamehead)) is False
+    assert matchmaking.must_forfeit_bet_on_declare(FakeInteraction(admin())) is False
 
 
 def test_non_admin_game_heads_must_forfeit(gamehead_roles):
-    gamehead = FakeUser(roles=[FakeRole("Valorant Game Head", id=111)])
-    assert matchmaking.must_forfeit_bet_on_declare(FakeInteraction(gamehead)) is True
+    user = gamehead()
+    assert matchmaking.must_forfeit_bet_on_declare(FakeInteraction(user)) is True
 
 
 def test_plain_members_have_nothing_to_forfeit(gamehead_roles):
-    member = FakeUser(roles=[FakeRole("Member", id=222)])
-    assert matchmaking.must_forfeit_bet_on_declare(FakeInteraction(member)) is False
+    user = member()
+    assert matchmaking.must_forfeit_bet_on_declare(FakeInteraction(user)) is False
 
 
 # --- betting fixtures ---
@@ -200,6 +217,21 @@ def fake_db(monkeypatch):
     monkeypatch.setattr(matchmaking.db, "perform_one", perform_one)
     monkeypatch.setattr(matchmaking.db, "fetch_one", fetch_one)
     return rec
+
+
+@pytest.fixture
+def declaring(betting_session):
+    """A live session registered with a cog, plus a factory for the interaction that
+    declares its winner. declare_winner reaches through interaction.client to pop the
+    session, so the two have to be wired together."""
+    cog = FakeCog()
+    cog.active_sessions[betting_session.key] = betting_session
+
+    def make(user=None):
+        return FakeInteraction(user or gamehead(5), client=FakeClient(cog))
+
+    make.cog = cog
+    return make
 
 
 @pytest.fixture
@@ -803,9 +835,9 @@ async def test_bet_button_refuses_once_the_window_is_shut(betting_session, gameh
 async def test_bet_button_warns_game_heads_about_the_forfeit_rule(betting_session, gamehead_roles):
     betting_session.betting_open = True
     view = matchmaking.LobbyView(betting_session)
-    gamehead = FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], id=7)
+    user = gamehead(7)
 
-    interaction = FakeInteraction(gamehead)
+    interaction = FakeInteraction(user)
     await view.bet.callback(interaction)
 
     assert "your bet will be wiped" in interaction.response.messages[0]["content"]
@@ -815,9 +847,9 @@ async def test_bet_button_warns_game_heads_about_the_forfeit_rule(betting_sessio
 async def test_bet_button_does_not_warn_admins(betting_session, gamehead_roles):
     betting_session.betting_open = True
     view = matchmaking.LobbyView(betting_session)
-    admin = FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], administrator=True, id=7)
+    user = admin(7)
 
-    interaction = FakeInteraction(admin)
+    interaction = FakeInteraction(user)
     await view.bet.callback(interaction)
 
     assert "your bet will be wiped" not in interaction.response.messages[0]["content"]
@@ -828,7 +860,7 @@ async def test_bet_button_does_not_warn_admins(betting_session, gamehead_roles):
 @pytest.mark.asyncio
 async def test_winner_button_is_gated_to_game_heads(betting_session, gamehead_roles):
     view = matchmaking.AdminView(betting_session)
-    interaction = FakeInteraction(FakeUser(roles=[FakeRole("Member", id=222)], id=7))
+    interaction = FakeInteraction(member(7))
 
     await view.winner.callback(interaction)
 
@@ -839,7 +871,7 @@ async def test_winner_button_is_gated_to_game_heads(betting_session, gamehead_ro
 async def test_winner_button_requires_a_shuffle_first(betting_session, gamehead_roles):
     betting_session.role_assignments = {}
     view = matchmaking.AdminView(betting_session)
-    interaction = FakeInteraction(FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], id=7))
+    interaction = FakeInteraction(gamehead(7))
 
     await view.winner.callback(interaction)
 
@@ -850,7 +882,7 @@ async def test_winner_button_requires_a_shuffle_first(betting_session, gamehead_
 async def test_a_betting_game_head_is_warned_before_declaring(betting_session, gamehead_roles):
     betting_session.bets = {7: {"team": "a", "points": 250}}
     view = matchmaking.AdminView(betting_session)
-    interaction = FakeInteraction(FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], id=7))
+    interaction = FakeInteraction(gamehead(7))
 
     await view.winner.callback(interaction)
 
@@ -863,9 +895,9 @@ async def test_a_betting_game_head_is_warned_before_declaring(betting_session, g
 async def test_an_admin_with_a_bet_goes_straight_to_the_team_picker(betting_session, gamehead_roles):
     betting_session.bets = {7: {"team": "a", "points": 250}}
     view = matchmaking.AdminView(betting_session)
-    admin = FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], administrator=True, id=7)
+    user = admin(7)
 
-    interaction = FakeInteraction(admin)
+    interaction = FakeInteraction(user)
     await view.winner.callback(interaction)
 
     assert isinstance(interaction.response.edits[0]["view"], matchmaking.WinnerSelectView)
@@ -874,7 +906,7 @@ async def test_an_admin_with_a_bet_goes_straight_to_the_team_picker(betting_sess
 @pytest.mark.asyncio
 async def test_a_game_head_without_a_bet_skips_the_warning(betting_session, gamehead_roles):
     view = matchmaking.AdminView(betting_session)
-    interaction = FakeInteraction(FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], id=7))
+    interaction = FakeInteraction(gamehead(7))
 
     await view.winner.callback(interaction)
 
@@ -889,7 +921,7 @@ async def test_confirming_the_forfeit_only_opens_the_picker(betting_session, gam
     so abandoning the picker here costs nothing."""
     betting_session.bets = {7: {"team": "a", "points": 250}}
     view = matchmaking.SelfBetForfeitWarningView(betting_session, 250)
-    interaction = FakeInteraction(FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], id=7))
+    interaction = FakeInteraction(gamehead(7))
 
     await view.confirm(interaction)
 
@@ -900,10 +932,10 @@ async def test_confirming_the_forfeit_only_opens_the_picker(betting_session, gam
 @pytest.mark.asyncio
 async def test_backing_out_after_confirming_costs_nothing(betting_session, gamehead_roles):
     betting_session.bets = {7: {"team": "a", "points": 250}}
-    gamehead = FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], id=7)
+    user = gamehead(7)
 
-    await matchmaking.SelfBetForfeitWarningView(betting_session, 250).confirm(FakeInteraction(gamehead))
-    await matchmaking.WinnerSelectView(betting_session).back(FakeInteraction(gamehead))
+    await matchmaking.SelfBetForfeitWarningView(betting_session, 250).confirm(FakeInteraction(user))
+    await matchmaking.WinnerSelectView(betting_session).back(FakeInteraction(user))
 
     assert betting_session.bets[7]["points"] == 250
 
@@ -912,7 +944,7 @@ async def test_backing_out_after_confirming_costs_nothing(betting_session, gameh
 async def test_cancelling_the_forfeit_keeps_the_bet(betting_session, gamehead_roles):
     betting_session.bets = {7: {"team": "a", "points": 250}}
     view = matchmaking.SelfBetForfeitWarningView(betting_session, 250)
-    interaction = FakeInteraction(FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], id=7))
+    interaction = FakeInteraction(gamehead(7))
 
     await view.cancel(interaction)
 
@@ -927,11 +959,7 @@ async def test_forfeiting_the_only_backer_of_a_side_refunds_the_rest(
     """The forfeit leaves one side unbacked, which collapses settlement into the
     refund-everyone branch rather than paying a 1x 'win'."""
     betting_session.bets = {7: {"team": "a", "points": 250}, 8: {"team": "b", "points": 10}}
-    cog = FakeCog()
-    cog.active_sessions[betting_session.key] = betting_session
-    interaction = FakeInteraction(
-        FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], id=7), client=FakeClient(cog)
-    )
+    interaction = declaring(gamehead(7))
 
     await matchmaking.declare_winner(betting_session, interaction, team_a_won=False)
 
@@ -946,11 +974,7 @@ async def test_declaring_forfeits_the_declarers_own_bet(
     """Closes the self-officiating hole: reaching declare_winner through a picker that
     was opened before the bet existed still forfeits, since AdminView never saw it."""
     betting_session.bets = {7: {"team": "a", "points": 250}, 8: {"team": "b", "points": 100}}
-    cog = FakeCog()
-    cog.active_sessions[betting_session.key] = betting_session
-    interaction = FakeInteraction(
-        FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], id=7), client=FakeClient(cog)
-    )
+    interaction = declaring(gamehead(7))
 
     await matchmaking.declare_winner(betting_session, interaction, team_a_won=True)
 
@@ -963,10 +987,7 @@ async def test_an_admin_declaring_still_gets_paid(
     betting_session, fake_db, gamehead_roles, no_record_keeping
 ):
     betting_session.bets = {7: {"team": "a", "points": 100}, 8: {"team": "b", "points": 100}}
-    cog = FakeCog()
-    cog.active_sessions[betting_session.key] = betting_session
-    admin = FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], administrator=True, id=7)
-    interaction = FakeInteraction(admin, client=FakeClient(cog))
+    interaction = declaring(admin(7))
 
     await matchmaking.declare_winner(betting_session, interaction, team_a_won=True)
 
@@ -989,7 +1010,7 @@ def no_record_keeping(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_declare_winner_is_gated_to_game_heads(betting_session, gamehead_roles, no_record_keeping):
-    interaction = FakeInteraction(FakeUser(roles=[FakeRole("Member", id=222)], id=7))
+    interaction = FakeInteraction(member(7))
 
     await matchmaking.declare_winner(betting_session, interaction, team_a_won=True)
 
@@ -1001,11 +1022,7 @@ async def test_declare_winner_is_gated_to_game_heads(betting_session, gamehead_r
 async def test_declare_winner_defers_before_doing_any_work(betting_session, fake_db, gamehead_roles, no_record_keeping):
     """Discord kills an interaction that isn't answered in 3 seconds, and settlement
     plus elo writes take longer than that."""
-    cog = FakeCog()
-    cog.active_sessions[betting_session.key] = betting_session
-    interaction = FakeInteraction(
-        FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], id=7), client=FakeClient(cog)
-    )
+    interaction = declaring(gamehead(7))
 
     await matchmaking.declare_winner(betting_session, interaction, team_a_won=True)
 
@@ -1019,11 +1036,7 @@ async def test_declare_winner_settles_bets_into_the_postgame_embed(betting_sessi
         7: {"team": "a", "points": 100},
         9: {"team": "b", "points": 100},
     }
-    cog = FakeCog()
-    cog.active_sessions[betting_session.key] = betting_session
-    interaction = FakeInteraction(
-        FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], id=5), client=FakeClient(cog)
-    )
+    interaction = declaring(gamehead(5))
 
     await matchmaking.declare_winner(betting_session, interaction, team_a_won=True)
 
@@ -1037,11 +1050,7 @@ async def test_declare_winner_settles_bets_into_the_postgame_embed(betting_sessi
 @pytest.mark.asyncio
 async def test_declare_winner_stops_the_betting_timer(betting_session, fake_db, gamehead_roles, no_record_keeping):
     await matchmaking.start_betting_window(betting_session)
-    cog = FakeCog()
-    cog.active_sessions[betting_session.key] = betting_session
-    interaction = FakeInteraction(
-        FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], id=5), client=FakeClient(cog)
-    )
+    interaction = declaring(gamehead(5))
 
     await matchmaking.declare_winner(betting_session, interaction, team_a_won=True)
 
@@ -1051,11 +1060,7 @@ async def test_declare_winner_stops_the_betting_timer(betting_session, fake_db, 
 
 @pytest.mark.asyncio
 async def test_declare_winner_ends_the_session(betting_session, fake_db, gamehead_roles, no_record_keeping):
-    cog = FakeCog()
-    cog.active_sessions[betting_session.key] = betting_session
-    interaction = FakeInteraction(
-        FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], id=5), client=FakeClient(cog)
-    )
+    interaction = declaring(gamehead(5))
 
     await matchmaking.declare_winner(betting_session, interaction, team_a_won=True)
 
@@ -1073,11 +1078,7 @@ async def test_declare_winner_surfaces_a_failed_embed_edit(betting_session, fake
         raise discord.HTTPException(_FakeResponse(), "nope")
 
     betting_session.message.edit = boom
-    cog = FakeCog()
-    cog.active_sessions[betting_session.key] = betting_session
-    interaction = FakeInteraction(
-        FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], id=5), client=FakeClient(cog)
-    )
+    interaction = declaring(gamehead(5))
 
     await matchmaking.declare_winner(betting_session, interaction, team_a_won=True)
 
@@ -1106,7 +1107,7 @@ async def test_cancelling_a_lobby_refunds_every_outstanding_bet(betting_session,
     view.select._selected_values = ["confirm"]
     view.select._interaction = object()   # values property short-circuits to None until set
     interaction = FakeInteraction(
-        FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], id=5), client=FakeClient(cog)
+        gamehead(5), client=FakeClient(cog)
     )
 
     await view.on_select(interaction)
@@ -1124,7 +1125,7 @@ async def test_backing_out_of_the_cancel_leaves_the_bets_alone(betting_session, 
     view = matchmaking.CancelConfirmView(betting_session)
     view.select._selected_values = ["back"]
     view.select._interaction = object()   # values property short-circuits to None until set
-    interaction = FakeInteraction(FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], id=5))
+    interaction = FakeInteraction(gamehead(5))
 
     await view.on_select(interaction)
 
@@ -1211,7 +1212,7 @@ async def test_shuffling_opens_the_betting_window(betting_session, fake_db, game
     )
 
     view = matchmaking.AdminView(betting_session)
-    interaction = FakeInteraction(FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], id=5))
+    interaction = FakeInteraction(gamehead(5))
 
     await view.shuffle.callback(interaction)
     try:
@@ -1238,7 +1239,7 @@ async def test_reshuffling_refunds_before_reopening(betting_session, fake_db, ga
     betting_session.bets = {7: {"team": "a", "points": 100}}
 
     view = matchmaking.AdminView(betting_session)
-    interaction = FakeInteraction(FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], id=5))
+    interaction = FakeInteraction(gamehead(5))
 
     await view.shuffle.callback(interaction)
     try:
@@ -1346,7 +1347,7 @@ async def test_swapping_refunds_bets_placed_on_the_old_lineup(betting_session, f
     view.select._selected_values = ["1", "3"]
     view.select._interaction = object()
     try:
-        await view.on_select(FakeInteraction(FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], id=5)))
+        await view.on_select(FakeInteraction(gamehead(5)))
 
         _, rows = fake_db.perform_many_calls[0]
         assert rows == [(100, 7)]
@@ -1366,7 +1367,7 @@ async def test_swapping_is_gated_to_game_heads(betting_session, fake_db, gamehea
     view = matchmaking.SwapSelectView(betting_session)
     view.select._selected_values = ["1", "3"]
     view.select._interaction = object()
-    interaction = FakeInteraction(FakeUser(roles=[FakeRole("Member", id=222)], id=99))
+    interaction = FakeInteraction(member(99))
 
     await view.on_select(interaction)
 
@@ -1379,7 +1380,7 @@ async def test_swapping_is_gated_to_game_heads(betting_session, fake_db, gamehea
 async def test_picking_a_map_is_gated_to_game_heads(betting_session, gamehead_roles, monkeypatch):
     monkeypatch.setitem(matchmaking.MAPS, "fakegame", ["Ascent", "Bind"])
     view = matchmaking.MapSelectView(betting_session)
-    interaction = FakeInteraction(FakeUser(roles=[FakeRole("Member", id=222)], id=99))
+    interaction = FakeInteraction(member(99))
 
     await view.on_select(interaction)
 
