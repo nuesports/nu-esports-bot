@@ -340,7 +340,7 @@ class PCs(commands.Cog):
                 await reservations_channel.send(f"<@{staff_id}>", embed=embed)
             else:
                 await reservations_channel.send(embed=embed)
-        except Exception as e:
+        except discord.HTTPException as e:
             print(f"Failed to send cancellation notification: {e}")
 
     async def cog_command_error(self, ctx, error):
@@ -382,7 +382,7 @@ class PCs(commands.Cog):
             )
 
             return start_dt, end_dt
-        except Exception:
+        except ValueError:
             raise ValueError(
                 "Invalid time format. Expected format: 'YYYY-MM-DD H:MMAM/PM-H:MMAM/PM' (e.g., '2025-10-10 7:00PM-9:00PM')"
             )
@@ -614,7 +614,7 @@ class PCs(commands.Cog):
                     async with session.get(url) as resp:
                         resp.raise_for_status()
                         return await resp.json()
-            except Exception:
+            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
                 if attempt == max_attempts - 1:
                     raise
                 await asyncio.sleep(retry_delay_seconds)
@@ -773,7 +773,7 @@ class PCs(commands.Cog):
         def load_font(path: str, size: int) -> ImageFont.ImageFont:
             try:
                 return ImageFont.truetype(path, size)
-            except Exception:
+            except OSError:
                 try:
                     return ImageFont.load_default(size=size)
                 except TypeError:
@@ -887,7 +887,7 @@ class PCs(commands.Cog):
                     )
                 icon_cache[key] = icon
                 return icon
-            except Exception:
+            except (OSError, ValueError):
                 return None
 
         def draw_text(entry: dict, left_anchor_x: int, y: int, align_right: bool):
@@ -1074,7 +1074,7 @@ class PCs(commands.Cog):
             return
         try:
             data = await self.fetch_pcs()
-        except Exception as e:
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
             print(e)
             # Reset cooldown so user can retry
             self.pcs.reset_cooldown(ctx)
@@ -1090,7 +1090,7 @@ class PCs(commands.Cog):
             date_str = today.strftime("%Y-%m-%d")
             reservations_data = await self.fetch_reservations(date_str)
             reservations = reservations_data.get("reservations", [])
-        except Exception as e:
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, AttributeError) as e:
             print(f"Failed to fetch reservations: {e}")
             reservations = []
 
@@ -1136,7 +1136,7 @@ class PCs(commands.Cog):
             await ctx.followup.send(
                 embed=embed, file=file, ephemeral=(not in_bot_channel)
             )
-        except Exception as e:
+        except (OSError, ValueError, discord.HTTPException) as e:
             print(f"Failed to render /pcs image, falling back to text: {e}")
             grid, _ = self.build_grid(data, reservations)
             embed.add_field(name="Grid", value=grid, inline=False)
@@ -1161,7 +1161,7 @@ class PCs(commands.Cog):
         await ctx.defer()
         try:
             data = await self.fetch_pcs()
-        except Exception:
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
             await ctx.followup.send(
                 "Failed to fetch PC data. Please try again later.", ephemeral=True
             )
@@ -1189,7 +1189,7 @@ class PCs(commands.Cog):
             date_str = today.strftime("%Y-%m-%d")
             reservations_data = await self.fetch_reservations(date_str)
             reservations = reservations_data.get("reservations", [])
-        except Exception as e:
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, AttributeError) as e:
             print(f"Failed to fetch reservations: {e}")
             reservations = []
 
@@ -1304,7 +1304,7 @@ class PCs(commands.Cog):
         # Fetch GGLeap reservations
         try:
             data = await self.fetch_reservations(date_str)
-        except Exception as e:
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
             print(e)
             await ctx.followup.send(
                 "Failed to fetch reservations. Please try again later.", ephemeral=True
@@ -1717,7 +1717,7 @@ class PCs(commands.Cog):
         try:
             font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 14)
             small_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 12)
-        except Exception:
+        except OSError:
             font = ImageFont.load_default()
             small_font = ImageFont.load_default()
 
@@ -2017,7 +2017,7 @@ class ReservationTimeModal(discord.ui.Modal):
                     }
                 else:
                     await reservations_channel.send(embed=embed)
-        except Exception as e:
+        except discord.HTTPException as e:
             print(f"Failed to send notification to nexus-reservations: {e}")
 
 
@@ -2248,7 +2248,7 @@ class ReservationView(discord.ui.View):
             await self._fetch_and_update(new_date)
             embeds, file = await self.build_embed_and_file()
             await interaction.message.edit(embeds=embeds, file=file, view=self)
-        except Exception as e:
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError, discord.HTTPException) as e:
             print(e)
             await interaction.followup.send(
                 "Failed to fetch reservations for that date.", ephemeral=True
@@ -2265,7 +2265,7 @@ class ReservationView(discord.ui.View):
             await self._fetch_and_update(new_date)
             embeds, file = await self.build_embed_and_file()
             await interaction.message.edit(embeds=embeds, file=file, view=self)
-        except Exception as e:
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError, discord.HTTPException) as e:
             print(e)
             await interaction.followup.send(
                 "Failed to fetch reservations for that date.", ephemeral=True

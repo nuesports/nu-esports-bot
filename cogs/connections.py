@@ -87,7 +87,7 @@ class Connections(commands.Cog):
                 f"Could not load Connections puzzle: {e!s}", ephemeral=True
             )
             return
-        except Exception:
+        except (aiohttp.ClientError, asyncio.TimeoutError):
             await ctx.followup.send(
                 "Could not load Connections puzzle due to an unexpected error.",
                 ephemeral=True,
