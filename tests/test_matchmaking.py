@@ -1401,6 +1401,25 @@ async def test_leaving_refunds_bets_placed_on_the_old_lineup(betting_session, fa
 
 
 @pytest.mark.asyncio
+async def test_joining_sends_back_a_view_that_reflects_the_new_state(betting_session, fake_db, monkeypatch):
+    """Both button states are frozen in __init__, so re-sending the same instance left an
+    enabled Bet button on a lobby whose betting had just closed."""
+    monkeypatch.setitem(matchmaking.LOBBY_SIZE, "fakegame", 5)
+    await matchmaking.start_betting_window(betting_session)
+
+    view = matchmaking.LobbyView(betting_session)
+    assert view.bet.disabled is False   # open before the join
+    interaction = FakeInteraction(FakeUser(id=99))
+
+    await view.join.callback(interaction)
+
+    sent_back = interaction.response.edits[0]["view"]
+    assert sent_back is not view
+    assert sent_back.bet.disabled is True    # betting closed with the teams
+    assert sent_back.join.disabled is True   # and that fifth player filled the lobby
+
+
+@pytest.mark.asyncio
 async def test_swapping_refunds_bets_placed_on_the_old_lineup(betting_session, fake_db, gamehead_roles):
     await matchmaking.start_betting_window(betting_session)
     betting_session.bets = {7: {"team": "a", "points": 100}}

@@ -807,7 +807,9 @@ class LobbyView(discord.ui.View):
 
         self.session.joined.append(interaction.user)
         await reset_to_lobby(self.session)
-        await interaction.response.edit_message(embed=generate_embed(self.session), view=self)
+        # A fresh view, not self: both button states are frozen at construction, and this
+        # just closed betting and may have filled the lobby.
+        await interaction.response.edit_message(embed=generate_embed(self.session), view=LobbyView(self.session))
         await refresh_admin_panels(self.session)
 
 
@@ -821,7 +823,7 @@ class LobbyView(discord.ui.View):
         self.session.joined = [m for m in self.session.joined if m.id != interaction.user.id]
         self.session.tags.pop(interaction.user.id, None)
         await reset_to_lobby(self.session)
-        await interaction.response.edit_message(embed=generate_embed(self.session), view=self)
+        await interaction.response.edit_message(embed=generate_embed(self.session), view=LobbyView(self.session))
         await refresh_admin_panels(self.session)
 
     @discord.ui.button(label="Settings", style=discord.ButtonStyle.primary)
