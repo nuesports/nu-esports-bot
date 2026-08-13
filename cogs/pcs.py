@@ -1,8 +1,7 @@
 import asyncio
 import io
 import os
-from datetime import datetime, timedelta, timezone, date
-from typing import Dict, Tuple, List
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import aiohttp
@@ -10,9 +9,7 @@ import discord
 from discord.ext import commands, tasks
 from PIL import Image, ImageDraw, ImageFont
 
-from utils import config
-from utils import db
-
+from utils import config, db
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
 BOT_CHANNEL_ID = 741898302055907388
@@ -172,7 +169,7 @@ class PCs(commands.Cog):
 
     def get_gameroom_hours_for_date(
         self, target_date: date, overrides: dict
-    ) -> Tuple[datetime, datetime] | None:
+    ) -> tuple[datetime, datetime] | None:
         """Return open/close datetimes in Central, or None if closed or the hours text
         isn't a parseable time range (e.g. a free-text override like "Reduced hours")."""
         hours = overrides.get(target_date)
@@ -221,7 +218,7 @@ class PCs(commands.Cog):
 
     async def get_reservations_in_range(
         self, start_time: datetime, end_time: datetime
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """Fetch reservations that overlap with the given time range from database"""
         sql = """
             SELECT id, team, pcs, start_time, end_time, manager, is_prime_time
@@ -265,7 +262,7 @@ class PCs(commands.Cog):
     async def save_reservation(
         self,
         team: str,
-        pcs: List[int],
+        pcs: list[int],
         start_time: datetime,
         end_time: datetime,
         manager: str,
@@ -285,7 +282,7 @@ class PCs(commands.Cog):
     async def _send_cancellation_notification(
         self,
         team: str,
-        pcs: List[int],
+        pcs: list[int],
         start_time: datetime,
         end_time: datetime,
         cancelled_by: str,
@@ -362,7 +359,7 @@ class PCs(commands.Cog):
             # Re-raise other errors
             raise error
 
-    def parse_time_range(self, time_str: str) -> Tuple[datetime, datetime]:
+    def parse_time_range(self, time_str: str) -> tuple[datetime, datetime]:
         """Parse time range string like '2025-10-10 7:00PM-9:00PM' into datetime objects (CST)"""
         # Split date and time range
         try:
@@ -397,7 +394,7 @@ class PCs(commands.Cog):
         return days_ahead >= ADVANCE_BOOKING_DAYS
 
     def is_prime_time(
-        self, start_time: datetime, end_time: datetime, pcs: List[int]
+        self, start_time: datetime, end_time: datetime, pcs: list[int]
     ) -> bool:
         """
         Check if reservation qualifies as prime time.
@@ -455,7 +452,7 @@ class PCs(commands.Cog):
 
     async def check_prime_time_quota(
         self, team: str, start_time: datetime
-    ) -> Tuple[bool, int]:
+    ) -> tuple[bool, int]:
         """
         Check if team has prime time slots available.
         Returns (has_quota, used_count)
@@ -466,7 +463,7 @@ class PCs(commands.Cog):
 
     async def check_conflicts(
         self, start_time: datetime, end_time: datetime, num_pcs: int
-    ) -> Tuple[bool, str, str]:
+    ) -> tuple[bool, str, str]:
         """
         Check for conflicts with existing reservations.
         Returns (has_conflict, conflicting_team, conflicting_manager)
@@ -540,7 +537,7 @@ class PCs(commands.Cog):
 
     async def allocate_pcs(
         self, start_time: datetime, end_time: datetime, num_pcs: int
-    ) -> List[int]:
+    ) -> list[int]:
         """
         Allocate PCs optimally: back room first (14, 15, streaming), then main room (contiguous).
         Returns list of PC numbers, or empty list if can't allocate.
@@ -603,10 +600,10 @@ class PCs(commands.Cog):
 
         return allocated
 
-    async def fetch_pcs(self) -> Dict:
+    async def fetch_pcs(self) -> dict:
         return await self.fetch_json_with_retries(PCS_ENDPOINT)
 
-    async def fetch_json_with_retries(self, url: str) -> Dict:
+    async def fetch_json_with_retries(self, url: str) -> dict:
         timeout = aiohttp.ClientTimeout(total=10)
         max_attempts = 4
         retry_delay_seconds = 5
@@ -628,7 +625,7 @@ class PCs(commands.Cog):
         return key.strip().lower()
 
     @staticmethod
-    def extract_sort_key(name: str) -> Tuple[int, str]:
+    def extract_sort_key(name: str) -> tuple[int, str]:
         # Attempt to sort by numeric desk id if present; fallback to name
         # Examples: "Desk 009" -> (9, "Desk 009"), "Desk 000 - Streaming" -> (999, name)
         try:
@@ -647,8 +644,8 @@ class PCs(commands.Cog):
 
     @staticmethod
     def build_pcs_entries(
-        data: Dict, reservations: List[Dict] = None
-    ) -> Tuple[List[Dict], Dict[str, str]]:
+        data: dict, reservations: list[dict] = None
+    ) -> tuple[list[dict], dict[str, str]]:
         """Build normalized display entries for /pcs text and image rendering."""
 
         def should_include(name: str) -> bool:
@@ -665,7 +662,7 @@ class PCs(commands.Cog):
                         return False
             return True
 
-        normalized_data: Dict[str, Dict] = {}
+        normalized_data: dict[str, dict] = {}
         if isinstance(data, list):
             for item in data:
                 if not isinstance(item, dict):
@@ -715,8 +712,8 @@ class PCs(commands.Cog):
                         ):
                             upcoming_reservations[machine] = int(time_diff)
 
-        id_to_state: Dict[str, str] = {}
-        entries: List[Dict] = []
+        id_to_state: dict[str, str] = {}
+        entries: list[dict] = []
         for name, info in items:
             state = info.get("state", "Unknown")
             id_to_state[name] = state
@@ -759,7 +756,7 @@ class PCs(commands.Cog):
         return entries, id_to_state
 
     @staticmethod
-    def build_pcs_grid_image(entries: List[Dict], columns: int = 5) -> io.BytesIO:
+    def build_pcs_grid_image(entries: list[dict], columns: int = 5) -> io.BytesIO:
         """Render a two-column PC status grid image for /pcs."""
         bg_color = (47, 49, 54)
         text_color = (220, 221, 222)
@@ -804,11 +801,11 @@ class PCs(commands.Cog):
         probe_img = Image.new("RGB", (1, 1), bg_color)
         probe_draw = ImageDraw.Draw(probe_img)
 
-        def text_size(text: str, font: ImageFont.ImageFont) -> Tuple[int, int]:
+        def text_size(text: str, font: ImageFont.ImageFont) -> tuple[int, int]:
             left, top, right, bottom = probe_draw.textbbox((0, 0), text, font=font)
             return right - left, bottom - top
 
-        def text_metrics(text: str, font: ImageFont.ImageFont) -> Tuple[int, int, int]:
+        def text_metrics(text: str, font: ImageFont.ImageFont) -> tuple[int, int, int]:
             left, top, right, bottom = probe_draw.textbbox((0, 0), text, font=font)
             return right - left, bottom - top, top
 
@@ -821,7 +818,7 @@ class PCs(commands.Cog):
         top_padding = 14
         bottom_padding = 14
 
-        def build_text_parts(entry: Dict) -> Tuple[str, str]:
+        def build_text_parts(entry: dict) -> tuple[str, str]:
             if entry["state"] == "ReadyForUser":
                 main_text = ""
             else:
@@ -831,7 +828,7 @@ class PCs(commands.Cog):
                 warning_text = f"Reserved in {entry['reserved_in']}m"
             return main_text, warning_text
 
-        def measure_text(entry: Dict) -> int:
+        def measure_text(entry: dict) -> int:
             main_text, warning_text = build_text_parts(entry)
             main_font = bold_font if entry["should_bold"] else regular_font
             main_w = 0
@@ -862,7 +859,7 @@ class PCs(commands.Cog):
 
         img = Image.new("RGB", (width, height), bg_color)
         draw = ImageDraw.Draw(img)
-        icon_cache: Dict[Tuple[str, int, int], Image.Image] = {}
+        icon_cache: dict[tuple[str, int, int], Image.Image] = {}
 
         # Keep dedicated text columns on both sides of the PC icons.
         # This avoids clipping when one side has much longer warning text.
@@ -893,7 +890,7 @@ class PCs(commands.Cog):
             except Exception:
                 return None
 
-        def draw_text(entry: Dict, left_anchor_x: int, y: int, align_right: bool):
+        def draw_text(entry: dict, left_anchor_x: int, y: int, align_right: bool):
             main_font = bold_font if entry["should_bold"] else regular_font
             main_text, warning_text = build_text_parts(entry)
             main_w = 0
@@ -940,7 +937,7 @@ class PCs(commands.Cog):
                     font=warning_font,
                 )
 
-        def draw_pc_icon(entry: Dict, square_x: int, square_y: int):
+        def draw_pc_icon(entry: dict, square_x: int, square_y: int):
             pc_num = entry.get("pc_num")
             color = PCs.get_entry_icon_color(entry)
             if isinstance(pc_num, int):
@@ -982,8 +979,8 @@ class PCs(commands.Cog):
 
     @staticmethod
     def build_grid(
-        data: Dict, reservations: List[Dict] = None, columns: int = 5
-    ) -> Tuple[str, Dict[str, str]]:
+        data: dict, reservations: list[dict] = None, columns: int = 5
+    ) -> tuple[str, dict[str, str]]:
         entries, id_to_state = PCs.build_pcs_entries(data, reservations)
         cells = []
         for entry in entries:
@@ -1027,7 +1024,7 @@ class PCs(commands.Cog):
         return ("\n".join(rows) if rows else "No PCs found.", id_to_state)
 
     @staticmethod
-    def get_entry_icon_color(entry: Dict) -> str:
+    def get_entry_icon_color(entry: dict) -> str:
         if entry.get("should_bold"):
             return "orange"
         if entry.get("currently_reserved"):
@@ -1099,7 +1096,7 @@ class PCs(commands.Cog):
 
         entries, _ = self.build_pcs_entries(data, reservations)
 
-        color_counts: Dict[str, int] = {
+        color_counts: dict[str, int] = {
             "green": 0,
             "red": 0,
             "black": 0,
@@ -1170,7 +1167,7 @@ class PCs(commands.Cog):
             )
             return
 
-        normalized_data: Dict[str, Dict] = {}
+        normalized_data: dict[str, dict] = {}
         if isinstance(data, list):
             for item in data:
                 if not isinstance(item, dict):
@@ -1350,8 +1347,8 @@ class PCs(commands.Cog):
         await ctx.followup.send(embeds=embeds, file=file, view=view)
 
     def _find_pending_pcs(
-        self, db_res: Dict, ggleap_reservations: List[Dict]
-    ) -> List[int]:
+        self, db_res: dict, ggleap_reservations: list[dict]
+    ) -> list[int]:
         """
         Find which PCs from a database reservation are NOT yet in GGLeap.
         Returns list of PC numbers that are pending (not in GGLeap).
@@ -1386,8 +1383,8 @@ class PCs(commands.Cog):
         return pending_pcs
 
     def _process_db_reservations(
-        self, db_reservations: List[Dict], ggleap_reservations: List[Dict]
-    ) -> Tuple[List[Dict], List[Dict]]:
+        self, db_reservations: list[dict], ggleap_reservations: list[dict]
+    ) -> tuple[list[dict], list[dict]]:
         """
         Process database reservations to separate external and pending reservations.
 
@@ -1429,7 +1426,7 @@ class PCs(commands.Cog):
 
         return external_as_ggleap, pending_reservations
 
-    async def fetch_reservations(self, date_str: str) -> Dict:
+    async def fetch_reservations(self, date_str: str) -> dict:
         url = f"{RESERVATIONS_ENDPOINT}/{date_str}"
         return await self.fetch_json_with_retries(url)
 
@@ -1610,12 +1607,12 @@ class PCs(commands.Cog):
 
     @staticmethod
     def build_reservation_image(
-        reservations: List[Dict],
+        reservations: list[dict],
         target_date: datetime,
         start_hour: int,
         end_hour: int,
         end_minute: int = 0,
-        pending_reservations: List[Dict] = None,
+        pending_reservations: list[dict] = None,
     ) -> io.BytesIO:
         """Build a 2D grid image with time slots (x-axis) and desks (y-axis)
 
@@ -1839,7 +1836,7 @@ class ReservationTimeModal(discord.ui.Modal):
         try:
             start_time, end_time = self.cog.parse_time_range(times)
         except ValueError as e:
-            await interaction.followup.send(f"❌ {str(e)}", ephemeral=True)
+            await interaction.followup.send(f"❌ {e!s}", ephemeral=True)
             return
 
         # Ensure end time is after start time
@@ -2073,7 +2070,7 @@ class ExternalReservationTimeModal(discord.ui.Modal):
         try:
             start_time, end_time = self.cog.parse_time_range(times)
         except ValueError as e:
-            await interaction.followup.send(f"❌ {str(e)}", ephemeral=True)
+            await interaction.followup.send(f"❌ {e!s}", ephemeral=True)
             return
 
         # Ensure end time is after start time
@@ -2137,10 +2134,10 @@ class ExternalReservationTimeModal(discord.ui.Modal):
 class ReservationView(discord.ui.View):
     def __init__(
         self,
-        reservations: List[Dict],
+        reservations: list[dict],
         target_date: datetime,
         cog: "PCs",
-        pending_reservations: List[Dict] = None,
+        pending_reservations: list[dict] = None,
     ):
         super().__init__(timeout=600)
         self.reservations = reservations
@@ -2155,7 +2152,7 @@ class ReservationView(discord.ui.View):
         open_hour = 12 if is_weekend else 14
         return (open_hour, 22, 30)  # Open to close
 
-    async def build_embed_and_file(self) -> Tuple[List[discord.Embed], discord.File]:
+    async def build_embed_and_file(self) -> tuple[list[discord.Embed], discord.File]:
         start_hour, end_hour, end_minute = self.get_hours_for_range()
         image_buffer = PCs.build_reservation_image(
             self.reservations,

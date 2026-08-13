@@ -2,7 +2,15 @@ import aiohttp
 
 from utils import config, db
 from utils.ranks import compute_rank_value, format_rank_label
-from .base import LinkError, LinkResult, has_profile_mains, has_profile_roles, seed_mains, seed_roles
+
+from .base import (
+    LinkError,
+    LinkResult,
+    has_profile_mains,
+    has_profile_roles,
+    seed_mains,
+    seed_roles,
+)
 from .http import fetch_json_with_retries
 
 OVERFAST_BASE_URL = "https://overfast-api.tekrop.fr"

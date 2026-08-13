@@ -4,6 +4,7 @@ from pathlib import Path
 
 import discord
 
+
 def slugify(name: str) -> str:
     """Filename-safe slug: keeps digits, folds accents to ASCII (Torbjörn -> Torbjorn)."""
     ascii_only = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")

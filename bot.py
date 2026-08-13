@@ -2,7 +2,6 @@ import discord
 
 from utils import config, db, migrate
 
-
 TOKEN = config.secrets["discord"]["token"]
 
 bot = discord.Bot(intents=discord.Intents.all())

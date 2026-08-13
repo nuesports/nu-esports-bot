@@ -2,6 +2,7 @@ import aiohttp
 
 from utils import config, db
 from utils.ranks import compute_rank_value, format_rank_label, tier_has_divisions
+
 from .base import LinkError, LinkResult, has_profile_mains, seed_mains
 from .http import fetch_json_with_retries
 

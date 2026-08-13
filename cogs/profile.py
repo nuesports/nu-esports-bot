@@ -1,17 +1,22 @@
+import random
+import re
+from pathlib import Path
+from urllib.parse import urlsplit
+
 import discord
 import emoji
-import re
-import random
 from discord.ext import commands
-from urllib.parse import urlsplit
-from pathlib import Path
 
-from utils import config
-from utils import db
-from utils import game_apis
+from utils import config, db, game_apis
 from utils.images import get_character_image, image_attachment
-from utils.ranks import get_tiers, get_divisions, tier_has_divisions, compute_rank_value, format_rank_label, validate_tier_division
-
+from utils.ranks import (
+    compute_rank_value,
+    format_rank_label,
+    get_divisions,
+    get_tiers,
+    tier_has_divisions,
+    validate_tier_division,
+)
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
 GAME_CHOICES = list(config.game_data.keys())
@@ -270,7 +275,7 @@ def build_game_embed(
         embed.add_field(name="Role", value=role_display, inline=True)
     embed.add_field(name="Main" if len(mains) == 1 else "Mains", value=main_display, inline=True)
     if not has_roles:
-        embed.add_field(name="​", value="​", inline=True)
+        embed.add_field(name="\u200b", value="\u200b", inline=True)
     embed.add_field(name="Wins", value=f"{wins}", inline=True)
     embed.add_field(name="Losses", value=f"{losses}", inline=True)
     if account_name:

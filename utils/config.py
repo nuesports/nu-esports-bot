@@ -1,6 +1,7 @@
+from pathlib import Path
+
 import discord
 import yaml
-from pathlib import Path
 
 
 def load_config():

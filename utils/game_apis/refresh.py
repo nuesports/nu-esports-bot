@@ -2,9 +2,10 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 
 from utils import config, db
+
+from .deadlock import DeadlockClient
 from .league import LeagueClient
 from .overwatch import OverwatchClient
-from .deadlock import DeadlockClient
 from .valorant import ValorantClient
 
 RANK_STALE_AFTER = timedelta(minutes=45)

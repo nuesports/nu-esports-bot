@@ -1,6 +1,7 @@
-import discord
 import random
 import traceback
+
+import discord
 from discord.ext import commands, tasks
 
 from utils import config

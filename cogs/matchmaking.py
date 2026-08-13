@@ -1,11 +1,9 @@
-import discord
 import random
+
+import discord
 from discord.ext import commands
 
-from utils import config
-from utils import db
-from utils import elo
-
+from utils import config, db, elo
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
 GAME_CHOICES = list(config.game_data.keys())

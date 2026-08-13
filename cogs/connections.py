@@ -7,11 +7,10 @@ from pathlib import Path
 
 import aiohttp
 import discord
-from PIL import Image, ImageDraw, ImageFont
 from discord.ext import commands
+from PIL import Image, ImageDraw, ImageFont
 
 from utils import config
-
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
 
@@ -85,7 +84,7 @@ class Connections(commands.Cog):
             puzzle = await self.get_or_fetch_puzzle(requested_date)
         except ValueError as e:
             await ctx.followup.send(
-                f"Could not load Connections puzzle: {str(e)}", ephemeral=True
+                f"Could not load Connections puzzle: {e!s}", ephemeral=True
             )
             return
         except Exception:
@@ -387,8 +386,7 @@ class Connections(commands.Cog):
         max_text_width = 0
         for display_word in display_words:
             word_width = measure_draw.textbbox((0, 0), display_word, font=word_font)[2]
-            if word_width > max_text_width:
-                max_text_width = word_width
+            max_text_width = max(max_text_width, word_width)
 
         cell_w = min(340, max(200, max_text_width + 28))
         tile_text_width = cell_w - 20
@@ -399,8 +397,7 @@ class Connections(commands.Cog):
             wrapped = self._wrap_text(
                 measure_draw, display_word, word_font, tile_text_width
             )
-            if len(wrapped) > max_word_lines:
-                max_word_lines = len(wrapped)
+            max_word_lines = max(max_word_lines, len(wrapped))
         cell_h = max(
             84, (max_word_lines * word_line_height) + ((max_word_lines - 1) * 4) + 16
         )

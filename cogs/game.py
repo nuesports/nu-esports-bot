@@ -3,7 +3,6 @@ from discord.ext import commands
 
 from utils import config
 
-
 GUILD_ID = config.secrets["discord"]["guild_id"]
 
 
@@ -31,11 +30,9 @@ class Game(commands.Cog):
         ),
     ):
         # We don't need 1 or less people in a stack
-        if size < 2:
-            size = 2
+        size = max(size, 2)
         # We don't need more than 10 people in a stack. If we do, jump me
-        if size > 10:
-            size = 10
+        size = min(size, 10)
 
         if name == "":
             name = f"{ctx.author.display_name}'s stack"

@@ -1,5 +1,7 @@
 import pytest
+
 from cogs import matchmaking
+
 
 class FakeMember:
     def __init__(self, id):

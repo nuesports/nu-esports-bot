@@ -6,7 +6,6 @@ from discord.ext import commands
 
 from utils import config, db
 
-
 GUILD_ID = config.secrets["discord"]["guild_id"]
 CENTRAL_TZ = ZoneInfo("America/Chicago")
 

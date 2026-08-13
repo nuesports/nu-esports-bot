@@ -3,6 +3,7 @@ from typing import Protocol
 
 from utils import db
 
+
 class LinkError(Exception):
     """Raised when a submitted identifier can't be resolved via the game's API"""
 

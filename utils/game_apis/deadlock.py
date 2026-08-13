@@ -4,6 +4,7 @@ import aiohttp
 
 from utils import config, db
 from utils.ranks import compute_rank_value, format_rank_label
+
 from .base import LinkError, LinkResult, has_profile_mains, seed_mains
 from .http import fetch_json_with_retries
 
@@ -32,9 +33,7 @@ class DeadlockClient:
         identifier = raw_identifier.strip()
 
         # pull a bare id/vanity slug out of a pasted profile URL, if that's what was given
-        if match := PROFILE_ID_RE.search(identifier):
-            identifier = match.group(1)
-        elif match := VANITY_URL_RE.search(identifier):
+        if (match := PROFILE_ID_RE.search(identifier)) or (match := VANITY_URL_RE.search(identifier)):
             identifier = match.group(1)
 
         if identifier.isdigit():

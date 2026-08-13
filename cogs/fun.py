@@ -6,7 +6,6 @@ from discord.ext import commands
 
 from utils import config
 
-
 GUILD_ID = config.secrets["discord"]["guild_id"]
 TYST_STICKER_ID = config.config["fun"]["stickers"]["TYST"]
 
