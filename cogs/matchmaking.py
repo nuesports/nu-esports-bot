@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import discord
 import random
 import time
@@ -345,7 +346,12 @@ async def start_betting_window(session: "MatchmakingSession") -> None:
     orphaned task, and refunds rather than wipes since those points were already deducted.
     """
     if session.betting_close_task is not None:
-        session.betting_close_task.cancel()
+        previous = session.betting_close_task
+        session.betting_close_task = None
+        previous.cancel()
+        # Await it out -- if its sleep already resolved, cancel() only lands at its next await.
+        with contextlib.suppress(asyncio.CancelledError):
+            await previous
     await refund_bets(session)
     session.betting_open = True
     session.betting_closes_at = time.time() + BETTING_WINDOW_SECONDS
@@ -359,6 +365,9 @@ async def close_betting_after_delay(session: "MatchmakingSession") -> None:
     try:
         await asyncio.sleep(BETTING_WINDOW_SECONDS)
     except asyncio.CancelledError:
+        return
+    # A re-shuffle landing in the same tick as the deadline can't cancel us in time.
+    if session.betting_close_task is not asyncio.current_task():
         return
     session.betting_open = False
     if session.message is not None:
@@ -897,8 +906,7 @@ class BetModal(discord.ui.Modal):
         self.user = user
         self.team = team
 
-        # Labels cap at 45 characters, and both numbers are unbounded, so the balance
-        # lives in the placeholder (100 characters) instead of alongside the stake.
+        # Labels cap at 45 chars and both numbers are unbounded, so balance goes in the placeholder.
         if current_bet:
             label = f"New total bet (currently {current_bet})"
             placeholder = f"{balance} more available"
@@ -947,6 +955,15 @@ class BetModal(discord.ui.Modal):
             if not deducted:
                 await interaction.response.send_message("You don't have enough points for that!", ephemeral=True)
                 return
+
+            # The window can shut mid-UPDATE, and a bet booked post-settlement never pays out.
+            if not self.session.betting_open:
+                await db.perform_one(
+                    "UPDATE users SET points = points + %s WHERE discordid = %s;",
+                    (delta, self.user.id),
+                )
+                await interaction.response.send_message("Betting closed while you were typing -- too slow!", ephemeral=True)
+                return
             self.session.bets[self.user.id] = {"team": self.team, "points": new_total}
 
         team_name = self.session.team_names[0] if self.team == "a" else self.session.team_names[1]
@@ -954,7 +971,8 @@ class BetModal(discord.ui.Modal):
 
         if self.session.message is not None:
             try:
-                await self.session.message.edit(embed=generate_match_embed(self.session))
+                # generate_embed, not generate_match_embed -- falls back if teams got cleared.
+                await self.session.message.edit(embed=generate_embed(self.session))
             except (discord.NotFound, discord.HTTPException):
                 pass
         await refresh_admin_panels(self.session)
@@ -1011,6 +1029,9 @@ async def declare_winner(session: "MatchmakingSession", interaction: discord.Int
     await update_record(session, winners, losers)
     await apply_elo_changes(session, team_a_won=team_a_won)
     stop_betting_window(session)
+    # Forfeit here, not at the prompt: this is the only path that records a result.
+    if must_forfeit_bet_on_declare(interaction):
+        session.bets.pop(interaction.user.id, None)
     bet_summary = await settle_bets(session, team_a_won=team_a_won)
     richest_chatter = await build_richest_chatter_field(bet_summary)
 
@@ -1116,7 +1137,7 @@ class SelfBetForfeitWarningView(discord.ui.View):
         if not has_privilege(interaction):
             await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
             return
-        self.session.bets.pop(interaction.user.id, None)
+        # Only opens the picker -- declare_winner does the forfeiting, so backing out is free.
         await interaction.response.edit_message(content=None, embed=generate_embed(self.session), view=WinnerSelectView(self.session))
 
     async def cancel(self, interaction: discord.Interaction) -> None:

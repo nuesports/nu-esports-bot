@@ -883,16 +883,28 @@ async def test_a_game_head_without_a_bet_skips_the_warning(betting_session, game
 # --- SelfBetForfeitWarningView ---
 
 @pytest.mark.asyncio
-async def test_confirming_the_forfeit_drops_the_bet_without_refunding_it(betting_session, gamehead_roles):
-    betting_session.bets = {7: {"team": "a", "points": 250}, 8: {"team": "b", "points": 10}}
+async def test_confirming_the_forfeit_only_opens_the_picker(betting_session, gamehead_roles):
+    """The stake survives confirmation. declare_winner is what actually forfeits it,
+    so abandoning the picker here costs nothing."""
+    betting_session.bets = {7: {"team": "a", "points": 250}}
     view = matchmaking.SelfBetForfeitWarningView(betting_session, 250)
     interaction = FakeInteraction(FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], id=7))
 
     await view.confirm(interaction)
 
-    assert 7 not in betting_session.bets
-    assert betting_session.bets[8]["points"] == 10   # everyone else's bet stands
+    assert betting_session.bets[7]["points"] == 250
     assert isinstance(interaction.response.edits[0]["view"], matchmaking.WinnerSelectView)
+
+
+@pytest.mark.asyncio
+async def test_backing_out_after_confirming_costs_nothing(betting_session, gamehead_roles):
+    betting_session.bets = {7: {"team": "a", "points": 250}}
+    gamehead = FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], id=7)
+
+    await matchmaking.SelfBetForfeitWarningView(betting_session, 250).confirm(FakeInteraction(gamehead))
+    await matchmaking.WinnerSelectView(betting_session).back(FakeInteraction(gamehead))
+
+    assert betting_session.bets[7]["points"] == 250
 
 
 @pytest.mark.asyncio
@@ -908,17 +920,57 @@ async def test_cancelling_the_forfeit_keeps_the_bet(betting_session, gamehead_ro
 
 
 @pytest.mark.asyncio
-async def test_forfeiting_the_only_backer_of_a_side_refunds_the_rest(betting_session, fake_db, gamehead_roles):
+async def test_forfeiting_the_only_backer_of_a_side_refunds_the_rest(
+    betting_session, fake_db, gamehead_roles, no_record_keeping
+):
     """The forfeit leaves one side unbacked, which collapses settlement into the
     refund-everyone branch rather than paying a 1x 'win'."""
     betting_session.bets = {7: {"team": "a", "points": 250}, 8: {"team": "b", "points": 10}}
-    view = matchmaking.SelfBetForfeitWarningView(betting_session, 250)
-    gamehead = FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], id=7)
+    cog = FakeCog()
+    cog.active_sessions[betting_session.key] = betting_session
+    interaction = FakeInteraction(
+        FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], id=7), client=FakeClient(cog)
+    )
 
-    await view.confirm(FakeInteraction(gamehead))
-    summary = await matchmaking.settle_bets(betting_session, team_a_won=False)
+    await matchmaking.declare_winner(betting_session, interaction, team_a_won=False)
 
-    assert summary == {"refunded": True, "total": 10}
+    _, rows = fake_db.perform_many_calls[0]
+    assert rows == [(10, 8)]   # the surviving bettor refunded, the forfeiter paid nothing
+
+
+@pytest.mark.asyncio
+async def test_declaring_forfeits_the_declarers_own_bet(
+    betting_session, fake_db, gamehead_roles, no_record_keeping
+):
+    """Closes the self-officiating hole: reaching declare_winner through a picker that
+    was opened before the bet existed still forfeits, since AdminView never saw it."""
+    betting_session.bets = {7: {"team": "a", "points": 250}, 8: {"team": "b", "points": 100}}
+    cog = FakeCog()
+    cog.active_sessions[betting_session.key] = betting_session
+    interaction = FakeInteraction(
+        FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], id=7), client=FakeClient(cog)
+    )
+
+    await matchmaking.declare_winner(betting_session, interaction, team_a_won=True)
+
+    _, rows = fake_db.perform_many_calls[0]
+    assert rows == [(100, 8)]   # only the other side, refunded; no payout to the declarer
+
+
+@pytest.mark.asyncio
+async def test_an_admin_declaring_still_gets_paid(
+    betting_session, fake_db, gamehead_roles, no_record_keeping
+):
+    betting_session.bets = {7: {"team": "a", "points": 100}, 8: {"team": "b", "points": 100}}
+    cog = FakeCog()
+    cog.active_sessions[betting_session.key] = betting_session
+    admin = FakeUser(roles=[FakeRole("Valorant Game Head", id=111)], administrator=True, id=7)
+    interaction = FakeInteraction(admin, client=FakeClient(cog))
+
+    await matchmaking.declare_winner(betting_session, interaction, team_a_won=True)
+
+    _, rows = fake_db.perform_many_calls[0]
+    assert rows == [(200, 7)]
 
 
 # --- declare_winner ---
@@ -1192,5 +1244,57 @@ async def test_reshuffling_refunds_before_reopening(betting_session, fake_db, ga
         _, rows = fake_db.perform_many_calls[0]
         assert rows == [(100, 7)]
         assert betting_session.bets == {}
+    finally:
+        matchmaking.stop_betting_window(betting_session)
+
+
+# --- races closed by review ---
+
+@pytest.mark.asyncio
+async def test_a_bet_landing_after_settlement_is_rolled_back(betting_session, monkeypatch):
+    """declare_winner can settle and clear the book while the deduction is in flight.
+    Booking the bet anyway would take the points with nothing left to pay them from."""
+    betting_session.betting_open = True
+    calls = []
+
+    async def perform_one(sql, parameters=None):
+        calls.append((sql, parameters))
+        betting_session.betting_open = False   # a winner gets declared mid-UPDATE
+        return 1
+
+    monkeypatch.setattr(matchmaking.db, "perform_one", perform_one)
+    user = FakeMember(7)
+    modal = make_bet_modal(betting_session, user, value="100")
+    interaction = FakeInteraction(user)
+
+    await modal.callback(interaction)
+
+    assert betting_session.bets == {}
+    assert "closed while you were typing" in interaction.response.messages[0]["content"]
+    assert calls[1][1] == (100, 7)   # stake handed straight back
+
+
+@pytest.mark.asyncio
+async def test_a_superseded_close_timer_leaves_the_new_window_alone(betting_session, instant_window):
+    """A re-shuffle in the same tick as the deadline can't cancel the old timer in
+    time, so it has to notice it is no longer the live one."""
+    betting_session.betting_open = True
+    betting_session.betting_close_task = None   # some other task owns the window now
+
+    await matchmaking.close_betting_after_delay(betting_session)
+
+    assert betting_session.betting_open is True
+    assert betting_session.message.edit_calls == []
+
+
+@pytest.mark.asyncio
+async def test_reshuffling_waits_for_the_old_timer_to_die(betting_session, fake_db, instant_window):
+    await matchmaking.start_betting_window(betting_session)
+    first_task = betting_session.betting_close_task
+
+    await matchmaking.start_betting_window(betting_session)
+    try:
+        assert first_task.done()
+        assert betting_session.betting_open is True
     finally:
         matchmaking.stop_betting_window(betting_session)
