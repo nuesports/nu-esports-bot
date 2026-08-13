@@ -145,7 +145,7 @@ async def test_ty_stan_replies_with_sticker_and_returns_none(monkeypatch):
 
     assert result is None
     assert len(message.reply_calls) == 1
-    args, kwargs = message.reply_calls[0]
+    _args, kwargs = message.reply_calls[0]
     assert kwargs["stickers"] == [sticker]
 
 

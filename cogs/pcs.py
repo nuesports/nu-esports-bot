@@ -644,7 +644,7 @@ class PCs(commands.Cog):
 
     @staticmethod
     def build_pcs_entries(
-        data: dict, reservations: list[dict] = None
+        data: dict, reservations: list[dict] | None = None
     ) -> tuple[list[dict], dict[str, str]]:
         """Build normalized display entries for /pcs text and image rendering."""
 
@@ -979,7 +979,7 @@ class PCs(commands.Cog):
 
     @staticmethod
     def build_grid(
-        data: dict, reservations: list[dict] = None, columns: int = 5
+        data: dict, reservations: list[dict] | None = None, columns: int = 5
     ) -> tuple[str, dict[str, str]]:
         entries, id_to_state = PCs.build_pcs_entries(data, reservations)
         cells = []
@@ -1551,7 +1551,7 @@ class PCs(commands.Cog):
             )
             return
 
-        res_id, team, pcs, start_time, end_time, manager, is_prime_time = row
+        _res_id, team, pcs, start_time, end_time, manager, is_prime_time = row
 
         # Format current user's username
         user = ctx.author
@@ -1612,7 +1612,7 @@ class PCs(commands.Cog):
         start_hour: int,
         end_hour: int,
         end_minute: int = 0,
-        pending_reservations: list[dict] = None,
+        pending_reservations: list[dict] | None = None,
     ) -> io.BytesIO:
         """Build a 2D grid image with time slots (x-axis) and desks (y-axis)
 
@@ -2091,7 +2091,7 @@ class ExternalReservationTimeModal(discord.ui.Modal):
         overlapping = await self.cog.get_reservations_in_range(start_time, end_time)
         if overlapping:
             # Build conflict message
-            conflict_teams = list(set(res["team"] for res in overlapping))
+            conflict_teams = list({res["team"] for res in overlapping})
             await interaction.followup.send(
                 f"❌ Cannot reserve all PCs - existing reservations conflict with this time slot.\n"
                 f"**Conflicting teams:** {', '.join(conflict_teams)}\n"
@@ -2137,7 +2137,7 @@ class ReservationView(discord.ui.View):
         reservations: list[dict],
         target_date: datetime,
         cog: "PCs",
-        pending_reservations: list[dict] = None,
+        pending_reservations: list[dict] | None = None,
     ):
         super().__init__(timeout=600)
         self.reservations = reservations
