@@ -1684,10 +1684,9 @@ class PCs(commands.Cog):
                     for slot_idx, slot_time in enumerate(time_slots):
                         slot_end = slot_time + timedelta(minutes=30)
                         # Check if this slot overlaps with the reservation
-                        if start_time < slot_end and end_time > slot_time:
+                        if start_time < slot_end and end_time > slot_time and slot_idx not in desk_reservations[desk_name]["reserved"]:
                             # Only mark as pending if not already reserved (purple takes precedence)
-                            if slot_idx not in desk_reservations[desk_name]["reserved"]:
-                                desk_reservations[desk_name]["pending"].add(slot_idx)
+                            desk_reservations[desk_name]["pending"].add(slot_idx)
 
         # Image dimensions
         cell_size = 30
