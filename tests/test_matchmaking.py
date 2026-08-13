@@ -659,6 +659,19 @@ async def test_bet_modal_rejects_a_non_numeric_wager(betting_session, fake_db):
 
 
 @pytest.mark.asyncio
+async def test_bet_modal_accepts_non_ascii_digits(betting_session, fake_db):
+    """int() reads Arabic-Indic and fullwidth digits as numbers, so these are real
+    wagers rather than crashes. The balance guard covers them like any other."""
+    betting_session.betting_open = True
+    user = FakeMember(7)
+    modal = make_bet_modal(betting_session, user, value="١٢٣")
+
+    await modal.callback(FakeInteraction(user))
+
+    assert betting_session.bets == {7: {"team": "a", "points": 123}}
+
+
+@pytest.mark.asyncio
 async def test_bet_modal_rejects_zero(betting_session, fake_db):
     betting_session.betting_open = True
     user = FakeMember(7)
