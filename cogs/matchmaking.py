@@ -397,8 +397,12 @@ async def refund_bets(session: "MatchmakingSession") -> None:
     session.betting_epoch += 1
     if not session.bets:
         return
-    await wallet.credit_many([(bet["points"], user_id) for user_id, bet in session.bets.items()])
+    # Clear before awaiting, not after. On the reshuffle path betting_open is still True
+    # here, so a bet landing mid-credit would be booked into a dict we then throw away --
+    # deducted, unrecorded, unrefunded.
+    refunds = [(bet["points"], user_id) for user_id, bet in session.bets.items()]
     session.bets = {}
+    await wallet.credit_many(refunds)
 
 async def reset_to_lobby(session: "MatchmakingSession") -> None:
     """Drop the shuffled teams and put the lobby back in its waiting-room state.
@@ -632,6 +636,9 @@ async def settle_bets(session: "MatchmakingSession", team_a_won: bool) -> dict |
 
     team_a_bets = {uid: bet["points"] for uid, bet in session.bets.items() if bet["team"] == "a"}
     team_b_bets = {uid: bet["points"] for uid, bet in session.bets.items() if bet["team"] == "b"}
+    # Everything below reads the two local dicts, so clear the book before the first await
+    # rather than after it -- a bet booked mid-credit would otherwise be silently dropped.
+    session.bets = {}
     winning_bets, losing_bets = (team_a_bets, team_b_bets) if team_a_won else (team_b_bets, team_a_bets)
     winning_pot = sum(winning_bets.values())
     losing_pot = sum(losing_bets.values())
@@ -639,7 +646,6 @@ async def settle_bets(session: "MatchmakingSession", team_a_won: bool) -> dict |
     if not winning_bets or not losing_bets:
         refunds = {**team_a_bets, **team_b_bets}
         await wallet.credit_many([(amount, uid) for uid, amount in refunds.items()])
-        session.bets = {}
         return {"refunded": True, "total": sum(refunds.values())}
 
     multiplier = wallet.payout_multiplier(winning_pot, losing_pot)
@@ -657,7 +663,6 @@ async def settle_bets(session: "MatchmakingSession", team_a_won: bool) -> dict |
         "richest_bettor_stake": winning_bets[richest_id],
         "richest_bettor_payout": payouts[richest_id],
     }
-    session.bets = {}
     return summary
 
 async def build_richest_chatter_field(summary: dict | None) -> str | None:
@@ -865,6 +870,24 @@ class LobbyView(discord.ui.View):
             ephemeral=True,
         )
 
+def bet_rejection_reason(session: "MatchmakingSession", user_id: int, team: str) -> str | None:
+    """Why this user can't back this team, or None if they can.
+
+    One home for the rule so the two enforcement points can't drift: the picker greys out
+    the buttons with it, and BetModal re-checks it under the lock. The picker alone isn't
+    enough -- an ephemeral view opened before a swap survives the swap, and nothing can
+    reach back to disable it.
+    """
+    on_team_a = any(m.id == user_id for m in session.team_a)
+    on_team_b = any(m.id == user_id for m in session.team_b)
+    if (team == "a" and on_team_b) or (team == "b" and on_team_a):
+        return "You can only bet on your own team!"
+
+    existing = session.bets.get(user_id)
+    if existing is not None and existing["team"] != team:
+        return "You've already bet on the other team -- you can't switch sides!"
+    return None
+
 class BetTeamSelectView(discord.ui.View):
     """Ephemeral team picker shown after clicking Bet. Players on a team can only
     bet on themselves, and once a bet is placed the opposing team's button disables too.
@@ -873,17 +896,13 @@ class BetTeamSelectView(discord.ui.View):
         super().__init__(timeout=120)
         self.session = session
 
-        existing = session.bets.get(user.id)
-        on_team_a = any(m.id == user.id for m in session.team_a)
-        on_team_b = any(m.id == user.id for m in session.team_b)
-
         team_a_button = discord.ui.Button(label=session.team_names[0], style=discord.ButtonStyle.primary)
-        team_a_button.disabled = on_team_b or (existing is not None and existing["team"] != "a")
+        team_a_button.disabled = bet_rejection_reason(session, user.id, "a") is not None
         team_a_button.callback = self.make_callback("a")
         self.add_item(team_a_button)
 
         team_b_button = discord.ui.Button(label=session.team_names[1], style=discord.ButtonStyle.primary)
-        team_b_button.disabled = on_team_a or (existing is not None and existing["team"] != "b")
+        team_b_button.disabled = bet_rejection_reason(session, user.id, "b") is not None
         team_b_button.callback = self.make_callback("b")
         self.add_item(team_b_button)
 
@@ -900,9 +919,9 @@ class BetTeamSelectView(discord.ui.View):
 
 class BetModal(discord.ui.Modal):
     """Ephemeral wager-amount prompt. The field is the new total stake, not an amount
-    to add. current_bet/balance are just a label hint; callback() re-reads live state
-    under a per-user lock and deducts with an atomic conditional UPDATE so the balance
-    can't go negative even across lobbies.
+    to add. current_bet/balance are just a label hint; callback() re-reads the stake, the
+    team rules and the epoch under a per-user lock, and deducts with an atomic conditional
+    UPDATE so the balance can't go negative even across lobbies.
     """
     def __init__(self, session: "MatchmakingSession", user: discord.Member, team: str, current_bet: int, balance: int):
         super().__init__(title="Place your bet")
@@ -938,6 +957,13 @@ class BetModal(discord.ui.Modal):
             existing = self.session.bets.get(self.user.id)
             current_bet = existing["points"] if existing else 0
             epoch = self.session.betting_epoch
+
+            # Before the raise check, so switching sides says so rather than "you can only
+            # raise your bet", and before the deduction, so a rejected bet costs nothing.
+            rejection = bet_rejection_reason(self.session, self.user.id, self.team)
+            if rejection is not None:
+                await interaction.response.send_message(rejection, ephemeral=True)
+                return
 
             if new_total <= current_bet:
                 message = "You can only raise your bet, not lower it!" if current_bet else "You must wager more than 0 points!"

@@ -1460,6 +1460,98 @@ async def test_refund_bets_bumps_the_epoch_even_with_an_empty_book(betting_sessi
     assert betting_session.betting_epoch == epoch_before + 1
 
 
+@pytest.mark.asyncio
+async def test_refund_bets_empties_the_book_before_it_credits(betting_session, monkeypatch):
+    """Clearing after the credit would discard anything booked while it was in flight --
+    on the reshuffle path betting_open is still True, so a bet really can land there."""
+    betting_session.bets = {7: {"team": "a", "points": 100}}
+    seen = []
+
+    async def perform_many(sql, parameters):
+        seen.append(dict(betting_session.bets))
+        betting_session.bets[9] = {"team": "b", "points": 50}   # a bet lands mid-credit
+
+    monkeypatch.setattr(matchmaking.db, "perform_many", perform_many)
+
+    await matchmaking.refund_bets(betting_session)
+
+    assert seen == [{}]                                          # already cleared
+    assert betting_session.bets == {9: {"team": "b", "points": 50}}   # and it survived
+
+
+@pytest.mark.asyncio
+async def test_settle_bets_empties_the_book_before_it_credits(betting_session, monkeypatch):
+    betting_session.bets = {7: {"team": "a", "points": 100}, 8: {"team": "b", "points": 100}}
+    seen = []
+
+    async def perform_many(sql, parameters):
+        seen.append(dict(betting_session.bets))
+
+    monkeypatch.setattr(matchmaking.db, "perform_many", perform_many)
+
+    summary = await matchmaking.settle_bets(betting_session, team_a_won=True)
+
+    assert seen == [{}]
+    assert summary["richest_bettor_payout"] == 200   # the locals still drove the payout
+
+
+# --- team rules survive a stale ephemeral picker ---
+
+def test_a_spectator_can_back_either_team(betting_session):
+    assert matchmaking.bet_rejection_reason(betting_session, 99, "a") is None
+    assert matchmaking.bet_rejection_reason(betting_session, 99, "b") is None
+
+
+def test_a_player_cannot_back_the_team_theyre_playing_against(betting_session):
+    """FakeMember(1) is on team_a in the fixture."""
+    assert matchmaking.bet_rejection_reason(betting_session, 1, "a") is None
+    assert "your own team" in matchmaking.bet_rejection_reason(betting_session, 1, "b")
+
+
+@pytest.mark.asyncio
+async def test_a_second_picker_cannot_switch_a_bettors_side(betting_session, fake_db):
+    """Two Bet views opened before betting both render with the sides enabled. Backing one
+    team then the other used to overwrite the first bet's team and charge only the delta."""
+    betting_session.betting_open = True
+    betting_session.bets = {7: {"team": "a", "points": 100}}
+    user = FakeMember(7)
+    modal = make_bet_modal(betting_session, user, team="b", value="200")
+    interaction = FakeInteraction(user)
+
+    await modal.callback(interaction)
+
+    assert "switch sides" in interaction.response.messages[0]["content"]
+    assert betting_session.bets == {7: {"team": "a", "points": 100}}
+    assert fake_db.perform_one_calls == []   # rejected before anything was deducted
+
+
+@pytest.mark.asyncio
+async def test_a_swapped_player_cannot_bet_against_their_new_team(betting_session, fake_db):
+    """A swap restarts the window but can't reach back into an already-open ephemeral
+    picker, so the modal is the only place left to catch this."""
+    betting_session.betting_open = True
+    user = betting_session.team_a[0]
+    matchmaking.swap_slots(betting_session, user.id, betting_session.team_b[0].id)
+    modal = make_bet_modal(betting_session, user, team="a", value="100")
+    interaction = FakeInteraction(user)
+
+    await modal.callback(interaction)
+
+    assert "your own team" in interaction.response.messages[0]["content"]
+    assert betting_session.bets == {}
+    assert fake_db.perform_one_calls == []
+
+
+@pytest.mark.asyncio
+async def test_the_picker_greys_out_the_buttons_the_modal_would_reject(betting_session):
+    """Same rule driving both, so the disable and the enforcement can't drift apart."""
+    betting_session.bets = {7: {"team": "a", "points": 100}}
+    view = matchmaking.BetTeamSelectView(betting_session, FakeMember(7))
+
+    assert view.children[0].disabled is False   # their own side stays open to raises
+    assert view.children[1].disabled is True
+
+
 def test_chatters_field_still_shows_a_row_in_a_one_versus_one_lobby(betting_session, monkeypatch):
     """team_size of 1 used to slice rows[:0] and print nothing but the overflow line."""
     monkeypatch.setitem(matchmaking.LOBBY_SIZE, "fakegame", 2)
