@@ -2,8 +2,9 @@ import asyncio
 import io
 import random
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import aiohttp
 import discord
@@ -12,6 +13,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from utils import config
 
+CENTRAL_TZ = ZoneInfo("America/Chicago")
 GUILD_ID = config.secrets["discord"]["guild_id"]
 
 
@@ -77,7 +79,7 @@ class Connections(commands.Cog):
             )
             return
 
-        requested_date = requested_date or date.today().isoformat()
+        requested_date = requested_date or datetime.datetime.now(tz=CENTRAL_TZ).date().isoformat()
         await ctx.defer(ephemeral=True)
 
         try:

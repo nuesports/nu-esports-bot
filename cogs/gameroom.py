@@ -146,7 +146,7 @@ class Gameroom(commands.Cog):
     async def hours(self, ctx):
         default_hours = config.gameroom_data["default_hours"]
 
-        today = datetime.date.today()
+        today = datetime.datetime.now(tz=CENTRAL_TZ).date()
         start = today - datetime.timedelta(days=today.weekday())
         end = start + datetime.timedelta(days=6)
         week = [start + datetime.timedelta(days=i) for i in range(7)]
