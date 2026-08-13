@@ -420,7 +420,7 @@ class PCs(commands.Cog):
         )
 
         # If reservation ends before prime time starts, not prime time
-        return False if end_time <= prime_start else True
+        return end_time > prime_start
 
     def get_week_start(self, dt: datetime) -> datetime:
         """Get the start of the week (Monday 00:00) for a given datetime"""
