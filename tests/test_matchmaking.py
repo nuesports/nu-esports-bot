@@ -1086,6 +1086,21 @@ async def test_declare_winner_surfaces_a_failed_embed_edit(betting_session, fake
     assert declaring.cog.active_sessions == {}
 
 
+@pytest.mark.asyncio
+async def test_declare_winner_survives_a_lobby_that_never_got_its_message(
+    betting_session, fake_db, gamehead_roles, no_record_keeping, declaring
+):
+    """session.message stays None if the post-send fetch_message never lands, and the
+    elo and payouts are already committed by the time we'd reach for it."""
+    betting_session.message = None
+    interaction = declaring(gamehead(5))
+
+    await matchmaking.declare_winner(betting_session, interaction, team_a_won=True)
+
+    assert "couldn't update the lobby embed" in interaction.followup.send_calls[0]["content"]
+    assert declaring.cog.active_sessions == {}   # still torn down rather than left stuck
+
+
 class _FakeResponse:
     """Minimal stand-in for the aiohttp response discord.HTTPException wants."""
     status = 500

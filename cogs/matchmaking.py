@@ -1074,13 +1074,20 @@ async def declare_winner(session: "MatchmakingSession", interaction: discord.Int
     bet_summary = await settle_bets(session, team_a_won=team_a_won)
     richest_chatter = await build_richest_chatter_field(bet_summary)
 
-    # result's already recorded above, so a failed edit here still needs surfacing, not swallowing
-    try:
-        await session.message.edit(
-            embed=generate_postgame_embed(session, winning_team_name, winners, richest_chatter),
-            view=PostgameView(session),
-        )
-    except (discord.NotFound, discord.HTTPException):
+    # result's already recorded above, so a failed edit here still needs surfacing, not
+    # swallowing -- including message being None, which the timer and bet paths already
+    # guard for and which would otherwise raise with the payouts long since committed.
+    rendered = False
+    if session.message is not None:
+        try:
+            await session.message.edit(
+                embed=generate_postgame_embed(session, winning_team_name, winners, richest_chatter),
+                view=PostgameView(session),
+            )
+            rendered = True
+        except (discord.NotFound, discord.HTTPException):
+            pass
+    if not rendered:
         await interaction.followup.send("Result recorded, but I couldn't update the lobby embed.", ephemeral=True)
 
     cog = interaction.client.get_cog("Matchmaking")
