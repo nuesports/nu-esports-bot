@@ -303,6 +303,12 @@ class PredictionView(discord.ui.View):
         await self.message.edit(view=self)
 
     async def modal_callback(self, user, points, option):
+        # A modal opened before the lock can still be submitted after it, and a late
+        # stake would recompute the odds the payout was already announced with.
+        if self.locked:
+            await self.message.reply(f"{user.mention} tried to bet on a locked prediction!")
+            return
+
         # Atomic conditional UPDATE. PredictionModal's earlier balance check is a stale
         # snapshot, so this guard is what actually prevents overdrafting.
         sql = "UPDATE users SET points = points - %s WHERE discordid = %s AND points >= %s;"

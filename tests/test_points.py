@@ -164,3 +164,22 @@ async def test_prediction_odds_are_break_even_while_one_side_is_empty(prediction
 
     assert prediction.odds_a == 1.0
     assert prediction.odds_b == 1.0
+
+
+@pytest.mark.asyncio
+async def test_prediction_refuses_a_stake_submitted_after_the_lock(prediction):
+    """Disabling the buttons doesn't close a modal already open on someone's client,
+    and a late stake would recompute the odds the payout was announced with."""
+    await prediction.modal_callback(FakeBettor(7), 100, "Purple")
+    await prediction.modal_callback(FakeBettor(8), 300, "Gold")
+    prediction.update_embed()
+    odds_before = prediction.odds_a
+    prediction.locked = True
+
+    await prediction.modal_callback(FakeBettor(9), 5000, "Purple")
+
+    assert 9 not in prediction.option_a_points
+    assert len(prediction.perform_one_calls) == 2   # no third deduction
+    prediction.update_embed()
+    assert prediction.odds_a == odds_before
+    assert "locked prediction" in prediction.message.replies[-1]

@@ -8,6 +8,7 @@ from tests.conftest import FakeInteraction, FakeMessage
 class FakeMember:
     def __init__(self, id):
         self.id = id
+        self.display_name = f"player{id}"   # SwapSelectView labels its options with this
 
 @pytest.fixture
 def balance_setup(monkeypatch):
@@ -1296,5 +1297,62 @@ async def test_reshuffling_waits_for_the_old_timer_to_die(betting_session, fake_
     try:
         assert first_task.done()
         assert betting_session.betting_open is True
+    finally:
+        matchmaking.stop_betting_window(betting_session)
+
+
+# --- lineup changes refund outstanding bets ---
+
+@pytest.mark.asyncio
+async def test_joining_refunds_bets_placed_on_the_old_lineup(betting_session, fake_db):
+    """Join wipes the teams, so every stake was placed on a match that no longer exists."""
+    await matchmaking.start_betting_window(betting_session)
+    betting_session.bets = {7: {"team": "a", "points": 100}}
+    fake_db.perform_many_calls.clear()
+
+    view = matchmaking.LobbyView(betting_session)
+    await view.join.callback(FakeInteraction(FakeUser(id=99)))
+
+    _, rows = fake_db.perform_many_calls[0]
+    assert rows == [(100, 7)]
+    assert betting_session.bets == {}
+    assert betting_session.betting_open is False
+    assert betting_session.betting_close_task is None
+
+
+@pytest.mark.asyncio
+async def test_leaving_refunds_bets_placed_on_the_old_lineup(betting_session, fake_db):
+    await matchmaking.start_betting_window(betting_session)
+    betting_session.bets = {7: {"team": "a", "points": 100}}
+    fake_db.perform_many_calls.clear()
+
+    view = matchmaking.LobbyView(betting_session)
+    await view.leave.callback(FakeInteraction(betting_session.joined[0]))
+
+    _, rows = fake_db.perform_many_calls[0]
+    assert rows == [(100, 7)]
+    assert betting_session.bets == {}
+    assert betting_session.betting_open is False
+
+
+@pytest.mark.asyncio
+async def test_swapping_refunds_bets_placed_on_the_old_lineup(betting_session, fake_db):
+    await matchmaking.start_betting_window(betting_session)
+    betting_session.bets = {7: {"team": "a", "points": 100}}
+    fake_db.perform_many_calls.clear()
+    deadline = betting_session.betting_closes_at
+
+    view = matchmaking.SwapSelectView(betting_session)
+    view.select._selected_values = ["1", "3"]
+    view.select._interaction = object()
+    try:
+        await view.on_select(FakeInteraction(FakeUser(id=5)))
+
+        _, rows = fake_db.perform_many_calls[0]
+        assert rows == [(100, 7)]
+        assert betting_session.bets == {}
+        # Betting stays open on its original deadline, so repeat swaps can't extend it
+        assert betting_session.betting_open is True
+        assert betting_session.betting_closes_at == deadline
     finally:
         matchmaking.stop_betting_window(betting_session)

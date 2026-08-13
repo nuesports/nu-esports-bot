@@ -796,6 +796,9 @@ class LobbyView(discord.ui.View):
         self.session.team_a = []
         self.session.team_b = []
         self.session.role_assignments = {}
+        # Teams are gone, so nobody's bet is on the match they backed anymore.
+        stop_betting_window(self.session)
+        await refund_bets(self.session)
         await interaction.response.edit_message(embed=generate_embed(self.session), view=self)
         await refresh_admin_panels(self.session)
 
@@ -812,6 +815,9 @@ class LobbyView(discord.ui.View):
         self.session.team_a = []
         self.session.team_b = []
         self.session.role_assignments = {}
+        # Teams are gone, so nobody's bet is on the match they backed anymore.
+        stop_betting_window(self.session)
+        await refund_bets(self.session)
         await interaction.response.edit_message(embed=generate_embed(self.session), view=self)
         await refresh_admin_panels(self.session)
 
@@ -1000,6 +1006,9 @@ class SwapSelectView(discord.ui.View):
         """Swap the two selected players' team+lane slots and refresh every open view of this lobby."""
         id_a, id_b = [int(v) for v in self.select.values]
         swap_slots(self.session, id_a, id_b)
+        # Different lineup, so bets placed on the old one go back. The window keeps its
+        # original deadline rather than restarting, so swaps can't extend betting.
+        await refund_bets(self.session)
 
         await self.session.message.edit(embed=generate_embed(self.session), view=LobbyView(self.session))
         await interaction.response.edit_message(embed=generate_embed(self.session), view=AdminView(self.session))
