@@ -370,13 +370,13 @@ class PCs(commands.Cog):
             year, month, day = map(int, date_part.split("-"))
 
             # Parse start time
-            start_time = datetime.strptime(start_time_str.strip(), "%I:%M%p")
+            start_time = datetime.strptime(start_time_str.strip(), "%I:%M%p").replace(tzinfo=CENTRAL_TZ)
             start_dt = datetime(
                 year, month, day, start_time.hour, start_time.minute, tzinfo=CENTRAL_TZ
             )
 
             # Parse end time
-            end_time = datetime.strptime(end_time_str.strip(), "%I:%M%p")
+            end_time = datetime.strptime(end_time_str.strip(), "%I:%M%p").replace(tzinfo=CENTRAL_TZ)
             end_dt = datetime(
                 year, month, day, end_time.hour, end_time.minute, tzinfo=CENTRAL_TZ
             )
@@ -1283,7 +1283,7 @@ class PCs(commands.Cog):
         # Parse or default to today (in Central Time)
         if date:
             try:
-                target_date = datetime.strptime(date, "%Y-%m-%d")
+                target_date = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=CENTRAL_TZ)
                 target_date = target_date.replace(tzinfo=CENTRAL_TZ)
             except ValueError:
                 await ctx.followup.send(

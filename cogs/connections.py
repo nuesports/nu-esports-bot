@@ -130,7 +130,7 @@ class Connections(commands.Cog):
         if not raw_date:
             return None
         try:
-            return datetime.strptime(raw_date, "%Y-%m-%d").date().isoformat()
+            return datetime.strptime(raw_date, "%Y-%m-%d").replace(tzinfo=CENTRAL_TZ).date().isoformat()
         except ValueError:
             return None
 

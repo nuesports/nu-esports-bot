@@ -55,14 +55,14 @@ class Gameroom(commands.Cog):
             return
 
         try:
-            start = datetime.datetime.strptime(start_date, "%Y-%m-%d").date()
+            start = datetime.datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=CENTRAL_TZ).date()
         except ValueError:
             await ctx.respond("Invalid start date. Use YYYY-MM-DD.", ephemeral=True)
             return
 
         if end_date:
             try:
-                end = datetime.datetime.strptime(end_date, "%Y-%m-%d").date()
+                end = datetime.datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=CENTRAL_TZ).date()
             except ValueError:
                 await ctx.respond("Invalid end date. Use YYYY-MM-DD.", ephemeral=True)
                 return
