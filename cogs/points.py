@@ -255,13 +255,12 @@ class PredictionView(discord.ui.View):
         ]
 
     def update_embed(self):
-        # TODO: add odds
         self.embed.clear_fields()
         format = "{} points\n{} users\n{}x payout"
-        self.odds_a = payout.payout_multiplier(
+        self.odds_a = wallet.payout_multiplier(
             sum(self.option_a_points.values()), sum(self.option_b_points.values())
         )
-        self.odds_b = payout.payout_multiplier(
+        self.odds_b = wallet.payout_multiplier(
             sum(self.option_b_points.values()), sum(self.option_a_points.values())
         )
         self.embed.add_field(
