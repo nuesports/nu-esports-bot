@@ -198,7 +198,7 @@ class Connections(commands.Cog):
 
         for category in categories:
             if not isinstance(category, dict):
-                raise ValueError("Invalid category format.")
+                raise TypeError("Invalid category format.")
             title = category.get("title")
             cards = category.get("cards")
             if not isinstance(title, str) or not title:
@@ -210,7 +210,7 @@ class Connections(commands.Cog):
             normalized_words: set[str] = set()
             for card in cards:
                 if not isinstance(card, dict):
-                    raise ValueError("Invalid card format.")
+                    raise TypeError("Invalid card format.")
                 content = card.get("content")
                 position = card.get("position")
                 if not isinstance(content, str) or not content.strip():
