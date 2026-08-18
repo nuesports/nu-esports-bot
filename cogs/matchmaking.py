@@ -359,6 +359,14 @@ async def refresh_admin_panels(session: "MatchmakingSession") -> None:
             pass
     session.admin_panels = still_open
 
+async def close_admin_panels(session: "MatchmakingSession") -> None:
+    """Delete every open admin panel. They're ephemeral messages that outlive the lobby,
+    and a stale one's Shuffle would reopen betting on a match that's already over."""
+    for msg in session.admin_panels.values():
+        with contextlib.suppress(discord.NotFound, discord.HTTPException):
+            await msg.delete()
+    session.admin_panels = {}
+
 async def start_betting_window(session: "MatchmakingSession") -> None:
     """Refund any bets from the previous shuffle and open a fresh betting window.
     Cancels a previous close-timer first so re-shuffling twice doesn't leave an
@@ -728,6 +736,7 @@ class MatchmakingSession:
         self.betting_close_task: asyncio.Task | None = None
         self.bet_locks: dict[int, asyncio.Lock] = {} # member.id to a lock serializing that user's bet submissions
         self.betting_epoch: int = 0 # bumped whenever the lineup changes, to void bets still in flight
+        self.ended: bool = False # set once a winner's declared or the lobby's cancelled
 
 class Matchmaking(commands.Cog):
     """Cog housing the /matchmaking command group and the active lobby state for all channels."""
@@ -1070,6 +1079,12 @@ async def declare_winner(session: "MatchmakingSession", interaction: discord.Int
     if not has_privilege(interaction):
         await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
         return
+    # Two game heads can hold open pickers at once, and a second declare would re-record
+    # the result and re-apply the elo. Claim the session before the first await.
+    if session.ended:
+        await interaction.response.send_message("This match is already over!", ephemeral=True)
+        return
+    session.ended = True
 
     await interaction.response.defer()
 
@@ -1098,6 +1113,7 @@ async def declare_winner(session: "MatchmakingSession", interaction: discord.Int
     cog = interaction.client.get_cog("Matchmaking")
     cog.active_sessions.pop(session.key, None)
     await interaction.delete_original_response()
+    await close_admin_panels(session)
 
 class MapSelectView(discord.ui.View):
     def __init__(self, session):
@@ -1207,10 +1223,19 @@ class PostgameView(discord.ui.View):
         self.session = session
 
 class AdminView(discord.ui.View):
-    """Ephemeral admin panel: Shuffle / Swap / Winner. Gated to gameheads and the lobby owner."""
+    """Ephemeral admin panel: Shuffle / Swap / Map / Winner / Delete. Gated to game heads."""
     def __init__(self, session):
         super().__init__(timeout=180)
         self.session = session
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Runs before every button here. close_admin_panels deletes these on the way out,
+        but a click already in flight still lands, and Shuffle on a finished lobby would
+        reopen betting and take points on a match nobody can win."""
+        if self.session.ended:
+            await interaction.response.send_message("This lobby's already over!", ephemeral=True)
+            return False
+        return True
 
     @discord.ui.button(label="Shuffle", style=discord.ButtonStyle.primary)
     async def shuffle(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
@@ -1339,8 +1364,9 @@ class CancelConfirmView(discord.ui.View):
             await interaction.response.edit_message(embed=generate_embed(self.session), view=AdminView(self.session))
             return
 
-        # Defer first, same as shuffle and declare_winner: the refund is a DB round trip
-        # and the edit is an API call, which together outlast the 3 second reply deadline.
+        # Claim the lobby before the first await, then defer: same as shuffle and
+        # declare_winner, the refund and the edit outlast the 3 second reply deadline.
+        self.session.ended = True
         await interaction.response.defer()
 
         stop_betting_window(self.session)
@@ -1351,6 +1377,7 @@ class CancelConfirmView(discord.ui.View):
         cog.active_sessions.pop(self.session.key, None)
 
         await interaction.delete_original_response()
+        await close_admin_panels(self.session)
 
 def setup(bot: discord.Bot) -> None:
     bot.add_cog(Matchmaking(bot))

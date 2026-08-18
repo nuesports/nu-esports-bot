@@ -1736,3 +1736,70 @@ async def test_cancelling_defers_before_the_refund_and_the_edit(betting_session,
     await view.on_select(interaction)
 
     assert deferred_at_refund == [True]
+
+
+# --- ended lobbies ---
+
+@pytest.mark.asyncio
+async def test_declare_winner_refuses_a_second_declaration(
+    betting_session, fake_db, gamehead_roles, no_record_keeping, declaring
+):
+    """Two game heads can hold open pickers at once. A second declare would re-record
+    the result and re-apply the elo on a match that's already settled."""
+    await matchmaking.declare_winner(betting_session, declaring(gamehead(5)), team_a_won=True)
+    second = declaring(gamehead(6))
+
+    await matchmaking.declare_winner(betting_session, second, team_a_won=False)
+
+    assert "already over" in second.response.messages[0]["content"]
+    assert second.response.deferred is False
+
+
+@pytest.mark.asyncio
+async def test_declare_winner_takes_the_admin_panels_down_with_it(
+    betting_session, fake_db, gamehead_roles, no_record_keeping, declaring
+):
+    panel = FakeMessage()
+    betting_session.admin_panels = {6: panel}
+
+    await matchmaking.declare_winner(betting_session, declaring(gamehead(5)), team_a_won=True)
+
+    assert panel.deleted is True
+    assert betting_session.admin_panels == {}
+
+
+@pytest.mark.asyncio
+async def test_cancelling_takes_the_admin_panels_down_with_it(betting_session, fake_db, gamehead_roles):
+    panel = FakeMessage()
+    betting_session.admin_panels = {6: panel}
+    cog = FakeCog()
+    cog.active_sessions[betting_session.key] = betting_session
+    view = matchmaking.CancelConfirmView(betting_session)
+    view.select._selected_values = ["confirm"]
+    view.select._interaction = object()
+
+    await view.on_select(FakeInteraction(gamehead(5), client=FakeClient(cog)))
+
+    assert betting_session.ended is True
+    assert panel.deleted is True
+
+
+@pytest.mark.asyncio
+async def test_admin_panel_buttons_go_dead_once_the_lobby_ends(betting_session, gamehead_roles):
+    """A click already in flight lands after close_admin_panels has run, and Shuffle
+    would reopen betting on a match nobody can win."""
+    betting_session.ended = True
+    view = matchmaking.AdminView(betting_session)
+    interaction = FakeInteraction(gamehead(5))
+
+    allowed = await view.interaction_check(interaction)
+
+    assert allowed is False
+    assert "already over" in interaction.response.messages[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_admin_panel_buttons_work_while_the_lobby_is_live(betting_session, gamehead_roles):
+    view = matchmaking.AdminView(betting_session)
+
+    assert await view.interaction_check(FakeInteraction(gamehead(5))) is True
