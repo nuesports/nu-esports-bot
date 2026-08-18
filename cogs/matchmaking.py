@@ -828,6 +828,11 @@ class LobbyView(discord.ui.View):
             await interaction.response.send_message("Lobby already full... :/", ephemeral=True)
             return
         
+        # Defer before the tag lookup and the refund: reset_to_lobby is a DB round trip
+        # whenever anyone had money on the old lineup, which the 3 second reply deadline
+        # doesn't cover any more than shuffle's or swap's does.
+        await interaction.response.defer()
+
         row = await db.fetch_one("SELECT tag FROM profiles WHERE discordid = %s;", (interaction.user.id,))
         self.session.tags[interaction.user.id] = row[0] if row and row[0] else DEFAULT_TAG.get("Lobby")
 
@@ -835,7 +840,7 @@ class LobbyView(discord.ui.View):
         await reset_to_lobby(self.session)
         # A fresh view, not self: both button states are frozen at construction, and this
         # just closed betting and may have filled the lobby.
-        await interaction.response.edit_message(embed=generate_embed(self.session), view=LobbyView(self.session))
+        await interaction.edit_original_response(embed=generate_embed(self.session), view=LobbyView(self.session))
         await refresh_admin_panels(self.session)
 
 
@@ -846,10 +851,12 @@ class LobbyView(discord.ui.View):
             await interaction.response.send_message("You haven't joined this lobby!", ephemeral=True)
             return
 
+        await interaction.response.defer()
+
         self.session.joined = [m for m in self.session.joined if m.id != interaction.user.id]
         self.session.tags.pop(interaction.user.id, None)
         await reset_to_lobby(self.session)
-        await interaction.response.edit_message(embed=generate_embed(self.session), view=LobbyView(self.session))
+        await interaction.edit_original_response(embed=generate_embed(self.session), view=LobbyView(self.session))
         await refresh_admin_panels(self.session)
 
     @discord.ui.button(label="Settings", style=discord.ButtonStyle.primary)
@@ -1028,10 +1035,26 @@ class BetModal(discord.ui.Modal):
         await refresh_lobby_message(self.session)
         await refresh_admin_panels(self.session)
 
-class SwapSelectView(discord.ui.View):
-    def __init__(self, session):
+class LobbyPanelView(discord.ui.View):
+    """Base for every view reachable from a lobby's admin panel.
+
+    They're ephemeral messages that outlive the lobby. close_admin_panels deletes them
+    when the match ends, but a click already in flight still lands, and Swap's would
+    reopen betting and re-arm a close timer on a session nobody can win.
+    """
+    def __init__(self, session: "MatchmakingSession"):
         super().__init__(timeout=180)
         self.session = session
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if self.session.ended:
+            await interaction.response.send_message("This lobby's already over!", ephemeral=True)
+            return False
+        return True
+
+class SwapSelectView(LobbyPanelView):
+    def __init__(self, session):
+        super().__init__(session)
 
         options = []
         for member in session.team_a + session.team_b:
@@ -1116,10 +1139,9 @@ async def declare_winner(session: "MatchmakingSession", interaction: discord.Int
     await interaction.delete_original_response()
     await close_admin_panels(session)
 
-class MapSelectView(discord.ui.View):
+class MapSelectView(LobbyPanelView):
     def __init__(self, session):
-        super().__init__(timeout=180)
-        self.session = session
+        super().__init__(session)
 
         options = [discord.SelectOption(label=m, default=(m == session.map)) for m in MAPS[session.game]]
         # a Select caps out at 25 options (Overwatch has 32 maps), so split across as many selects as needed
@@ -1152,13 +1174,12 @@ class MapSelectView(discord.ui.View):
             return
         await interaction.response.edit_message(embed=generate_embed(self.session), view=AdminView(self.session))
 
-class WinnerSelectView(discord.ui.View):
+class WinnerSelectView(LobbyPanelView):
     """Ephemeral team picker for declaring a winner.
     
     Uses manually-constructed buttons so their labels can show the session's actual team names instead of static text."""
     def __init__(self, session):
-        super().__init__(timeout=180)
-        self.session = session
+        super().__init__(session)
 
         team_a_button = discord.ui.Button(label=session.team_names[0], style=discord.ButtonStyle.primary)
         team_a_button.callback = self.team_a
@@ -1187,14 +1208,13 @@ class WinnerSelectView(discord.ui.View):
             return
         await interaction.response.edit_message(content=None, embed=generate_embed(self.session), view=AdminView(self.session))
 
-class SelfBetForfeitWarningView(discord.ui.View):
+class SelfBetForfeitWarningView(LobbyPanelView):
     """Shown instead of WinnerSelectView when a non-admin game head with an active bet
     presses Winner. Requires confirmation first since declaring forfeits the bet outright.
     Uses buttons instead of a dropdown, since Select option text can get cut off on Discord's client.
     """
     def __init__(self, session: "MatchmakingSession", stake: int):
-        super().__init__(timeout=180)
-        self.session = session
+        super().__init__(session)
 
         continue_button = discord.ui.Button(label=f"Continue (forfeit my {stake}-point bet)", style=discord.ButtonStyle.danger)
         continue_button.callback = self.confirm
@@ -1223,20 +1243,8 @@ class PostgameView(discord.ui.View):
         super().__init__(timeout=180)
         self.session = session
 
-class AdminView(discord.ui.View):
+class AdminView(LobbyPanelView):
     """Ephemeral admin panel: Shuffle / Swap / Map / Winner / Delete. Gated to game heads."""
-    def __init__(self, session):
-        super().__init__(timeout=180)
-        self.session = session
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        """Runs before every button here. close_admin_panels deletes these on the way out,
-        but a click already in flight still lands, and Shuffle on a finished lobby would
-        reopen betting and take points on a match nobody can win."""
-        if self.session.ended:
-            await interaction.response.send_message("This lobby's already over!", ephemeral=True)
-            return False
-        return True
 
     @discord.ui.button(label="Shuffle", style=discord.ButtonStyle.primary)
     async def shuffle(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
@@ -1338,14 +1346,13 @@ class AdminView(discord.ui.View):
         
         await interaction.response.edit_message(embed=generate_embed(self.session), view=CancelConfirmView(self.session))
 
-class CancelConfirmView(discord.ui.View):
+class CancelConfirmView(LobbyPanelView):
     """Ephemeral confirmation step before actually cancelling a lobby.
 
     Uses a dropdown rather than buttons, so a misclick doesn't instantly end the game.
     """
     def __init__(self, session):
-        super().__init__(timeout=180)
-        self.session = session
+        super().__init__(session)
 
         options = [
             discord.SelectOption(label="Yes, cancel this game", value="confirm", emoji="🗑️"),

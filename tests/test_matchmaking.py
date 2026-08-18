@@ -1429,7 +1429,7 @@ async def test_joining_sends_back_a_view_that_reflects_the_new_state(betting_ses
 
     await view.join.callback(interaction)
 
-    sent_back = interaction.response.edits[0]["view"]
+    sent_back = interaction.original_response_edits[0]["view"]
     assert sent_back is not view
     assert sent_back.bet.disabled is True    # betting closed with the teams
     assert sent_back.join.disabled is True   # and that fifth player filled the lobby
@@ -1826,3 +1826,60 @@ async def test_the_bet_picker_expires_with_the_window_it_belongs_to(betting_sess
     view = matchmaking.BetTeamSelectView(betting_session, FakeMember(9))
 
     assert view.timeout == matchmaking.BETTING_WINDOW_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_joining_defers_before_its_db_work(betting_session, fake_db):
+    """Same 3 second deadline shuffle and swap defer for: the tag lookup and the
+    refund both land before the reply would."""
+    betting_session.bets = {7: {"team": "a", "points": 100}}
+    view = matchmaking.LobbyView(betting_session)
+    interaction = FakeInteraction(FakeUser(id=99))
+
+    await view.join.callback(interaction)
+
+    assert interaction.response.deferred is True
+    assert interaction.response.edits == []   # edit_message is unavailable post-defer
+
+
+@pytest.mark.asyncio
+async def test_leaving_defers_before_its_db_work(betting_session, fake_db):
+    betting_session.bets = {1: {"team": "a", "points": 100}}
+    view = matchmaking.LobbyView(betting_session)
+    interaction = FakeInteraction(betting_session.joined[0])
+
+    await view.leave.callback(interaction)
+
+    assert interaction.response.deferred is True
+    assert interaction.original_response_edits[0]["embed"] is not None
+
+
+@pytest.mark.asyncio
+async def test_the_swap_picker_goes_dead_once_the_lobby_ends(betting_session, gamehead_roles):
+    """AdminView's own check doesn't cover the views it opens, and a stale swap would
+    reopen betting and re-arm a close timer on a session already torn down."""
+    betting_session.ended = True
+    view = matchmaking.SwapSelectView(betting_session)
+    interaction = FakeInteraction(gamehead(5))
+
+    assert await view.interaction_check(interaction) is False
+    assert "already over" in interaction.response.messages[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_every_panel_view_checks_the_lobby_is_still_live(betting_session, gamehead_roles, monkeypatch):
+    """One base class, so the check can't be added to one panel view and forgotten on
+    the rest."""
+    monkeypatch.setitem(matchmaking.MAPS, "fakegame", ["Ascent"])
+    panels = [
+        matchmaking.AdminView(betting_session),
+        matchmaking.SwapSelectView(betting_session),
+        matchmaking.MapSelectView(betting_session),
+        matchmaking.WinnerSelectView(betting_session),
+        matchmaking.SelfBetForfeitWarningView(betting_session, 100),
+        matchmaking.CancelConfirmView(betting_session),
+    ]
+    betting_session.ended = True
+
+    for view in panels:
+        assert await view.interaction_check(FakeInteraction(gamehead(5))) is False, type(view).__name__
