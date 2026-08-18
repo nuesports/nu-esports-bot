@@ -1339,15 +1339,17 @@ class CancelConfirmView(discord.ui.View):
             await interaction.response.edit_message(embed=generate_embed(self.session), view=AdminView(self.session))
             return
 
+        # Defer first, same as shuffle and declare_winner: the refund is a DB round trip
+        # and the edit is an API call, which together outlast the 3 second reply deadline.
+        await interaction.response.defer()
+
         stop_betting_window(self.session)
         await refund_bets(self.session)
-
         await edit_lobby_message(self.session, generate_cancelled_embed(self.session), None)
 
         cog = interaction.client.get_cog("Matchmaking")
         cog.active_sessions.pop(self.session.key, None)
 
-        await interaction.response.defer()
         await interaction.delete_original_response()
 
 def setup(bot: discord.Bot) -> None:

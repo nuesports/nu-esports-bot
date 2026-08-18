@@ -1713,3 +1713,26 @@ async def test_cancelling_survives_a_lobby_that_never_got_its_message(betting_se
     await view.on_select(FakeInteraction(gamehead(5), client=FakeClient(cog)))
 
     assert cog.active_sessions == {}
+
+
+@pytest.mark.asyncio
+async def test_cancelling_defers_before_the_refund_and_the_edit(betting_session, gamehead_roles, monkeypatch):
+    """A DB round trip plus an API call don't fit inside Discord's 3 second deadline."""
+    betting_session.bets = {7: {"team": "a", "points": 100}}
+    deferred_at_refund = []
+
+    async def perform_many(sql, parameters):
+        deferred_at_refund.append(interaction.response.deferred)
+
+    monkeypatch.setattr(matchmaking.db, "perform_many", perform_many)
+
+    cog = FakeCog()
+    cog.active_sessions[betting_session.key] = betting_session
+    view = matchmaking.CancelConfirmView(betting_session)
+    view.select._selected_values = ["confirm"]
+    view.select._interaction = object()
+    interaction = FakeInteraction(gamehead(5), client=FakeClient(cog))
+
+    await view.on_select(interaction)
+
+    assert deferred_at_refund == [True]
