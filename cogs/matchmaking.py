@@ -412,12 +412,13 @@ def stop_betting_window(session: "MatchmakingSession") -> None:
     session.betting_open = False
 
 async def refund_bets(session: "MatchmakingSession") -> None:
-    """Refund every outstanding bet's stake back to the bettor.
-    Used when a lobby is cancelled before a winner is declared.
+    """Refund every outstanding bet's stake and void any bet still in flight.
+
+    Called from every point the lineup stops matching what people backed: join, leave,
+    swap, re-shuffle and cancel.
     """
-    # Every caller is a point where the lineup stopped matching what people bet on, so
-    # this doubles as the invalidation signal for bets still in flight. Bump before the
-    # empty check -- a first bet mid-submission isn't in the book yet but is just as stale.
+    # Bump before the empty check: a first bet mid-submission isn't in the book yet, but
+    # it's just as stale as one that is.
     session.betting_epoch += 1
     if not session.bets:
         return
@@ -696,7 +697,7 @@ async def build_richest_chatter_field(summary: dict | None) -> str | None:
     if summary is None:
         return None
     if summary["refunded"]:
-        return "Nobody backed the losing side!\nAll bets refunded."
+        return f"Nobody backed the losing side!\nAll {summary['total']} points refunded."
 
     richest_id = summary["richest_bettor_id"]
     profit = summary["richest_bettor_payout"] - summary["richest_bettor_stake"]
@@ -920,7 +921,7 @@ class BetTeamSelectView(discord.ui.View):
     bet on themselves, and once a bet is placed the opposing team's button disables too.
     """
     def __init__(self, session: "MatchmakingSession", user: discord.Member):
-        super().__init__(timeout=120)
+        super().__init__(timeout=BETTING_WINDOW_SECONDS)
         self.session = session
 
         team_a_button = discord.ui.Button(label=session.team_names[0], style=discord.ButtonStyle.primary)
@@ -1240,16 +1241,16 @@ class AdminView(discord.ui.View):
     @discord.ui.button(label="Shuffle", style=discord.ButtonStyle.primary)
     async def shuffle(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
         """Fetch each player's rank/role data and re-balance the lobby into two teams."""
+        if not has_privilege(interaction):
+            await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
+            return
+
         if not self.session.joined:
             await interaction.response.send_message("Nobody's in the lobby yet!", ephemeral=True)
             return
 
         if (len(self.session.joined) % 2) != 0:
             await interaction.response.send_message("You need an even amount of players to shuffle!", ephemeral=True)
-            return
-
-        if not has_privilege(interaction):
-            await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
             return
 
         # Same as declare_winner: defer before any DB or API work. The shuffle query, the

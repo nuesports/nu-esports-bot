@@ -517,6 +517,7 @@ async def test_richest_chatter_field_explains_a_refund():
     field = await matchmaking.build_richest_chatter_field({"refunded": True, "total": 500})
 
     assert "refunded" in field.lower()
+    assert "500" in field
 
 
 @pytest.mark.asyncio
@@ -1803,3 +1804,25 @@ async def test_admin_panel_buttons_work_while_the_lobby_is_live(betting_session,
     view = matchmaking.AdminView(betting_session)
 
     assert await view.interaction_check(FakeInteraction(gamehead(5))) is True
+
+
+@pytest.mark.asyncio
+async def test_shuffle_checks_privilege_before_it_reports_the_lobby_state(betting_session, gamehead_roles):
+    """Every other handler rejects outsiders first; shuffle was telling them how many
+    players were in the lobby on the way past."""
+    betting_session.joined = []
+    view = matchmaking.AdminView(betting_session)
+    interaction = FakeInteraction(member(99))
+
+    await view.shuffle.callback(interaction)
+
+    assert "not a game head" in interaction.response.messages[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_the_bet_picker_expires_with_the_window_it_belongs_to(betting_session):
+    """A bare 120 shadowing BETTING_WINDOW_SECONDS would drift the moment the window
+    length changed."""
+    view = matchmaking.BetTeamSelectView(betting_session, FakeMember(9))
+
+    assert view.timeout == matchmaking.BETTING_WINDOW_SECONDS
