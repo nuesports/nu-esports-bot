@@ -327,6 +327,25 @@ def must_forfeit_bet_on_declare(interaction: discord.Interaction) -> bool:
     Admins skip the self-officiating forfeit rule, same trust call has_privilege already makes."""
     return not interaction.user.guild_permissions.administrator and config.is_game_head(interaction.user)
 
+async def edit_lobby_message(session: "MatchmakingSession", embed: discord.Embed, view: discord.ui.View | None) -> bool:
+    """Edit the public lobby message, reporting whether the edit landed.
+
+    Every write to that message goes through here. session.message is None until the
+    post-send fetch resolves and the message can be deleted out from under any caller,
+    so neither case belongs at nine separate call sites.
+    """
+    if session.message is None:
+        return False
+    try:
+        await session.message.edit(embed=embed, view=view)
+    except (discord.NotFound, discord.HTTPException):
+        return False
+    return True
+
+async def refresh_lobby_message(session: "MatchmakingSession") -> bool:
+    """Re-render the public lobby message in whatever state the session is in now."""
+    return await edit_lobby_message(session, generate_embed(session), LobbyView(session))
+
 async def refresh_admin_panels(session: "MatchmakingSession") -> None:
     """Re-render every currently-open admin panel so they reflect the latest lobby state.
     
@@ -370,13 +389,10 @@ async def close_betting_after_delay(session: "MatchmakingSession") -> None:
     if session.betting_close_task is not asyncio.current_task():
         return
     session.betting_open = False
-    if session.message is not None:
-        try:
-            await session.message.edit(embed=generate_embed(session), view=LobbyView(session))
-        except asyncio.CancelledError:
-            return
-        except (discord.NotFound, discord.HTTPException):
-            pass
+    try:
+        await refresh_lobby_message(session)
+    except asyncio.CancelledError:
+        return
     session.betting_close_task = None
 
 def stop_betting_window(session: "MatchmakingSession") -> None:
@@ -999,12 +1015,7 @@ class BetModal(discord.ui.Modal):
         team_name = self.session.team_names[0] if self.team == "a" else self.session.team_names[1]
         await interaction.response.send_message(f"Bet placed: {new_total} points on **{team_name}**.", ephemeral=True)
 
-        if self.session.message is not None:
-            try:
-                # generate_embed, not generate_match_embed -- falls back if teams got cleared.
-                await self.session.message.edit(embed=generate_embed(self.session))
-            except (discord.NotFound, discord.HTTPException):
-                pass
+        await refresh_lobby_message(self.session)
         await refresh_admin_panels(self.session)
 
 class SwapSelectView(discord.ui.View):
@@ -1040,7 +1051,7 @@ class SwapSelectView(discord.ui.View):
         # Different lineup, so bets on the old one go back and the window restarts.
         await start_betting_window(self.session)
 
-        await self.session.message.edit(embed=generate_embed(self.session), view=LobbyView(self.session))
+        await refresh_lobby_message(self.session)
         await interaction.edit_original_response(embed=generate_embed(self.session), view=AdminView(self.session))
         await refresh_admin_panels(self.session)
 
@@ -1074,19 +1085,13 @@ async def declare_winner(session: "MatchmakingSession", interaction: discord.Int
     bet_summary = await settle_bets(session, team_a_won=team_a_won)
     richest_chatter = await build_richest_chatter_field(bet_summary)
 
-    # result's already recorded above, so a failed edit here still needs surfacing, not
-    # swallowing -- including message being None, which the timer and bet paths already
-    # guard for and which would otherwise raise with the payouts long since committed.
-    rendered = False
-    if session.message is not None:
-        try:
-            await session.message.edit(
-                embed=generate_postgame_embed(session, winning_team_name, winners, richest_chatter),
-                view=PostgameView(session),
-            )
-            rendered = True
-        except (discord.NotFound, discord.HTTPException):
-            pass
+    # The elo and the payouts are committed by now, so a failed edit gets surfaced
+    # rather than swallowed.
+    rendered = await edit_lobby_message(
+        session,
+        generate_postgame_embed(session, winning_team_name, winners, richest_chatter),
+        PostgameView(session),
+    )
     if not rendered:
         await interaction.followup.send("Result recorded, but I couldn't update the lobby embed.", ephemeral=True)
 
@@ -1119,7 +1124,7 @@ class MapSelectView(discord.ui.View):
             return
         self.session.map = interaction.data["values"][0]
 
-        await self.session.message.edit(embed=generate_embed(self.session), view=LobbyView(self.session))
+        await refresh_lobby_message(self.session)
         await interaction.response.edit_message(embed=generate_embed(self.session), view=AdminView(self.session))
         await refresh_admin_panels(self.session)
 
@@ -1235,7 +1240,7 @@ class AdminView(discord.ui.View):
             self.session.map = random.choice(MAPS[self.session.game])
         await start_betting_window(self.session)
 
-        await self.session.message.edit(embed=generate_embed(self.session), view=LobbyView(self.session))
+        await refresh_lobby_message(self.session)
         await interaction.edit_original_response(embed=generate_embed(self.session), view=self)
         await refresh_admin_panels(self.session)
 
@@ -1337,10 +1342,7 @@ class CancelConfirmView(discord.ui.View):
         stop_betting_window(self.session)
         await refund_bets(self.session)
 
-        try:
-            await self.session.message.edit(embed=generate_cancelled_embed(self.session), view=None)
-        except (discord.NotFound, discord.HTTPException):
-            pass
+        await edit_lobby_message(self.session, generate_cancelled_embed(self.session), None)
 
         cog = interaction.client.get_cog("Matchmaking")
         cog.active_sessions.pop(self.session.key, None)

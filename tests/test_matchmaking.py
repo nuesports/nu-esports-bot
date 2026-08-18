@@ -1662,3 +1662,54 @@ def test_chatters_field_still_shows_a_row_in_a_one_versus_one_lobby(betting_sess
 
     assert rows[0] == "<@7> - 500 points"   # the top stake survives
     assert rows[1] == "...and 1 more"
+
+
+# --- edit_lobby_message ---
+
+@pytest.mark.asyncio
+async def test_editing_the_lobby_message_reports_a_lobby_that_never_got_one(betting_session):
+    """session.message stays None until the post-send fetch lands, and every caller
+    used to have to remember that."""
+    betting_session.message = None
+
+    assert await matchmaking.refresh_lobby_message(betting_session) is False
+
+
+@pytest.mark.asyncio
+async def test_editing_the_lobby_message_swallows_a_deleted_message(betting_session):
+    import discord
+
+    async def boom(**kwargs):
+        raise discord.NotFound(_FakeResponse(), "gone")
+
+    betting_session.message.edit = boom
+
+    assert await matchmaking.refresh_lobby_message(betting_session) is False
+
+
+@pytest.mark.asyncio
+async def test_swapping_survives_a_lobby_that_never_got_its_message(betting_session, fake_db, gamehead_roles):
+    """The swap path reached straight through session.message, so a lobby whose
+    post-send fetch never landed raised instead of swapping."""
+    betting_session.message = None
+    view = matchmaking.SwapSelectView(betting_session)
+    view.select._selected_values = ["1", "3"]
+    view.select._interaction = object()
+
+    await view.on_select(FakeInteraction(gamehead(5)))
+
+    assert betting_session.team_a[-1].id == 3
+
+
+@pytest.mark.asyncio
+async def test_cancelling_survives_a_lobby_that_never_got_its_message(betting_session, fake_db, gamehead_roles):
+    betting_session.message = None
+    cog = FakeCog()
+    cog.active_sessions[betting_session.key] = betting_session
+    view = matchmaking.CancelConfirmView(betting_session)
+    view.select._selected_values = ["confirm"]
+    view.select._interaction = object()
+
+    await view.on_select(FakeInteraction(gamehead(5), client=FakeClient(cog)))
+
+    assert cog.active_sessions == {}
