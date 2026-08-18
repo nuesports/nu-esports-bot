@@ -183,3 +183,27 @@ async def test_prediction_refuses_a_stake_submitted_after_the_lock(prediction):
     prediction.update_embed()
     assert prediction.odds_a == odds_before
     assert "locked prediction" in prediction.message.replies[-1]
+
+
+@pytest.mark.asyncio
+async def test_prediction_refunds_a_stake_the_lock_beat_to_the_punch(prediction):
+    """The lock can land while the deduction is in flight, and complete_prediction pays
+    out off these dicts -- a stake booked afterwards is deducted and never seen again."""
+    original = points.db.perform_one
+
+    async def lock_mid_deduction(sql, parameters=None):
+        if "points >= %s" in sql:
+            prediction.locked = True
+        return await original(sql, parameters)
+
+    points.db.perform_one = lock_mid_deduction
+    try:
+        await prediction.modal_callback(FakeBettor(7), 100, "Purple")
+    finally:
+        points.db.perform_one = original
+
+    assert prediction.option_a_points == {}
+    assert "locked prediction" in prediction.message.replies[0]
+    credit_sql, credit_params = prediction.perform_one_calls[1]
+    assert "points + %s" in credit_sql
+    assert credit_params == (100, 7)

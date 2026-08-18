@@ -306,6 +306,14 @@ class PredictionView(discord.ui.View):
             await self.message.reply(f"{user.mention} tried to bet more points than they have!")
             return
 
+        # Re-check after the await, the way matchmaking's BetModal re-checks its epoch:
+        # the lock can land mid-deduction, and complete_prediction pays out off these
+        # dicts, so a stake booked afterwards is deducted and never seen again.
+        if self.locked:
+            await wallet.credit(user.id, points)
+            await self.message.reply(f"{user.mention} tried to bet on a locked prediction!")
+            return
+
         if option == self.option_a:
             prev = self.option_a_points.pop(user.id, 0)
             self.option_a_points[user.id] = prev + points
