@@ -1,8 +1,10 @@
+import asyncio
+import contextlib
+
 import discord
 from discord.ext import commands
 
 from utils import config
-
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
 
@@ -31,11 +33,9 @@ class Game(commands.Cog):
         ),
     ):
         # We don't need 1 or less people in a stack
-        if size < 2:
-            size = 2
+        size = max(size, 2)
         # We don't need more than 10 people in a stack. If we do, jump me
-        if size > 10:
-            size = 10
+        size = min(size, 10)
 
         if name == "":
             name = f"{ctx.author.display_name}'s stack"
@@ -49,7 +49,9 @@ class Game(commands.Cog):
             name="".join([":white_medium_square:" for _ in range(size)]),
             value="empty :/",
         )
-        await ctx.respond(embed=embed, view=GameStackView(embed, size))
+        view = GameStackView(embed, size)
+        await ctx.respond(embed=embed, view=view)
+        view.current_message = await ctx.interaction.original_response()
 
 
 class GameStackView(discord.ui.View):
@@ -59,6 +61,12 @@ class GameStackView(discord.ui.View):
         self.joined = {}
         self.pinged = False
         self.stack_size = size
+        # The one live copy of the stack, tracked here rather than on discord.ui.View's
+        # own .message -- pycord reassigns that to interaction.message on every click of
+        # every button, so a bump sitting on an await reads whichever copy was clicked
+        # last and deletes that one instead of its own.
+        self.current_message: discord.Message | None = None
+        self.bump_lock = asyncio.Lock()
 
     def update_embed(self):
         # Title:
@@ -112,9 +120,48 @@ class GameStackView(discord.ui.View):
 
     @discord.ui.button(label="Bump!", style=discord.ButtonStyle.grey)
     async def refresh_callback(self, button, interaction):
-        # TODO: fix issue with race condition
-        await self.message.delete()
-        await interaction.response.send_message(embed=self.embed, view=self)
+        """Repost the stack at the bottom of the channel.
+
+        Answers the interaction before deleting anything: a delete is a round trip on
+        Discord's per-channel delete bucket, and spamming the button makes it sleep there
+        past the 3 second response deadline, which left the old stack deleted and the
+        replacement unsendable. Sending first also means a failure leaves the stack
+        standing instead of vanishing.
+        """
+        if (
+            self.current_message is not None
+            and interaction.message.id != self.current_message.id
+        ):
+            await interaction.response.send_message(
+                "That stack's already been bumped -- scroll down!", ephemeral=True
+            )
+            return
+
+        # Turned away rather than queued: waiting on the bump in flight would burn this
+        # interaction's own 3 seconds. Nothing awaits between the check and the acquire,
+        # so a second click can't slip past it.
+        if self.bump_lock.locked():
+            await interaction.response.send_message(
+                "Already bumping that stack, hang on!", ephemeral=True
+            )
+            return
+
+        async with self.bump_lock:
+            old_message = self.current_message
+            await interaction.response.send_message(embed=self.embed, view=self)
+            self.current_message = await interaction.original_response()
+
+            if old_message is None:
+                return
+            try:
+                await old_message.delete()
+            except discord.NotFound:
+                pass
+            except discord.HTTPException:
+                # Couldn't take the old copy down, so strip its buttons instead -- an
+                # orphan that still dispatches would bump a stack that isn't there.
+                with contextlib.suppress(discord.HTTPException):
+                    await old_message.edit(view=None)
 
 
 def setup(bot):
