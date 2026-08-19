@@ -51,7 +51,11 @@ class Game(commands.Cog):
         )
         view = GameStackView(embed, size)
         await ctx.respond(embed=embed, view=view)
-        view.current_message = await ctx.interaction.original_response()
+        # Re-fetch as a normal message so later edits and deletes go out on the bot's
+        # token, not the interaction webhook, which expires 15 minutes in -- well short
+        # of the 20 minutes the view stays alive for.
+        sent = await ctx.interaction.original_response()
+        view.current_message = await ctx.channel.fetch_message(sent.id)
 
 
 class GameStackView(discord.ui.View):
@@ -149,7 +153,8 @@ class GameStackView(discord.ui.View):
         async with self.bump_lock:
             old_message = self.current_message
             await interaction.response.send_message(embed=self.embed, view=self)
-            self.current_message = await interaction.original_response()
+            sent = await interaction.original_response()
+            self.current_message = await interaction.channel.fetch_message(sent.id)
 
             if old_message is None:
                 return
