@@ -59,7 +59,9 @@ async def _fetch_with_lock(discordid: int, game: str, account_row: tuple, force:
                 if not force and not await _is_stale(discordid, game):
                     return # someone else refreshed
                 await client.fetch_and_store(discordid, account_row)
-            except ValueError as e:
+            except Exception as e:  # noqa: BLE001
+                # Deliberately broad: this is best-effort, and anything that escapes
+                # here surfaces in /profile view rather than skipping one player.
                 print(f"[game_apis] refresh failed for {discordid}/{game}: {e}")
     finally:
         entry.waiters -= 1

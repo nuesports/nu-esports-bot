@@ -444,7 +444,7 @@ class Profile(commands.Cog):
         except game_apis.LinkError as e:
             await ctx.followup.send(f"Couldn't link account: {e}", ephemeral=True)
             return
-        except (aiohttp.ClientError, asyncio.TimeoutError):
+        except (aiohttp.ClientError, asyncio.TimeoutError, KeyError, ValueError, TypeError):
             import traceback
             traceback.print_exc()
             await ctx.followup.send("Something went wrong reaching the game's API. Try again soon", ephemeral=True)
@@ -1349,7 +1349,7 @@ class AccountModal(discord.ui.Modal):
         except game_apis.LinkError as e:
             await interaction.followup.send(f"Couldn't link account: {e}", ephemeral=True)
             return
-        except (aiohttp.ClientError, asyncio.TimeoutError):
+        except (aiohttp.ClientError, asyncio.TimeoutError, KeyError, ValueError, TypeError):
             await interaction.followup.send("Something went wrong reaching the game's API. Try again soon", ephemeral=True)
             return
 
