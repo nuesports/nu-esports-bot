@@ -11,6 +11,25 @@ def payout_multiplier(own_pot: float, opposing_pot: float) -> float:
     return 1 + opposing_pot / own_pot
 
 
+def distribute_payouts(winning_bets: dict[int, int], losing_pot: int) -> dict[int, int]:
+    """Split the whole pot across the winners in whole points that still sum to it.
+
+    Rounding each stake on its own leaks: three 100-point winners against a 100-point
+    losing pot each round to 133, paying out 399 of a 400-point pot, so every settlement
+    quietly mints or burns a point or two. Floor each share instead, then hand the
+    leftover out one point at a time, largest fractional part first.
+    """
+    winning_pot = sum(winning_bets.values())
+    multiplier = payout_multiplier(winning_pot, losing_pot)
+    exact = {uid: stake * multiplier for uid, stake in winning_bets.items()}
+    payouts = {uid: int(value) for uid, value in exact.items()}
+    # Ties keep insertion order, so the same book always splits the same way.
+    by_fraction = sorted(payouts, key=lambda uid: exact[uid] - payouts[uid], reverse=True)
+    for uid in by_fraction[:winning_pot + losing_pot - sum(payouts.values())]:
+        payouts[uid] += 1
+    return payouts
+
+
 async def credit(discordid: int, amount: int) -> None:
     """Add points to one user. Used for refunds and payouts, which are never conditional."""
     await db.perform_one(

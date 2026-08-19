@@ -674,7 +674,7 @@ async def settle_bets(session: "MatchmakingSession", team_a_won: bool) -> dict |
         return {"refunded": True, "total": sum(refunds.values())}
 
     multiplier = wallet.payout_multiplier(winning_pot, losing_pot)
-    payouts = {uid: round(stake * multiplier) for uid, stake in winning_bets.items()}
+    payouts = wallet.distribute_payouts(winning_bets, losing_pot)
     await wallet.credit_many([(amount, uid) for uid, amount in payouts.items()])
     # Multiplier is the same for every winner, so the biggest stake is also
     # the biggest payout and profit.

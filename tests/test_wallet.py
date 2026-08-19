@@ -99,3 +99,46 @@ async def test_try_deduct_reports_success_when_the_balance_covered_it(fake_db):
 async def test_try_deduct_reports_failure_when_the_guard_rejected_it(fake_db):
     fake_db.rowcount = 0
     assert await wallet.try_deduct(7, 100) is False
+
+
+# --- distribute_payouts ---
+
+def test_payouts_always_add_up_to_the_whole_pot():
+    """Rounding each share on its own paid out 399 of this 400-point pot."""
+    payouts = wallet.distribute_payouts({1: 100, 2: 100, 3: 100}, 100)
+
+    assert sum(payouts.values()) == 400
+    assert sorted(payouts.values()) == [133, 133, 134]
+
+
+def test_payouts_do_not_mint_points_on_a_half_share():
+    """round() rounds 1.5 up for both winners, paying 4 out of a 3-point pot."""
+    payouts = wallet.distribute_payouts({1: 1, 2: 1}, 1)
+
+    assert sum(payouts.values()) == 3
+
+
+def test_a_lone_winner_takes_the_whole_pot():
+    payouts = wallet.distribute_payouts({1: 250}, 750)
+
+    assert payouts == {1: 1000}
+
+
+def test_the_leftover_goes_to_the_largest_fractional_share_first():
+    """One point to hand out, and the 200-point stake has the bigger remainder."""
+    payouts = wallet.distribute_payouts({1: 200, 2: 100}, 100)
+
+    assert sum(payouts.values()) == 400
+    assert payouts[1] > payouts[2] * 2   # 267 vs 133, not 266 vs 134
+
+
+def test_payouts_are_break_even_when_nobody_opposed():
+    payouts = wallet.distribute_payouts({1: 100, 2: 50}, 0)
+
+    assert payouts == {1: 100, 2: 50}
+
+
+def test_the_same_book_always_splits_the_same_way():
+    book = {1: 100, 2: 100, 3: 100}
+
+    assert wallet.distribute_payouts(book, 100) == wallet.distribute_payouts(book, 100)
