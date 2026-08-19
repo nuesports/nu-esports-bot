@@ -42,9 +42,10 @@ class OverwatchClient:
         return LinkResult(external_id=resolved_id, display_name=resolved_id)
 
     async def fetch_and_store(self, discordid: int, account_row: tuple) -> None:
-        external_id = account_row[1]  # no puuid-equivalent here -- BattleTag is the key
-        name, tag = external_id.split("#", 1)
-        player_id = f"{name}-{tag}"
+        with readable_payload(self.game):
+            external_id = account_row[1]  # no puuid-equivalent here -- BattleTag is the key
+            name, tag = external_id.split("#", 1)
+            player_id = f"{name}-{tag}"
 
         summary = await fetch_json_with_retries(f"{OVERFAST_BASE_URL}/players/{player_id}/summary")
 
