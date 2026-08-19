@@ -27,10 +27,15 @@ class FakeMessage:
     enough surface for callers that edit or delete the message afterwards."""
     def __init__(self):
         self.edit_calls = []
+        self.replies = []
         self.deleted = False
 
     async def edit(self, **kwargs):
         self.edit_calls.append(kwargs)
+
+    async def reply(self, content=None, **kwargs):
+        self.replies.append(content)
+        return FakeMessage()
 
     async def delete(self):
         self.deleted = True
@@ -40,8 +45,8 @@ class FakeFollowup:
     def __init__(self):
         self.send_calls = []
 
-    async def send(self, *args, **kwargs):
-        self.send_calls.append(kwargs)
+    async def send(self, content=None, **kwargs):
+        self.send_calls.append({"content": content, **kwargs})
         return FakeMessage()
 
 
@@ -62,6 +67,51 @@ class FakeApplicationContext:
 
     async def respond(self, *args, **kwargs):
         self.respond_calls.append(kwargs)
+
+
+class FakeInteractionResponse:
+    """Stands in for interaction.response. Every branch a button/modal callback can
+    take ends in exactly one of these calls, so recording them is how tests tell
+    which branch ran."""
+    def __init__(self):
+        self.messages = []
+        self.edits = []
+        self.modals = []
+        self.deferred = False
+
+    async def send_message(self, content=None, **kwargs):
+        self.messages.append({"content": content, **kwargs})
+
+    async def edit_message(self, **kwargs):
+        self.edits.append(kwargs)
+
+    async def send_modal(self, modal):
+        self.modals.append(modal)
+
+    async def defer(self, *args, **kwargs):
+        self.deferred = True
+
+
+class FakeInteraction:
+    """Stands in for discord.Interaction -- the component-callback counterpart to
+    FakeApplicationContext, which only covers slash commands. Views and modals reach
+    for response/followup/user/client, so those are what this carries."""
+    def __init__(self, user, client=None):
+        self.user = user
+        self.client = client
+        self.response = FakeInteractionResponse()
+        self.followup = FakeFollowup()
+        self.original_response_deleted = False
+        self.original_response_edits = []
+
+    async def edit_original_response(self, **kwargs):
+        """How a handler updates its message once it has deferred -- response.edit_message
+        is no longer available to it at that point, so these land in their own list."""
+        self.original_response_edits.append(kwargs)
+        return FakeMessage()
+
+    async def delete_original_response(self):
+        self.original_response_deleted = True
 
 
 @pytest_asyncio.fixture(scope="session")

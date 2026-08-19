@@ -49,6 +49,7 @@ async def fetch_all(sql, parameters=None):
 async def perform_one(sql, parameters=None):
     async with cursor() as cur:
         await cur.execute(sql, parameters)
+        return cur.rowcount
 
 
 async def perform_many(sql, parameters):
