@@ -1284,7 +1284,6 @@ class PCs(commands.Cog):
         if date:
             try:
                 target_date = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=CENTRAL_TZ)
-                target_date = target_date.replace(tzinfo=CENTRAL_TZ)
             except ValueError:
                 await ctx.followup.send(
                     "Invalid date format. Please use YYYY-MM-DD (e.g., 2025-09-30)",
