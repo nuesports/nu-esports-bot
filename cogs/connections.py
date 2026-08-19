@@ -79,7 +79,7 @@ class Connections(commands.Cog):
             )
             return
 
-        requested_date = requested_date or datetime.datetime.now(tz=CENTRAL_TZ).date().isoformat()
+        requested_date = requested_date or datetime.now(tz=CENTRAL_TZ).date().isoformat()
         await ctx.defer(ephemeral=True)
 
         try:
