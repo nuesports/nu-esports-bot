@@ -3,7 +3,7 @@ import random
 import discord
 from discord.ext import commands, tasks
 
-from utils import config, db
+from utils import config, db, wallet
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
 
@@ -165,33 +165,20 @@ class Prediction:
 
     async def complete_prediction(self, winner):
         if not self.view.option_a_points or not self.view.option_b_points:
-            sql = "UPDATE users SET points = points + %s WHERE discordid = %s;"
-            data = [
-                (points, user_id)
-                for user_id, points in self.view.option_a_points.items()
-            ] + [
-                (points, user_id)
-                for user_id, points in self.view.option_b_points.items()
-            ]
-            await db.perform_many(sql, data)
+            await wallet.credit_many(self.view.every_stake())
             await self.view.lock_view()
             await self.message.reply("Everyone voted the same way! Points refunded.")
             return
 
-        sql = "UPDATE users SET points = points + %s WHERE discordid = %s;"
         if winner == self.option_a:
             payout = self.view.odds_a
-            data = [
-                (round(points * payout), user_id)
-                for user_id, points in self.view.option_a_points.items()
-            ]
+            winning_stakes = self.view.option_a_points
         else:
             payout = self.view.odds_b
-            data = [
-                (round(points * payout), user_id)
-                for user_id, points in self.view.option_b_points.items()
-            ]
-        await db.perform_many(sql, data)
+            winning_stakes = self.view.option_b_points
+        await wallet.credit_many(
+            [(round(stake * payout), user_id) for user_id, stake in winning_stakes.items()]
+        )
         format = "Prediction completed -- {} points distributed to {} ({}x payout)."
         if winner == self.option_a:
             message = format.format(
@@ -209,11 +196,7 @@ class Prediction:
         await self.message.reply(message)
 
     async def refund_prediction(self):
-        sql = "UPDATE users SET points = points + %s WHERE discordid = %s;"
-        data = [
-            (points, user_id) for user_id, points in self.view.option_a_points.items()
-        ] + [(points, user_id) for user_id, points in self.view.option_b_points.items()]
-        await db.perform_many(sql, data)
+        await wallet.credit_many(self.view.every_stake())
         await self.view.lock_view()
         await self.message.reply("Prediction cancelled. Points refunded.")
 
@@ -262,21 +245,22 @@ class PredictionView(discord.ui.View):
         self.add_item(create_button(self.option_a))
         self.add_item(create_button(self.option_b))
 
+    def every_stake(self) -> list[tuple[int, int]]:
+        """Both sides' stakes as (amount, discordid) rows, for refunding the whole board."""
+        return [
+            (stake, user_id)
+            for stakes in (self.option_a_points, self.option_b_points)
+            for user_id, stake in stakes.items()
+        ]
+
     def update_embed(self):
-        # TODO: add odds
         self.embed.clear_fields()
         format = "{} points\n{} users\n{}x payout"
-        self.odds_a = (
-            1
-            + (sum(self.option_b_points.values()) / sum(self.option_a_points.values()))
-            if self.option_a_points
-            else 1
+        self.odds_a = wallet.payout_multiplier(
+            sum(self.option_a_points.values()), sum(self.option_b_points.values())
         )
-        self.odds_b = (
-            1
-            + (sum(self.option_a_points.values()) / sum(self.option_b_points.values()))
-            if self.option_b_points
-            else 1
+        self.odds_b = wallet.payout_multiplier(
+            sum(self.option_b_points.values()), sum(self.option_a_points.values())
         )
         self.embed.add_field(
             name=self.option_a,
@@ -308,6 +292,27 @@ class PredictionView(discord.ui.View):
         await self.message.edit(view=self)
 
     async def modal_callback(self, user, points, option):
+        # A modal opened before the lock can still be submitted after it, and a late
+        # stake would recompute the odds the payout was already announced with.
+        if self.locked:
+            await self.message.reply(f"{user.mention} tried to bet on a locked prediction!")
+            return
+
+        # Atomic conditional UPDATE. PredictionModal's earlier balance check is a stale
+        # snapshot, so this guard is what actually prevents overdrafting.
+        deducted = await wallet.try_deduct(user.id, points)
+        if not deducted:
+            await self.message.reply(f"{user.mention} tried to bet more points than they have!")
+            return
+
+        # Re-check after the await, the way matchmaking's BetModal re-checks its epoch:
+        # the lock can land mid-deduction, and complete_prediction pays out off these
+        # dicts, so a stake booked afterwards is deducted and never seen again.
+        if self.locked:
+            await wallet.credit(user.id, points)
+            await self.message.reply(f"{user.mention} tried to bet on a locked prediction!")
+            return
+
         if option == self.option_a:
             prev = self.option_a_points.pop(user.id, 0)
             self.option_a_points[user.id] = prev + points
@@ -322,10 +327,6 @@ class PredictionView(discord.ui.View):
         message = format.format(user.mention, prev + points, option)
         if prev > 0:
             message += format_prev.format(prev)
-
-        sql = "UPDATE users SET points = points - %s WHERE discordid = %s;"
-        data = [points, user.id]
-        await db.perform_one(sql, data)
 
         await self.message.reply(message)
 

@@ -86,3 +86,28 @@ async def test_perform_one_rolls_back_on_error(clean_test_row):
         )
     row = await db.fetch_one("SELECT * FROM users WHERE discordid = %s;", (TEST_DISCORDID,))
     assert row is None
+
+
+@pytest.mark.asyncio
+async def test_perform_one_reports_how_many_rows_it_touched(clean_test_row):
+    """Both overdraft guards read this return value to tell a rejected conditional
+    UPDATE from an applied one, so 0-vs-1 here is load-bearing, not incidental."""
+    await db.perform_one(
+        "INSERT INTO users (discordid, points) VALUES (%s, %s);",
+        (TEST_DISCORDID, 100),
+    )
+
+    applied = await db.perform_one(
+        "UPDATE users SET points = points - %s WHERE discordid = %s AND points >= %s;",
+        (60, TEST_DISCORDID, 60),
+    )
+    assert applied == 1
+
+    rejected = await db.perform_one(
+        "UPDATE users SET points = points - %s WHERE discordid = %s AND points >= %s;",
+        (60, TEST_DISCORDID, 60),
+    )
+    assert rejected == 0
+
+    row = await db.fetch_one("SELECT points FROM users WHERE discordid = %s;", (TEST_DISCORDID,))
+    assert row == (40,)  # the rejected statement left the balance alone
