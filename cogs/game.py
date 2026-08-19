@@ -101,7 +101,14 @@ class GameStackView(discord.ui.View):
 
     async def on_timeout(self):
         self.disable_all_items()
-        await self.message.edit(view=self)
+        # discord.ui.View's own .message is only ever set by a click, so a stack nobody
+        # touched has none at all and this raised on every quiet expiry. current_message
+        # is ours and always points at the live copy -- which may still have been deleted
+        # out from under us in the meantime.
+        if self.current_message is None:
+            return
+        with contextlib.suppress(discord.HTTPException):
+            await self.current_message.edit(view=self)
 
     @discord.ui.button(label="Join", style=discord.ButtonStyle.green)
     async def join_callback(self, button, interaction):
