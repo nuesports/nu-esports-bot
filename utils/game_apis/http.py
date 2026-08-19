@@ -2,12 +2,17 @@ import asyncio
 
 import aiohttp
 
+from .base import GameAPIError
 
-async def fetch_json_with_retries(url: str, headers: dict | None = None, params: dict | None = None) -> dict:
+
+async def fetch_json_with_retries(url: str, headers: dict | None = None, params: dict | None = None) -> dict | list:
     """GET a url and parse json, retrying transient failures up to 4 times.
 
     a 404 (doesn't exist) or 401/403 (bad/expired api key) raises immediately without
-    retrying -- neither gets fixed by trying again."""
+    retrying -- neither gets fixed by trying again.
+
+    Every failure leaves here as a GameAPIError, so callers never have to name aiohttp's
+    types or json's. The HTTP status rides along on the error when there was one."""
 
     timeout = aiohttp.ClientTimeout(total=10)
     max_attempts = 4
@@ -21,9 +26,11 @@ async def fetch_json_with_retries(url: str, headers: dict | None = None, params:
                 return await resp.json()
         except aiohttp.ClientResponseError as e:
             if e.status in NO_RETRY_STATUSES or attempt == max_attempts - 1:
-                raise
+                raise GameAPIError(f"{url} returned {e.status}", status=e.status) from e
             await asyncio.sleep(retry_delay_seconds)
-        except Exception:
+        except (aiohttp.ClientError, TimeoutError, ValueError) as e:
+            # ValueError covers json.JSONDecodeError on a body that claimed to be JSON
+            # and wasn't. CancelledError is a BaseException and passes straight through.
             if attempt == max_attempts - 1:
-                raise
+                raise GameAPIError(f"{url} was unreachable: {e!r}") from e
             await asyncio.sleep(retry_delay_seconds)

@@ -1,10 +1,8 @@
-import asyncio
 import random
 import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
-import aiohttp
 import discord
 import emoji
 from discord.ext import commands
@@ -444,7 +442,7 @@ class Profile(commands.Cog):
         except game_apis.LinkError as e:
             await ctx.followup.send(f"Couldn't link account: {e}", ephemeral=True)
             return
-        except (aiohttp.ClientError, asyncio.TimeoutError, KeyError, ValueError, TypeError):
+        except game_apis.GameAPIError:
             import traceback
             traceback.print_exc()
             await ctx.followup.send("Something went wrong reaching the game's API. Try again soon", ephemeral=True)
@@ -1349,7 +1347,7 @@ class AccountModal(discord.ui.Modal):
         except game_apis.LinkError as e:
             await interaction.followup.send(f"Couldn't link account: {e}", ephemeral=True)
             return
-        except (aiohttp.ClientError, asyncio.TimeoutError, KeyError, ValueError, TypeError):
+        except game_apis.GameAPIError:
             await interaction.followup.send("Something went wrong reaching the game's API. Try again soon", ephemeral=True)
             return
 

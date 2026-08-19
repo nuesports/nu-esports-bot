@@ -1,11 +1,16 @@
 import re
 
-import aiohttp
-
 from utils import config, db
 from utils.ranks import compute_rank_value, format_rank_label
 
-from .base import LinkError, LinkResult, has_profile_mains, seed_mains
+from .base import (
+    GameAPIError,
+    LinkError,
+    LinkResult,
+    has_profile_mains,
+    readable_payload,
+    seed_mains,
+)
 from .http import fetch_json_with_retries
 
 DEADLOCK_BASE_URL = "https://api.deadlock-api.com"
@@ -50,14 +55,15 @@ class DeadlockClient:
             profiles = await fetch_json_with_retries(
                 f"{DEADLOCK_BASE_URL}/v1/players/steam", params={"account_ids": account_id}
             )
-        except aiohttp.ClientResponseError as e:
+        except GameAPIError as e:
             if e.status == 404:
-                raise LinkError("No Steam profile found for that ID.")
-            raise LinkError("deadlock-api's having troubles right now, try again soon")
+                raise LinkError("No Steam profile found for that ID.") from e
+            raise LinkError("deadlock-api's having troubles right now, try again soon") from e
         if not profiles:
             raise LinkError("No Steam profile found for that ID.")
-        profile = profiles[0]
-        return profile["account_id"], profile["personaname"], profile["profileurl"]
+        with readable_payload(self.game):
+            profile = profiles[0]
+            return profile["account_id"], profile["personaname"], profile["profileurl"]
 
     async def _lookup_by_persona_search(self, identifier: str) -> tuple[int, str, str]:
         try:
@@ -65,14 +71,15 @@ class DeadlockClient:
                 f"{DEADLOCK_BASE_URL}/v1/players/steam-search",
                 params={"search_query": identifier, "limit": 1},
             )
-        except aiohttp.ClientResponseError as e:
+        except GameAPIError as e:
             if e.status == 404:
-                raise LinkError(f'No Steam profile found matching "{identifier}".')
-            raise LinkError("deadlock-api's having troubles right now, try again soon")
+                raise LinkError(f'No Steam profile found matching "{identifier}".') from e
+            raise LinkError("deadlock-api's having troubles right now, try again soon") from e
         if not results:
             raise LinkError(f'No Steam profile found matching "{identifier}".')
-        profile = results[0]
-        return profile["account_id"], profile["personaname"], profile["profileurl"]
+        with readable_payload(self.game):
+            profile = results[0]
+            return profile["account_id"], profile["personaname"], profile["profileurl"]
 
     async def _lookup_by_vanity_url(self, vanity: str) -> tuple[int, str, str]:
         key = _get_steam_api_key()
@@ -80,20 +87,23 @@ class DeadlockClient:
             f"{STEAM_API_BASE}/ISteamUser/ResolveVanityURL/v0001/",
             params={"key": key, "vanityurl": vanity},
         )
-        result = resolved.get("response", {})
-        if result.get("success") != 1:
-            raise LinkError(f'No Steam account found for "{vanity}" -- double check the vanity URL or numeric SteamID.')
-        steamid64 = int(result["steamid"])
+        # LinkError and GameAPIError both pass through readable_payload untouched, so the
+        # fetch and the not-found cases below keep their own meanings.
+        with readable_payload(self.game):
+            result = resolved.get("response", {})
+            if result.get("success") != 1:
+                raise LinkError(f'No Steam account found for "{vanity}" -- double check the vanity URL or numeric SteamID.')
+            steamid64 = int(result["steamid"])
 
-        summary = await fetch_json_with_retries(
-            f"{STEAM_API_BASE}/ISteamUser/GetPlayerSummaries/v0002/",
-            params={"key": key, "steamids": steamid64},
-        )
-        players = summary.get("response", {}).get("players", [])
-        if not players:
-            raise LinkError("Found the Steam account but couldn't load its profile. Try again in a bit.")
-        player = players[0]
-        return steamid64 - STEAMID64_OFFSET, player["personaname"], player["profileurl"]
+            summary = await fetch_json_with_retries(
+                f"{STEAM_API_BASE}/ISteamUser/GetPlayerSummaries/v0002/",
+                params={"key": key, "steamids": steamid64},
+            )
+            players = summary.get("response", {}).get("players", [])
+            if not players:
+                raise LinkError("Found the Steam account but couldn't load its profile. Try again in a bit.")
+            player = players[0]
+            return steamid64 - STEAMID64_OFFSET, player["personaname"], player["profileurl"]
 
     async def link(self, raw_identifier: str) -> LinkResult:
         account_id, personaname, profileurl = await self._resolve_account_id(raw_identifier)
@@ -107,14 +117,15 @@ class DeadlockClient:
         account_id = account_row[4]
         rank_data = await fetch_json_with_retries(f"{DEADLOCK_BASE_URL}/v1/players/{account_id}/rank")
 
-        rank = rank_data["rank"]
-        if rank == 0:
-            return  # Obscurus / no ranked match on record yet -- don't overwrite with "no rank"
+        with readable_payload(self.game):
+            rank = rank_data["rank"]
+            if rank == 0:
+                return  # Obscurus / no ranked match on record yet -- don't overwrite with "no rank"
 
-        tier = config.game_data["deadlock"]["tiers"][rank - 1]
-        division = rank_data["subrank"]  # divisions_ascend: true here, use directly, no inversion
-        rank_value = compute_rank_value("deadlock", tier, division)
-        rank_label = format_rank_label("deadlock", tier, division)
+            tier = config.game_data["deadlock"]["tiers"][rank - 1]
+            division = rank_data["subrank"]  # divisions_ascend: true here, use directly, no inversion
+            rank_value = compute_rank_value("deadlock", tier, division)
+            rank_label = format_rank_label("deadlock", tier, division)
 
         await db.perform_one(
             """
@@ -142,7 +153,8 @@ class DeadlockClient:
         if not hero_stats:
             return
 
-        top_heroes = sorted(hero_stats, key=lambda h: h["time_played"], reverse=True)[:3]
-        hero_names = config.game_data["deadlock"]["hero_ids"]
-        mains = [hero_names[h["hero_id"]] for h in top_heroes if h["hero_id"] in hero_names]
+        with readable_payload(self.game):
+            top_heroes = sorted(hero_stats, key=lambda h: h["time_played"], reverse=True)[:3]
+            hero_names = config.game_data["deadlock"]["hero_ids"]
+            mains = [hero_names[h["hero_id"]] for h in top_heroes if h["hero_id"] in hero_names]
         await seed_mains(discordid, "deadlock", mains)

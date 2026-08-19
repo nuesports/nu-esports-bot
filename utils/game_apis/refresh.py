@@ -1,8 +1,11 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 
+import psycopg
+
 from utils import config, db
 
+from .base import GameAPIError, LinkError
 from .deadlock import DeadlockClient
 from .league import LeagueClient
 from .overwatch import OverwatchClient
@@ -59,9 +62,10 @@ async def _fetch_with_lock(discordid: int, game: str, account_row: tuple, force:
                 if not force and not await _is_stale(discordid, game):
                     return # someone else refreshed
                 await client.fetch_and_store(discordid, account_row)
-            except Exception as e:  # noqa: BLE001
-                # Deliberately broad: this is best-effort, and anything that escapes
-                # here surfaces in /profile view rather than skipping one player.
+            except (GameAPIError, LinkError, psycopg.Error) as e:
+                # The three things fetch_and_store can fail at: the provider, a missing
+                # API key, and the write. Best-effort path -- skip this player, don't
+                # let it surface in /profile view.
                 print(f"[game_apis] refresh failed for {discordid}/{game}: {e}")
     finally:
         entry.waiters -= 1

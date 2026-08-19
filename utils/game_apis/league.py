@@ -1,9 +1,14 @@
-import aiohttp
-
 from utils import config, db
 from utils.ranks import compute_rank_value, format_rank_label, tier_has_divisions
 
-from .base import LinkError, LinkResult, has_profile_mains, seed_mains
+from .base import (
+    GameAPIError,
+    LinkError,
+    LinkResult,
+    has_profile_mains,
+    readable_payload,
+    seed_mains,
+)
 from .http import fetch_json_with_retries
 
 REGIONAL_ROUTING = "americas"
@@ -34,8 +39,9 @@ class LeagueClient:
         if not top_champs:
             return
 
-        champion_names = config.game_data["league"]["champion_ids"]
-        mains = [champion_names[c["championId"]] for c in top_champs if c["championId"] in champion_names]
+        with readable_payload(self.game):
+            champion_names = config.game_data["league"]["champion_ids"]
+            mains = [champion_names[c["championId"]] for c in top_champs if c["championId"] in champion_names]
         await seed_mains(discordid, "league", mains)
 
     async def link(self, raw_identifier: str) -> LinkResult:
@@ -53,13 +59,14 @@ class LeagueClient:
         )
         try:
             account = await fetch_json_with_retries(account_url, headers=headers)
-        except aiohttp.ClientResponseError as e:
+        except GameAPIError as e:
             if e.status == 404:
-                raise LinkError(f"No Riot account found for {game_name}#{tag_line}")
-            raise LinkError("Riot API's having troubles right now, try again soon")
+                raise LinkError(f"No Riot account found for {game_name}#{tag_line}") from e
+            raise LinkError("Riot API's having troubles right now, try again soon") from e
 
-        puuid = account["puuid"]
-        resolved_id = f"{account.get('gameName', game_name)}#{account.get('tagLine', tag_line)}"
+        with readable_payload(self.game):
+            puuid = account["puuid"]
+            resolved_id = f"{account.get('gameName', game_name)}#{account.get('tagLine', tag_line)}"
 
         return LinkResult(
             external_id = resolved_id,
@@ -75,22 +82,24 @@ class LeagueClient:
         entries_url = f"https://{PLATFORM_ROUTING}.api.riotgames.com/lol/league/v4/entries/by-puuid/{puuid}"
         entries = await fetch_json_with_retries(entries_url, headers=headers)
 
-        solo_entry = next((e for e in entries if e.get("queueType") == RANKED_SOLO_QUEUE), None)
+        with readable_payload(self.game):
+            solo_entry = next((e for e in entries if e.get("queueType") == RANKED_SOLO_QUEUE), None)
         if solo_entry is not None:
-            tier = solo_entry["tier"].title()
-            if tier_has_divisions("league", tier):
-                # Divisioned tiers (Iron through Diamond) carry a Roman-numeral division;
-                # anything unrecognized is a data error and must not be silently defaulted.
-                rank_key = solo_entry.get("rank")
-                if rank_key not in ROMAN_TO_DIVISION:
-                    raise ValueError(f"Unrecognized League division {rank_key!r} in ranked solo entry")
-                division = ROMAN_TO_DIVISION[rank_key]
-            else:
-                # Flat tiers (Master/Grandmaster/Challenger) have no division; Riot may or
-                # may not send a `rank` field for them, and compute/format ignore it anyway.
-                division = 1
-            rank_value = compute_rank_value("league", tier, division)
-            rank_label = format_rank_label("league", tier, division)
+            with readable_payload(self.game):
+                tier = solo_entry["tier"].title()
+                if tier_has_divisions("league", tier):
+                    # Divisioned tiers (Iron through Diamond) carry a Roman-numeral division;
+                    # anything unrecognized is a data error and must not be silently defaulted.
+                    rank_key = solo_entry.get("rank")
+                    if rank_key not in ROMAN_TO_DIVISION:
+                        raise GameAPIError(f"Unrecognized League division {rank_key!r} in ranked solo entry")
+                    division = ROMAN_TO_DIVISION[rank_key]
+                else:
+                    # Flat tiers (Master/Grandmaster/Challenger) have no division; Riot may or
+                    # may not send a `rank` field for them, and compute/format ignore it anyway.
+                    division = 1
+                rank_value = compute_rank_value("league", tier, division)
+                rank_label = format_rank_label("league", tier, division)
 
             await db.perform_one(
                 """
