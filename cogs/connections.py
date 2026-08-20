@@ -2,17 +2,18 @@ import asyncio
 import io
 import random
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import aiohttp
 import discord
-from PIL import Image, ImageDraw, ImageFont
 from discord.ext import commands
+from PIL import Image, ImageDraw, ImageFont
 
 from utils import config
 
-
+CENTRAL_TZ = ZoneInfo("America/Chicago")
 GUILD_ID = config.secrets["discord"]["guild_id"]
 
 
@@ -78,17 +79,17 @@ class Connections(commands.Cog):
             )
             return
 
-        requested_date = requested_date or date.today().isoformat()
+        requested_date = requested_date or datetime.now(tz=CENTRAL_TZ).date().isoformat()
         await ctx.defer(ephemeral=True)
 
         try:
             puzzle = await self.get_or_fetch_puzzle(requested_date)
         except ValueError as e:
             await ctx.followup.send(
-                f"Could not load Connections puzzle: {str(e)}", ephemeral=True
+                f"Could not load Connections puzzle: {e!s}", ephemeral=True
             )
             return
-        except Exception:
+        except (aiohttp.ClientError, asyncio.TimeoutError):
             await ctx.followup.send(
                 "Could not load Connections puzzle due to an unexpected error.",
                 ephemeral=True,
@@ -129,7 +130,7 @@ class Connections(commands.Cog):
         if not raw_date:
             return None
         try:
-            return datetime.strptime(raw_date, "%Y-%m-%d").date().isoformat()
+            return datetime.strptime(raw_date, "%Y-%m-%d").replace(tzinfo=CENTRAL_TZ).date().isoformat()
         except ValueError:
             return None
 
@@ -163,8 +164,7 @@ class Connections(commands.Cog):
                 )
 
                 timeout = aiohttp.ClientTimeout(total=12)
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.get(url) as response:
+                async with aiohttp.ClientSession(timeout=timeout) as session, session.get(url) as response:
                         if response.status != 200:
                             raise ValueError(
                                 f"Apify returned status {response.status} for {requested_date}."
@@ -197,7 +197,7 @@ class Connections(commands.Cog):
 
         for category in categories:
             if not isinstance(category, dict):
-                raise ValueError("Invalid category format.")
+                raise TypeError("Invalid category format.")
             title = category.get("title")
             cards = category.get("cards")
             if not isinstance(title, str) or not title:
@@ -209,7 +209,7 @@ class Connections(commands.Cog):
             normalized_words: set[str] = set()
             for card in cards:
                 if not isinstance(card, dict):
-                    raise ValueError("Invalid card format.")
+                    raise TypeError("Invalid card format.")
                 content = card.get("content")
                 position = card.get("position")
                 if not isinstance(content, str) or not content.strip():
@@ -387,8 +387,7 @@ class Connections(commands.Cog):
         max_text_width = 0
         for display_word in display_words:
             word_width = measure_draw.textbbox((0, 0), display_word, font=word_font)[2]
-            if word_width > max_text_width:
-                max_text_width = word_width
+            max_text_width = max(max_text_width, word_width)
 
         cell_w = min(340, max(200, max_text_width + 28))
         tile_text_width = cell_w - 20
@@ -399,8 +398,7 @@ class Connections(commands.Cog):
             wrapped = self._wrap_text(
                 measure_draw, display_word, word_font, tile_text_width
             )
-            if len(wrapped) > max_word_lines:
-                max_word_lines = len(wrapped)
+            max_word_lines = max(max_word_lines, len(wrapped))
         cell_h = max(
             84, (max_word_lines * word_line_height) + ((max_word_lines - 1) * 4) + 16
         )

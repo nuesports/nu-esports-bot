@@ -1,3 +1,4 @@
+import psycopg
 import pytest
 import pytest_asyncio
 
@@ -78,7 +79,7 @@ async def test_perform_many_inserts_every_row(clean_test_row):
 async def test_perform_one_rolls_back_on_error(clean_test_row):
     """cursor()'s try/except rolls back on any exception -- a bad statement
     shouldn't leave a partial write behind."""
-    with pytest.raises(Exception):
+    with pytest.raises(psycopg.DataError):
         await db.perform_one(
             "INSERT INTO users (discordid, points) VALUES (%s, %s);",
             (TEST_DISCORDID, "not a number"),

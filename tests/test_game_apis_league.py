@@ -1,6 +1,7 @@
 import pytest
 
 from utils.game_apis import league
+from utils.game_apis.base import GameAPIError
 
 
 class FakeDB:
@@ -49,7 +50,7 @@ def _entries_client(monkeypatch, entries):
 async def test_fetch_and_store_raises_on_unrecognized_rank(monkeypatch, skip_mains_seed):
     _entries_client(monkeypatch, [{"queueType": "RANKED_SOLO_5x5", "tier": "GOLD", "rank": "V"}])
     client = league.LeagueClient()
-    with pytest.raises(ValueError, match="Unrecognized League division"):
+    with pytest.raises(GameAPIError, match="Unrecognized League division"):
         await client.fetch_and_store(123, ACCOUNT_ROW)
 
 

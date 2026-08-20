@@ -62,3 +62,46 @@ async def test_seed_roles_inserts_rows(fake_db):
 async def test_seed_roles_noop_on_empty(fake_db):
     await base.seed_roles(123, "valorant", set())
     assert fake_db.perform_many_calls == []
+
+
+# --- readable_payload ---
+
+@pytest.mark.parametrize("exc", [
+    KeyError("region"),
+    IndexError("list index out of range"),
+    TypeError("'NoneType' object is not subscriptable"),
+    ValueError("not enough values to unpack"),
+    AttributeError("'list' object has no attribute 'get'"),
+])
+def test_an_unreadable_payload_becomes_a_game_api_error(exc):
+    """Every way a provider can change shape under us lands as one type, so callers
+    don't have to enumerate five of them and still miss the sixth."""
+    with pytest.raises(base.GameAPIError) as exc_info, base.readable_payload("fakegame"):
+        raise exc
+
+    assert "fakegame" in str(exc_info.value)
+    assert exc_info.value.__cause__ is exc   # original preserved for the traceback
+
+
+def test_readable_payload_leaves_a_link_error_alone():
+    """LinkError means the identifier was bad, which is a different answer to the user
+    than "the API is broken" -- wrapping it would lose that."""
+    with pytest.raises(base.LinkError), base.readable_payload("fakegame"):
+        raise base.LinkError("Riot ID must be in the form Name#Tag")
+
+
+def test_readable_payload_does_not_double_wrap_a_game_api_error():
+    original = base.GameAPIError("already the right type", status=404)
+
+    with pytest.raises(base.GameAPIError) as exc_info, base.readable_payload("fakegame"):
+        raise original
+
+    assert exc_info.value is original
+    assert exc_info.value.status == 404   # status survives, so the 404 branch still fires
+
+
+def test_readable_payload_passes_a_clean_block_through():
+    with base.readable_payload("fakegame"):
+        value = {"data": {"region": "na"}}["data"]["region"]
+
+    assert value == "na"

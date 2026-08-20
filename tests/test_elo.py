@@ -1,5 +1,7 @@
 import pytest
+
 from utils import elo
+
 
 @pytest.fixture
 def game_data(monkeypatch):

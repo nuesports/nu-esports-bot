@@ -4,6 +4,7 @@ import aiohttp
 import pytest
 
 from utils.game_apis import http
+from utils.game_apis.base import GameAPIError
 
 
 class FakeResponse:
@@ -76,15 +77,15 @@ async def test_success_first_attempt(fake_sessions):
 @pytest.mark.asyncio
 async def test_404_raises_immediately_without_retry(fake_sessions):
     fake_sessions.append(FakeResponse(404))
-    with pytest.raises(aiohttp.ClientResponseError) as exc_info:
+    with pytest.raises(GameAPIError) as exc_info:
         await http.fetch_json_with_retries("https://example.com")
-    assert exc_info.value.status == 404
+    assert exc_info.value.status == 404   # clients key their "not found" message off this
 
 
 @pytest.mark.asyncio
 async def test_401_raises_immediately_without_retry(fake_sessions):
     fake_sessions.append(FakeResponse(401))
-    with pytest.raises(aiohttp.ClientResponseError) as exc_info:
+    with pytest.raises(GameAPIError) as exc_info:
         await http.fetch_json_with_retries("https://example.com")
     assert exc_info.value.status == 401
 
@@ -101,5 +102,6 @@ async def test_transient_failure_then_success_retries(fake_sessions):
 async def test_exhausts_all_attempts_then_raises(fake_sessions):
     for _ in range(4):
         fake_sessions.append(TimeoutError())
-    with pytest.raises(TimeoutError):
+    with pytest.raises(GameAPIError) as exc_info:
         await http.fetch_json_with_retries("https://example.com")
+    assert exc_info.value.status is None   # never got far enough to have one

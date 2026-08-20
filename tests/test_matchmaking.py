@@ -5,6 +5,7 @@ import pytest
 from cogs import matchmaking
 from tests.conftest import FakeInteraction, FakeMessage
 
+
 class FakeMember:
     def __init__(self, id):
         self.id = id

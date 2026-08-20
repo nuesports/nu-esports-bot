@@ -1,5 +1,5 @@
-import yaml
 import discord
+import yaml
 
 TYPE_MAP = {
     "listening": discord.ActivityType.listening,

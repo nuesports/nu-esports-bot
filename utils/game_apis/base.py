@@ -1,10 +1,39 @@
+import contextlib
 from dataclasses import dataclass
 from typing import Protocol
 
 from utils import db
 
+
 class LinkError(Exception):
     """Raised when a submitted identifier can't be resolved via the game's API"""
+
+
+class GameAPIError(Exception):
+    """Raised when a game's API is unreachable, errors out, or sends back something we
+    can't read. The counterpart to LinkError, which means the identifier itself was bad.
+
+    status carries the HTTP status when there was one, so callers can still tell a 404
+    apart from everything else without reaching for aiohttp's types.
+    """
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+
+@contextlib.contextmanager
+def readable_payload(game: str):
+    """Turn a response we can't read into a GameAPIError.
+
+    Wraps parsing only. A KeyError in here means the provider changed the shape of its
+    JSON, which is the API failing, not the caller -- so it shouldn't reach a caller as
+    a bare KeyError they'd have to have predicted.
+    """
+    try:
+        yield
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError) as e:
+        raise GameAPIError(f"{game} sent a response we couldn't read: {e!r}") from e
 
 @dataclass
 class LinkResult:
