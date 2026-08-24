@@ -249,3 +249,25 @@ async def test_balance_groups_a_large_balance_with_commas(migrated_db):
         assert embed.description == "12,480 points"
     finally:
         await db.perform_one("DELETE FROM users WHERE discordid = %s;", (TEST_DISCORDID,))
+
+
+@pytest.mark.asyncio
+async def test_prediction_balance_is_read_through_coalesce(prediction, monkeypatch):
+    """users.points is nullable, and `result[0] if result else 0` only guards a missing
+    row. A row holding NULL gets past it as None, and PredictionModal then raises on
+    `self.user_points < points` when the wager is submitted."""
+    from tests.conftest import FakeInteraction
+
+    calls = []
+
+    async def fetch_one(sql, parameters=None):
+        calls.append((sql, parameters))
+        return (0,)
+
+    monkeypatch.setattr(points.db, "fetch_one", fetch_one)
+
+    button = prediction.children[0]
+    await button.callback(FakeInteraction(FakeBettor(7)))
+
+    sql, _ = calls[0]
+    assert "COALESCE(points, 0)" in sql

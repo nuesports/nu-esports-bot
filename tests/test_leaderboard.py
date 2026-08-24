@@ -253,3 +253,61 @@ async def test_game_select_offers_points_alongside_the_games():
     assert "points" in values
     assert set(leaderboard.GAME_CHOICES).issubset(values)
     assert next(o.label for o in view.select.options if o.value == "points") == "Points"
+
+
+# --- role picker timeout ---
+
+
+class FakeCaller:
+    def __init__(self, id):
+        self.id = id
+
+
+class FakeRoleSelectResponse:
+    def __init__(self):
+        self.edits = []
+
+    async def edit_message(self, **kwargs):
+        self.edits.append(kwargs)
+
+
+class FakeRoleSelectInteraction:
+    """interaction.original_response() is what a handler uses to recover the message it
+    just edited, which conftest's FakeInteraction has no need for."""
+    def __init__(self, user_id):
+        self.user = FakeCaller(user_id)
+        self.response = FakeRoleSelectResponse()
+        self.original = object()
+
+    async def original_response(self):
+        return self.original
+
+
+@pytest.mark.asyncio
+async def test_role_select_greys_itself_out_on_timeout():
+    """Its three sibling views all pass this. Without it the dropdown still renders as
+    live after the timeout, but the click is no longer routed anywhere."""
+    view = leaderboard.LeaderboardRoleSelectView(requester_id=1, guild=FakeGuild({}), game="overwatch")
+    assert view.disable_on_timeout is True
+
+
+@pytest.mark.asyncio
+async def test_role_select_gives_its_paginator_a_message_handle(monkeypatch):
+    """discord.ui.View.message is only set once someone clicks, so a paginator opened
+    from here had nothing for on_timeout to edit and stayed un-greyed."""
+    async def fake_rows(game, role=None):
+        return [(1, 10, 0, None, None)]
+
+    monkeypatch.setattr(leaderboard, "fetch_leaderboard_rows", fake_rows)
+
+    view = leaderboard.LeaderboardRoleSelectView(
+        requester_id=1, guild=FakeGuild({1: FakeMember("Alex")}), game="overwatch"
+    )
+    view.select._selected_values = [view._MIXED]
+    view.select._interaction = object()
+
+    interaction = FakeRoleSelectInteraction(1)
+    await view.on_select(interaction)
+
+    paginator = interaction.response.edits[0]["view"]
+    assert paginator.message is interaction.original
