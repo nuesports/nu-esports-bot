@@ -37,7 +37,9 @@ class Points(commands.Cog):
 
         target_user = user if user else ctx.user
 
-        sql = "SELECT points FROM users WHERE discordid = %s;"
+        # COALESCE because users.points is nullable: a NULL would reach the :, format spec
+        # below as None and raise TypeError, where the unformatted version just printed it.
+        sql = "SELECT COALESCE(points, 0) FROM users WHERE discordid = %s;"
         data = [target_user.id]
         result = await db.fetch_one(sql, data)
 
