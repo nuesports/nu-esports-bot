@@ -44,7 +44,7 @@ class Points(commands.Cog):
         points = result[0] if result else 0
         embed = discord.Embed(
             title=f"{target_user.display_name}'s points",
-            description=f"{points} points",
+            description=f"{points:,} points",
             color=discord.Color.from_rgb(78, 42, 132),
         )
         await ctx.followup.send(embed=embed)
