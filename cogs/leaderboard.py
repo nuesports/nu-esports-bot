@@ -281,7 +281,7 @@ class LeaderboardRoleSelectView(discord.ui.View):
     _MIXED = "__mixed__"
 
     def __init__(self, requester_id: int, guild: discord.Guild, game: str):
-        super().__init__(timeout=120)
+        super().__init__(timeout=120, disable_on_timeout=True)
         self.requester_id = requester_id
         self.guild = guild
         self.game = game
@@ -318,6 +318,9 @@ class LeaderboardRoleSelectView(discord.ui.View):
 
         paginator = LeaderboardPaginator(requester_id=self.requester_id, pages=pages, guild=self.guild, game=self.game, role=role)
         await interaction.response.edit_message(content=None, embed=pages[0], view=paginator)
+        # discord.ui.View.message is only set once someone clicks, so without this a
+        # paginator opened from here has nothing for on_timeout to grey out.
+        paginator.message = await interaction.original_response()
 
 class EmptyLeaderboardView(discord.ui.View):
     """Shown when a game's leaderboard has nobody on it, just a way to switch games."""

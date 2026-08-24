@@ -200,6 +200,7 @@ def fake_db(monkeypatch):
             self.perform_one_calls = []
             self.rowcount = 1        # what perform_one reports back to the caller
             self.fetch_one_result = None
+            self.fetch_one_calls = []
 
     rec = Recorder()
 
@@ -211,6 +212,7 @@ def fake_db(monkeypatch):
         return rec.rowcount
 
     async def fetch_one(sql, parameters=None):
+        rec.fetch_one_calls.append((sql, parameters))
         return rec.fetch_one_result
 
     monkeypatch.setattr(matchmaking.db, "perform_many", perform_many)
@@ -1883,3 +1885,17 @@ async def test_every_panel_view_checks_the_lobby_is_still_live(betting_session, 
 
     for view in panels:
         assert await view.interaction_check(FakeInteraction(gamehead(5))) is False, type(view).__name__
+
+
+@pytest.mark.asyncio
+async def test_bet_balance_is_read_through_coalesce(betting_session, fake_db):
+    """users.points is nullable, and `row[0] if row else 0` only guards a missing row.
+    A row holding NULL gets past it as None, which then formats into the modal label
+    as "None available" and breaks the comparison the modal does on submit."""
+    fake_db.fetch_one_result = (250,)
+    view = matchmaking.BetTeamSelectView(betting_session, FakeMember(7))
+
+    await view.make_callback("a")(FakeInteraction(FakeMember(7)))
+
+    sql, _ = fake_db.fetch_one_calls[0]
+    assert "COALESCE(points, 0)" in sql

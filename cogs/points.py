@@ -231,7 +231,10 @@ class PredictionView(discord.ui.View):
                         f"{interaction.user.mention} tried to change sides..."
                     )
                     return
-                sql = "SELECT points FROM users WHERE discordid = %s;"
+                # COALESCE because points is nullable, and `result[0] if result else 0`
+                # only guards a missing row -- a NULL column reaches the modal as None
+                # and raises on the `user_points < points` comparison.
+                sql = "SELECT COALESCE(points, 0) FROM users WHERE discordid = %s;"
                 data = [interaction.user.id]
                 result = await db.fetch_one(sql, data)
 
