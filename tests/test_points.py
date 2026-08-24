@@ -207,3 +207,45 @@ async def test_prediction_refunds_a_stake_the_lock_beat_to_the_punch(prediction)
     credit_sql, credit_params = prediction.perform_one_calls[1]
     assert "points + %s" in credit_sql
     assert credit_params == (100, 7)
+
+
+@pytest.mark.asyncio
+async def test_balance_reads_a_null_balance_as_zero(migrated_db):
+    """users.points is nullable, and the comma format spec raises TypeError on None
+    rather than printing it, so the zero has to land before the value reaches the embed."""
+    from utils import db
+    await db.perform_one("DELETE FROM users WHERE discordid = %s;", (TEST_DISCORDID,))
+    try:
+        await db.perform_one(
+            "INSERT INTO users (discordid, points) VALUES (%s, NULL);",
+            (TEST_DISCORDID,),
+        )
+        user = FakeUser(TEST_DISCORDID, "caviar")
+        ctx = FakeApplicationContext(author=user)
+
+        await points.Points.balance.callback(object(), ctx, None)
+
+        embed = ctx.followup.send_calls[0]["embed"]
+        assert embed.description == "0 points"
+    finally:
+        await db.perform_one("DELETE FROM users WHERE discordid = %s;", (TEST_DISCORDID,))
+
+
+@pytest.mark.asyncio
+async def test_balance_groups_a_large_balance_with_commas(migrated_db):
+    from utils import db
+    await db.perform_one("DELETE FROM users WHERE discordid = %s;", (TEST_DISCORDID,))
+    try:
+        await db.perform_one(
+            "INSERT INTO users (discordid, points) VALUES (%s, %s);",
+            (TEST_DISCORDID, 12480),
+        )
+        user = FakeUser(TEST_DISCORDID, "caviar")
+        ctx = FakeApplicationContext(author=user)
+
+        await points.Points.balance.callback(object(), ctx, None)
+
+        embed = ctx.followup.send_calls[0]["embed"]
+        assert embed.description == "12,480 points"
+    finally:
+        await db.perform_one("DELETE FROM users WHERE discordid = %s;", (TEST_DISCORDID,))

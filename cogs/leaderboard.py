@@ -7,11 +7,24 @@ from utils import db
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
 GAME_CHOICES = list(config.game_data.keys())
+POINTS_BOARD = "points"
+BOARD_CHOICES = [*GAME_CHOICES, POINTS_BOARD]
 PAGE_SIZE = 10
 PRIOR_GAMES = 10  # phantom average-record games blended into win rate so a few games can't swing rank
 
+def is_game_board(board: str) -> bool:
+    """Whether a /leaderboard choice is a configured game, as opposed to a synthetic board
+    like Points that has no game_data entry, and so no roles, no elo, and no win/loss.
+
+    Every config lookup on the chosen value has to go through this first -- is_per_role_ranks
+    and rankable_roles subscript game_data directly, so they raise KeyError rather than
+    returning False for anything that isn't a game."""
+    return board in config.game_data
+
 def leaderboard_label(game: str, role: str | None) -> str:
     """Display label for a leaderboard: just the game, or "game role" for a per-role one."""
+    if not is_game_board(game):
+        return game.title()  # synthetic boards have no role dimension to name
     return f"{game.title()} {role}" if role else game.title()
 
 async def fetch_leaderboard_rows(game: str, role: str | None = None) -> list[tuple]:
@@ -77,10 +90,38 @@ async def fetch_leaderboard_rows(game: str, role: str | None = None) -> list[tup
     )
     return [(discordid, wins, losses, tag, None) for discordid, wins, losses, tag in rows]
 
+async def fetch_points_rows(caller_id: int) -> list[tuple]:
+    """Fetch every user's points balance and profile tag, richest first.
+
+    Unlike the game boards there's no "has actually played" gate -- points come from
+    chatting, so this is everyone who's ever earned any, which makes it a far longer
+    board than any game's.
+
+    COALESCE rather than a bare ORDER BY points DESC because users.points is nullable:
+    Postgres sorts NULLs first under DESC, so one NULL row would crown itself #1.
+
+    The caller is appended at 0 if they have no users row at all, so their pinned line
+    reads as a real balance instead of vanishing off a board everyone is already on.
+
+    Every row is (discordid, points, tag).
+    """
+    rows = await db.fetch_all(
+        """
+        SELECT u.discordid, COALESCE(u.points, 0), p.tag
+        FROM users u
+        LEFT JOIN profiles p ON p.discordid = u.discordid
+        ORDER BY COALESCE(u.points, 0) DESC, u.discordid;
+        """
+    )
+    rows = [(discordid, points, tag) for discordid, points, tag in rows]
+    if not any(row[0] == caller_id for row in rows):
+        rows.append((caller_id, 0, None))
+    return rows
+
 async def role_autocomplete(ctx: discord.AutocompleteContext) -> list[discord.OptionChoice]:
     """Suggest rankable roles once a per-role-ranks game has been picked."""
     game = ctx.options.get("game")
-    if not game or not config.is_per_role_ranks(game):
+    if not game or not is_game_board(game) or not config.is_per_role_ranks(game):
         return []
     return [discord.OptionChoice(r) for r in config.rankable_roles(game)]
 
@@ -95,7 +136,16 @@ def format_entry(guild: discord.Guild, rank: int, discordid: int, wins: int, los
     icon = f" {config.role_icon(game, entry_role)}" if entry_role else ""
     return f"{rank}. {tag} *{name}* — **{wins}W** / **{losses}L**{icon}"
 
-def build_leaderboard_pages(guild: discord.Guild, game: str, rows: list[tuple], caller_id: int, role: str | None = None) -> list[discord.Embed] | None:
+def format_points_entry(guild: discord.Guild, rank: int, discordid: int, points: int, tag: str | None) -> str:
+    """Format one Points row: rank, tag (defaulting to a star), display name, and balance.
+
+    Same shape as format_entry, with a balance where the win/loss record goes."""
+    member = guild.get_member(discordid)
+    name = member.display_name if member else f"<@{discordid}>"
+    tag = tag or "⭐"
+    return f"{rank}. {tag} *{name}* — **{points:,} points**"
+
+def build_leaderboard_pages(guild: discord.Guild, game: str, rows: list[tuple], caller_id: int, role: str | None = None, format_row=None, unranked_note: str | None = None) -> list[discord.Embed] | None:
     """Build one embed per page of 10 leaderboard entries, ordered by win rate (see fetch_leaderboard_rows).
 
     Pass `role` for a per-role-ranks game's leaderboard, just to title the embed correctly.
@@ -103,7 +153,18 @@ def build_leaderboard_pages(guild: discord.Guild, game: str, rows: list[tuple], 
     The caller's own line is always visible: pinned at the bottom of a page while their real rank
     is still further down the list, pinned at the top once you've paged past it, and left out of
     the pinned spot entirely on the page their rank actually falls on (already part of that page).
+
+    `format_row` renders one row as `(rank, row) -> str`, and defaults to the win/loss game entry.
+    Taking it as an argument is what lets a board that isn't a game -- Points, whose rows are
+    (discordid, points, tag) -- reuse all of this paging and pinning. The only thing assumed
+    about a row here is that row[0] is the discord id. `unranked_note` likewise replaces the
+    "haven't played" line for a board where that sentence would make no sense.
     """
+    if format_row is None:
+        def format_row(rank, row):
+            discordid, wins, losses, tag, entry_role = row
+            return format_entry(guild, rank, discordid, wins, losses, tag, game, entry_role)
+
     present_rows = [row for row in rows if guild.get_member(row[0]) is not None]
     if not present_rows:
         return None
@@ -112,10 +173,10 @@ def build_leaderboard_pages(guild: discord.Guild, game: str, rows: list[tuple], 
 
     caller_rank = None
     caller_line = None
-    for rank, (discordid, wins, losses, tag, entry_role) in enumerate(present_rows, start=1):
-        if discordid == caller_id:
+    for rank, row in enumerate(present_rows, start=1):
+        if row[0] == caller_id:
             caller_rank = rank
-            caller_line = format_entry(guild, rank, discordid, wins, losses, tag, game, entry_role)
+            caller_line = format_row(rank, row)
             break
 
     pages = []
@@ -123,8 +184,8 @@ def build_leaderboard_pages(guild: discord.Guild, game: str, rows: list[tuple], 
         start = page * PAGE_SIZE
         chunk = present_rows[start:start+ PAGE_SIZE]
         lines = [
-            format_entry(guild, start + i + 1, discordid, wins, losses, tag, game, entry_role)
-            for i, (discordid, wins, losses, tag, entry_role) in enumerate(chunk)
+            format_row(start + i + 1, row)
+            for i, row in enumerate(chunk)
         ]
 
         page_start_rank = start + 1
@@ -133,7 +194,8 @@ def build_leaderboard_pages(guild: discord.Guild, game: str, rows: list[tuple], 
         label = leaderboard_label(game, role)
 
         if caller_rank is None:
-            lines.append(f"...\nYou haven't played {label} yet!")
+            note = unranked_note or f"You haven't played {label} yet!"
+            lines.append(f"...\n{note}")
         elif caller_rank < page_start_rank:
             lines.insert(0, f"{caller_line}\n...")
         elif caller_rank > page_end_rank:
@@ -150,6 +212,19 @@ def build_leaderboard_pages(guild: discord.Guild, game: str, rows: list[tuple], 
 
     return pages
 
+async def build_points_pages(guild: discord.Guild, caller_id: int) -> list[discord.Embed] | None:
+    """Fetch and page the Points board, shared by /leaderboard and the Change Game select.
+
+    The unranked note should be unreachable, since fetch_points_rows gives the caller a row
+    either way -- but guild.get_member is a cache lookup, and an uncached member gets filtered
+    out of present_rows, so it's better that the fallback reads as a balance than as a match."""
+    rows = await fetch_points_rows(caller_id)
+    return build_leaderboard_pages(
+        guild, POINTS_BOARD, rows, caller_id,
+        format_row=lambda rank, row: format_points_entry(guild, rank, *row),
+        unranked_note="You have no points yet!",
+    )
+
 class GameSelectView(discord.ui.View):
     """Dropdown for switching the leaderboard to a different game, restricted to whoever ran /leaderboard."""
 
@@ -158,8 +233,8 @@ class GameSelectView(discord.ui.View):
         self.requester_id = requester_id
         self.guild = guild
 
-        options = [discord.SelectOption(label=g.title(), value=g) for g in GAME_CHOICES]
-        self.select = discord.ui.Select(placeholder="Pick a game", options=options)
+        options = [discord.SelectOption(label=b.title(), value=b) for b in BOARD_CHOICES]
+        self.select = discord.ui.Select(placeholder="Pick a leaderboard", options=options)
         self.select.callback = self.on_select
         self.add_item(self.select)
 
@@ -179,12 +254,17 @@ class GameSelectView(discord.ui.View):
         game = self.select.values[0]
         self.stop()
 
-        rows = await fetch_leaderboard_rows(game)
-        pages = build_leaderboard_pages(self.guild, game, rows, self.requester_id)
+        if game == POINTS_BOARD:
+            pages = await build_points_pages(self.guild, self.requester_id)
+            empty_message = "No one currently in the server has any points yet!"
+        else:
+            rows = await fetch_leaderboard_rows(game)
+            pages = build_leaderboard_pages(self.guild, game, rows, self.requester_id)
+            empty_message = f"No one currently in the server has played {game.title()} yet!"
 
         if pages is None:
             await interaction.response.edit_message(
-                content=f"No one currently in the server has played {game.title()} yet!",
+                content=empty_message,
                 embed=None,
                 view=EmptyLeaderboardView(requester_id=self.requester_id, guild=self.guild),
             )
@@ -275,7 +355,7 @@ class LeaderboardPaginator(discord.ui.View):
         self.index = 0
         self.update_buttons()
 
-        if config.is_per_role_ranks(game):
+        if is_game_board(game) and config.is_per_role_ranks(game):
             change_role_btn = discord.ui.Button(label="Change Role", style=discord.ButtonStyle.primary, row=1)
             change_role_btn.callback = self.on_change_role
             self.add_item(change_role_btn)
@@ -338,8 +418,8 @@ class Leaderboard(commands.Cog):
         ctx: discord.ApplicationContext,
         game: discord.Option (
             str,
-            description= "Game to show leaderboard for",
-            choices=GAME_CHOICES,
+            description= "Game (or Points) to show leaderboard for",
+            choices=BOARD_CHOICES,
         ),
         role: discord.Option(
             str,
@@ -353,6 +433,22 @@ class Leaderboard(commands.Cog):
         Per-role-ranks games (Overwatch) rank by the given role's elo if one's given, or by
         each player's single best role otherwise -- see fetch_leaderboard_rows."""
         await ctx.defer()
+
+        if game == POINTS_BOARD:
+            # `role` is deliberately never read here: points aren't per-role, so one passed
+            # alongside Points is ignored rather than rejected or worked into the title.
+            pages = await build_points_pages(ctx.guild, ctx.author.id)
+
+            if pages is None:
+                await ctx.followup.send(
+                    "No one currently in the server has any points yet!",
+                    view=EmptyLeaderboardView(requester_id=ctx.author.id, guild=ctx.guild),
+                )
+                return
+
+            paginator = LeaderboardPaginator(requester_id=ctx.author.id, pages=pages, guild=ctx.guild, game=POINTS_BOARD)
+            await ctx.followup.send(embed=pages[0], view=paginator)
+            return
 
         if config.is_per_role_ranks(game):
             if role is not None and role not in config.rankable_roles(game):
