@@ -1,0 +1,58 @@
+# Scoring rules for the giveaway-scam detector (cogs/antiscam.py).
+#
+# A message is flagged when its total weight reaches `threshold`. Nothing here is a
+# hard trigger on its own -- the point of scoring rather than keyword matching is that
+# a real member offering a textbook hits one category and stays under, while a scam
+# hits several and clears it.
+#
+# Tuning: raise `threshold` to make the detector less trigger-happy, which is the first
+# thing to reach for if it starts catching real members. No code change needed.
+
+threshold: 8
+
+# Account age is itself a signal: the younger the account, the more suspicious. First
+# band whose max_days the account falls under wins. An account older than every band
+# scores 0, and scoring 0 here is what makes a member unscannable at all -- so the last
+# band doubles as the overall cutoff (270 days, about 9 months).
+account_age_bands:
+  - {max_days: 7, weight: 4}
+  - {max_days: 30, weight: 3}
+  - {max_days: 90, weight: 2}
+  - {max_days: 270, weight: 1}
+
+weights:
+  giveaway_phrase: 3
+  offplatform_contact: 3
+  # Deliberately much lower than offplatform_contact. "DM me" is ordinary Discord
+  # behaviour and a genuine student selling a textbook will say it; being pushed to
+  # WhatsApp or a phone number is the actual scam tell.
+  dm_solicitation: 1
+  mass_mention_text: 2
+  attachment: 1
+
+phrases:
+  giveaway_phrase:
+    - "giving away"
+    - "give away"
+    - "giveaway"
+    - "first come first served"
+    - "first come, first served"
+    - "upgrading my"
+    - "upgrading and"
+    - "student in need"
+    - "perfect condition"
+    - "still functional"
+    - "to anyone who's interested"
+    - "to anyone interested"
+    - "pass on my old"
+  offplatform_contact:
+    - "whatsapp"
+    - "imessage"
+    - "telegram"
+    - "signal me"
+    - "text me on"
+  dm_solicitation:
+    - "dm me"
+    - "message me if"
+    - "message me for"
+    - "hmu"
