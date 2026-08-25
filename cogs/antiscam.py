@@ -5,12 +5,17 @@ Scores each signal rather than tripping on any one keyword, because a real membe
 textbook says some of the same words a scammer does. Only the account age and the combination
 separate them, so both feed the score. Rules and weights live in data/antiscam.yaml.
 
+Scams routinely split the pitch and the photos across two messages, so a flag sweeps
+everything the poster put up in the last hour rather than only the message that scored, and
+an attachment sitting in one of those other messages still counts toward the score.
+
 The listener stays thin and the judgement lives in plain functions below it, which is what
 makes any of this testable without a Discord connection.
 """
 
 import datetime
 import re
+from typing import NamedTuple
 
 import discord
 from discord.ext import commands
@@ -28,6 +33,18 @@ MASS_MENTION_RE = re.compile(r"@(everyone|here)")
 # Discord's hard ceiling on a timeout, and the ceiling on how much history a ban can purge.
 MAX_TIMEOUT_DAYS = 28
 MAX_BAN_DELETE_DAYS = 7
+
+# How far back the sweep reads in each channel, and Discord's bulk-delete ceiling per call.
+SWEEP_LIMIT = 200
+BULK_DELETE_MAX = 100
+
+
+class SweepResult(NamedTuple):
+    """What the post-flag cleanup removed, for the staff embed to report."""
+
+    deleted: int
+    channels: list[str]
+    with_files: int
 
 
 def account_age_days(created_at: datetime.datetime, now: datetime.datetime) -> float:
@@ -47,6 +64,22 @@ def age_weight(age_days: float, bands: list[dict]) -> int:
         if age_days < band["max_days"]:
             return band["weight"]
     return 0
+
+
+def recent_attachment(messages, author_id: int, cutoff, exclude_id: int) -> bool:
+    """True if the author posted a file in some *other* guild message since `cutoff`.
+
+    Splitting the pitch and the photos across two posts would otherwise cost a scammer the
+    attachment weight, and the text on its own lands right on the threshold. Reads the
+    message cache the bot already keeps, so this costs no API call in the message path."""
+    return any(
+        message.attachments
+        and message.id != exclude_id
+        and message.guild is not None
+        and message.author.id == author_id
+        and message.created_at >= cutoff
+        for message in messages
+    )
 
 
 def _phrase_hits(lowered: str, phrases: list[str]) -> bool:
@@ -97,7 +130,8 @@ def score_message(content: str, has_attachment: bool, age_days: float, rules: di
 
 
 def build_alert_embed(member: discord.Member, channel_name: str, content: str, score: int,
-                      reasons: list[str], now: datetime.datetime) -> discord.Embed:
+                      reasons: list[str], now: datetime.datetime,
+                      sweep: SweepResult | None = None) -> discord.Embed:
     """The member-info embed that carries the Allow/Ban buttons.
 
     Also repeats the message text, so staff still have something to judge if the forward above
@@ -115,6 +149,17 @@ def build_alert_embed(member: discord.Member, channel_name: str, content: str, s
     if content:
         excerpt = content if len(content) <= 1000 else content[:997] + "..."
         embed.add_field(name="Message", value=f">>> {excerpt}", inline=False)
+    if sweep and sweep.deleted:
+        # The swept messages aren't forwarded, so this line is the only thing telling staff
+        # a photo existed at all -- and the photo is the half of the scam that isn't text.
+        where = ", ".join(f"#{name}" for name in sweep.channels)
+        files = f" ({sweep.with_files} with attachments)" if sweep.with_files else ""
+        plural = "" if sweep.deleted == 1 else "s"
+        embed.add_field(
+            name="Also removed",
+            value=f"{sweep.deleted} more message{plural} in {where}{files}",
+            inline=False,
+        )
     embed.set_footer(text="Allow clears the timeout. Ban also deletes their recent messages.")
     return embed
 
@@ -124,10 +169,11 @@ class ScamReviewView(discord.ui.View):
     process lives -- a restart drops the buttons, and the embed carries the member id so
     staff can act by hand in that case."""
 
-    def __init__(self, member: discord.Member, ban_delete_days: int):
+    def __init__(self, member: discord.Member, ban_delete_days: int, on_resolved=None):
         super().__init__(timeout=None)
         self.member = member
         self.ban_delete_days = ban_delete_days
+        self.on_resolved = on_resolved
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if not (config.has_leadership(interaction.user) or config.is_bot_dev(interaction.user)):
@@ -141,6 +187,8 @@ class ScamReviewView(discord.ui.View):
         for child in self.children:
             child.disabled = True
         self.stop()
+        if self.on_resolved:
+            self.on_resolved()
 
     @discord.ui.button(label="Allow", style=discord.ButtonStyle.success)
     async def allow(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
@@ -176,10 +224,16 @@ class AntiScam(commands.Cog):
         self.staff_role_id = cfg["staff_role"]
         self.timeout_days = min(cfg["timeout_days"], MAX_TIMEOUT_DAYS)
         self.ban_delete_days = min(cfg["ban_delete_message_days"], MAX_BAN_DELETE_DAYS)
+        self.purge_window_minutes = cfg["purge_window_minutes"]
+        # Members with a case already open. Without this a scammer who posts twice gets two
+        # forwards, two embeds and two whole sweeps. Process-local, like the buttons.
+        self._held: set[int] = set()
 
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.author.bot or message.guild is None:
+            return
+        if message.author.id in self._held:
             return
 
         rules = config.antiscam_data
@@ -191,24 +245,30 @@ class AntiScam(commands.Cog):
         if not age_weight(age, rules["account_age_bands"]):
             return
 
-        score, reasons = score_message(
-            message.content, bool(message.attachments), age, rules
+        cutoff = now - datetime.timedelta(minutes=self.purge_window_minutes)
+        has_attachment = bool(message.attachments) or recent_attachment(
+            self.bot.cached_messages, message.author.id, cutoff, message.id
         )
+
+        score, reasons = score_message(message.content, has_attachment, age, rules)
         if score < rules["threshold"]:
             return
 
         await self.hold(message, score, reasons, now)
 
     async def hold(self, message, score: int, reasons: list[str], now) -> None:
-        """Forward the message to staff, delete it, time the poster out, then post the
-        review embed.
+        """Forward the message to staff, delete it, time the poster out, sweep the rest of
+        their last hour, then post the review embed.
 
         Order matters. The forward has to happen while the original still exists, and the
-        delete has to beat the timeout because the timeout is the slower call and the message
-        being visible is the actual harm."""
+        delete has to beat everything else because the message being visible is the actual
+        harm. The timeout goes ahead of the sweep rather than after it: the sweep is many
+        round-trips, and an un-muted scammer can keep posting right through it."""
         channel = self.bot.get_channel(self.alert_channel_id)
         if not channel:
             return
+
+        self._held.add(message.author.id)
 
         staff_role = message.guild.get_role(self.staff_role_id)
         mentions = discord.AllowedMentions(
@@ -229,14 +289,55 @@ class AntiScam(commands.Cog):
             reason=f"Possible giveaway scam (score {score}: {', '.join(reasons)})",
         )
 
+        cutoff = now - datetime.timedelta(minutes=self.purge_window_minutes)
+        sweep = await self.sweep_recent(message.guild, message.author, cutoff)
+
         embed = build_alert_embed(
-            message.author, message.channel.name, message.content, score, reasons, now
+            message.author, message.channel.name, message.content, score, reasons, now, sweep
         )
         await channel.send(
             embed=embed,
-            view=ScamReviewView(message.author, self.ban_delete_days),
+            view=ScamReviewView(
+                message.author,
+                self.ban_delete_days,
+                on_resolved=lambda: self._held.discard(message.author.id),
+            ),
             allowed_mentions=discord.AllowedMentions.none(),
         )
+
+    async def sweep_recent(self, guild, author, cutoff) -> SweepResult:
+        """Delete everything `author` posted since `cutoff`, in every channel the bot can act
+        in -- the scam's photos are routinely a second message, sometimes somewhere else.
+
+        The permission check is local, so channels the bot could not clean anyway cost no
+        request. A channel that fails is skipped rather than aborting the rest of the sweep."""
+        deleted = 0
+        with_files = 0
+        channels: list[str] = []
+
+        for channel in [*guild.text_channels, *guild.threads]:
+            perms = channel.permissions_for(guild.me)
+            if not (perms.read_message_history and perms.manage_messages):
+                continue
+            try:
+                stale = [
+                    m
+                    async for m in channel.history(after=cutoff, limit=SWEEP_LIMIT)
+                    if m.author.id == author.id
+                ]
+                if not stale:
+                    continue
+                for start in range(0, len(stale), BULK_DELETE_MAX):
+                    await channel.delete_messages(stale[start:start + BULK_DELETE_MAX])
+            except discord.HTTPException:
+                # Forbidden included. One locked channel must not stop the others.
+                continue
+
+            deleted += len(stale)
+            with_files += sum(1 for m in stale if m.attachments)
+            channels.append(channel.name)
+
+        return SweepResult(deleted, channels, with_files)
 
 
 def setup(bot):

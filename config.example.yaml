@@ -84,3 +84,6 @@ antiscam:
   timeout_days: 28
   # how much of a banned member's history the ban purges, Discord allows up to 7
   ban_delete_message_days: 7
+  # how far back a flag sweeps the poster's messages: scams routinely split the pitch
+  # and the photos across two posts, and deleting only the scoring one leaves the rest up
+  purge_window_minutes: 60

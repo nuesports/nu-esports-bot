@@ -1,4 +1,5 @@
 import datetime
+from types import SimpleNamespace
 
 import discord
 import pytest
@@ -195,9 +196,12 @@ class FakeRole:
 
 
 class FakeGuild:
-    def __init__(self, role=None):
+    def __init__(self, role=None, text_channels=(), threads=()):
         self.role = role
         self.bans = []
+        self.text_channels = list(text_channels)
+        self.threads = list(threads)
+        self.me = "bot-member"
 
     def get_role(self, role_id):
         return self.role
@@ -238,6 +242,7 @@ class FakeScamMessage:
     the original still exists, delete before the slower timeout call -- is the whole point."""
 
     def __init__(self, author, guild, events, content=PS5_SCAM, attachments=1):
+        self.id = 1
         self.author = author
         self.guild = guild
         self.events = events
@@ -256,21 +261,22 @@ class FakeScamMessage:
 class FakeBot:
     def __init__(self, channel):
         self.channel = channel
+        self.cached_messages = []
 
     def get_channel(self, channel_id):
         return self.channel
 
 
-def build_cog(monkeypatch, events, role=FakeRole()):
+def build_cog(monkeypatch, events, role=FakeRole(), guild=None):
     monkeypatch.setattr(
         antiscam.config,
         "config",
-        {"antiscam": {"alert_channel": 5, "staff_role": 99,
-                      "timeout_days": 28, "ban_delete_message_days": 7}},
+        {"antiscam": {"alert_channel": 5, "staff_role": 99, "timeout_days": 28,
+                      "ban_delete_message_days": 7, "purge_window_minutes": 60}},
     )
     channel = FakeAlertChannel(events)
     cog = antiscam.AntiScam(bot=FakeBot(channel))
-    guild = FakeGuild(role)
+    guild = guild or FakeGuild(role)
     author = FakeAuthor(guild)
     author.guild_events = events
     message = FakeScamMessage(author, guild, events)
@@ -414,3 +420,315 @@ async def test_a_non_staff_click_is_refused(monkeypatch):
 
     assert await view.interaction_check(interaction) is False
     assert "Only leadership" in interaction.response.messages[0]
+
+
+# --- the split post: a photo that arrived as its own message ---
+
+CUTOFF = NOW - datetime.timedelta(minutes=60)
+
+
+def cached(id, author_id=7, attachments=1, minutes_ago=5, guild="a-guild"):
+    return SimpleNamespace(
+        id=id,
+        author=SimpleNamespace(id=author_id),
+        attachments=[object()] * attachments,
+        created_at=NOW - datetime.timedelta(minutes=minutes_ago),
+        guild=guild,
+    )
+
+
+def test_recent_attachment_finds_a_file_the_author_posted_separately():
+    assert antiscam.recent_attachment([cached(2)], 7, CUTOFF, exclude_id=1)
+
+
+def test_recent_attachment_ignores_the_message_being_scored():
+    """Otherwise a message with its own image would credit itself twice."""
+    assert not antiscam.recent_attachment([cached(1)], 7, CUTOFF, exclude_id=1)
+
+
+def test_recent_attachment_ignores_someone_elses_upload():
+    assert not antiscam.recent_attachment([cached(2, author_id=8)], 7, CUTOFF, exclude_id=1)
+
+
+def test_recent_attachment_ignores_anything_older_than_the_window():
+    assert not antiscam.recent_attachment([cached(2, minutes_ago=90)], 7, CUTOFF, exclude_id=1)
+
+
+def test_recent_attachment_ignores_dms():
+    assert not antiscam.recent_attachment([cached(2, guild=None)], 7, CUTOFF, exclude_id=1)
+
+
+def test_recent_attachment_ignores_messages_carrying_no_file():
+    assert not antiscam.recent_attachment([cached(2, attachments=0)], 7, CUTOFF, exclude_id=1)
+
+
+def test_the_ps5_text_alone_sits_exactly_on_the_threshold():
+    """Why the split matters. Without the image the text is at 8 exactly, so the same post
+    without "message me if" drops to 7 and slips through -- which is what crediting a photo
+    from another recent message is there to prevent."""
+    score, _ = antiscam.score_message(PS5_SCAM, False, age(3), RULES)
+    assert score == RULES["threshold"]
+
+
+# --- sweep_recent: the last hour, everywhere the bot can reach ---
+
+
+def http_error():
+    """py-cord's HTTPException only needs a response carrying .status and .reason.
+    Forbidden subclasses it, which is why sweep_recent catches the base."""
+    return discord.HTTPException(SimpleNamespace(status=403, reason="Forbidden"), "nope")
+
+
+class FakePerms:
+    def __init__(self, read=True, manage=True):
+        self.read_message_history = read
+        self.manage_messages = manage
+
+
+def posted(id, author_id=7, attachments=0):
+    return SimpleNamespace(
+        id=id, author=SimpleNamespace(id=author_id), attachments=[object()] * attachments
+    )
+
+
+class FakeSweepChannel:
+    """history() is a plain method returning an async iterator, matching py-cord, so that
+    the call arguments are recorded even for a channel that yields nothing."""
+
+    def __init__(self, name, messages=(), perms=None, fails=None):
+        self.name = name
+        self.messages = list(messages)
+        self.perms = perms or FakePerms()
+        self.fails = fails  # "history", "delete", or None
+        self.history_calls = []
+        self.deleted_batches = []
+
+    def permissions_for(self, member):
+        return self.perms
+
+    def history(self, after=None, limit=None):
+        self.history_calls.append({"after": after, "limit": limit})
+        return self._walk()
+
+    async def _walk(self):
+        if self.fails == "history":
+            raise http_error()
+        for message in self.messages:
+            yield message
+
+    async def delete_messages(self, messages):
+        if self.fails == "delete":
+            raise http_error()
+        self.deleted_batches.append(list(messages))
+
+
+AUTHOR = SimpleNamespace(id=7)
+
+
+def sweep_cog(monkeypatch):
+    cog, _, _ = build_cog(monkeypatch, [])
+    return cog
+
+
+@pytest.mark.asyncio
+async def test_sweep_deletes_only_that_authors_messages(monkeypatch):
+    channel = FakeSweepChannel("general", [posted(2), posted(3, author_id=8), posted(4)])
+
+    result = await sweep_cog(monkeypatch).sweep_recent(
+        FakeGuild(text_channels=[channel]), AUTHOR, CUTOFF
+    )
+
+    assert [m.id for m in channel.deleted_batches[0]] == [2, 4]
+    assert result.deleted == 2
+
+
+@pytest.mark.asyncio
+async def test_sweep_hands_the_cutoff_to_discord_rather_than_filtering_by_hand(monkeypatch):
+    channel = FakeSweepChannel("general", [posted(2)])
+
+    await sweep_cog(monkeypatch).sweep_recent(
+        FakeGuild(text_channels=[channel]), AUTHOR, CUTOFF
+    )
+
+    assert channel.history_calls[0] == {"after": CUTOFF, "limit": antiscam.SWEEP_LIMIT}
+
+
+@pytest.mark.asyncio
+async def test_sweep_never_reads_a_channel_it_could_not_clean(monkeypatch):
+    """The permission check is local, so a channel the bot can't purge costs no request."""
+    unreadable = FakeSweepChannel("secret", [posted(2)], perms=FakePerms(read=False))
+    unmanageable = FakeSweepChannel("locked", [posted(3)], perms=FakePerms(manage=False))
+
+    result = await sweep_cog(monkeypatch).sweep_recent(
+        FakeGuild(text_channels=[unreadable, unmanageable]), AUTHOR, CUTOFF
+    )
+
+    assert unreadable.history_calls == []
+    assert unmanageable.history_calls == []
+    assert result == antiscam.SweepResult(0, [], 0)
+
+
+@pytest.mark.asyncio
+async def test_sweep_keeps_going_when_one_channel_fails(monkeypatch):
+    """One locked channel must not leave the scam up everywhere else."""
+    for failure in ("history", "delete"):
+        broken = FakeSweepChannel("broken", [posted(2)], fails=failure)
+        fine = FakeSweepChannel("general", [posted(3)])
+
+        result = await sweep_cog(monkeypatch).sweep_recent(
+            FakeGuild(text_channels=[broken, fine]), AUTHOR, CUTOFF
+        )
+
+        assert result == antiscam.SweepResult(1, ["general"], 0)
+
+
+@pytest.mark.asyncio
+async def test_sweep_chunks_past_discords_bulk_delete_ceiling(monkeypatch):
+    channel = FakeSweepChannel("general", [posted(i) for i in range(150)])
+
+    result = await sweep_cog(monkeypatch).sweep_recent(
+        FakeGuild(text_channels=[channel]), AUTHOR, CUTOFF
+    )
+
+    assert [len(batch) for batch in channel.deleted_batches] == [100, 50]
+    assert result.deleted == 150
+
+
+@pytest.mark.asyncio
+async def test_sweep_covers_threads_and_counts_where_the_files_were(monkeypatch):
+    channel = FakeSweepChannel("general", [posted(2)])
+    thread = FakeSweepChannel("pugs-thread", [posted(3, attachments=1)])
+
+    result = await sweep_cog(monkeypatch).sweep_recent(
+        FakeGuild(text_channels=[channel], threads=[thread]), AUTHOR, CUTOFF
+    )
+
+    assert result == antiscam.SweepResult(2, ["general", "pugs-thread"], 1)
+
+
+# --- what the sweep reports back to staff ---
+
+
+def test_alert_embed_reports_what_else_the_sweep_removed():
+    """Swept messages aren't forwarded, so this line is the only thing telling staff a photo
+    existed -- and the photo is the half of the scam that isn't in the text."""
+    sweep = antiscam.SweepResult(2, ["general", "memes"], 1)
+
+    embed = antiscam.build_alert_embed(FakeMember(), "general", PS5_SCAM, 9, ["x"], NOW, sweep)
+
+    fields = {f.name: f.value for f in embed.fields}
+    assert fields["Also removed"] == "2 more messages in #general, #memes (1 with attachments)"
+
+
+def test_alert_embed_omits_the_sweep_line_when_there_was_nothing_else():
+    embed = antiscam.build_alert_embed(
+        FakeMember(), "general", PS5_SCAM, 9, ["x"], NOW, antiscam.SweepResult(0, [], 0)
+    )
+
+    assert "Also removed" not in {f.name for f in embed.fields}
+
+
+# --- hold(): where the sweep sits in the sequence ---
+
+
+def record_sweep(monkeypatch, cog, events, result=antiscam.SweepResult(1, ["memes"], 1)):
+    captured = {}
+
+    async def sweep_recent(guild, author, cutoff):
+        events.append("sweep")
+        captured["cutoff"] = cutoff
+        return result
+
+    monkeypatch.setattr(cog, "sweep_recent", sweep_recent)
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_hold_sweeps_after_the_timeout_and_before_the_embed(monkeypatch):
+    """The timeout goes first because the sweep is many round-trips, and an un-muted
+    scammer can keep posting right through it."""
+    events = []
+    cog, message, _ = build_cog(monkeypatch, events)
+    record_sweep(monkeypatch, cog, events)
+
+    await cog.hold(message, 9, ["giveaway wording"], NOW)
+
+    assert events == ["forward", "delete", "timeout", "sweep", "embed"]
+
+
+@pytest.mark.asyncio
+async def test_hold_sweeps_back_the_configured_window(monkeypatch):
+    events = []
+    cog, message, _ = build_cog(monkeypatch, events)
+    captured = record_sweep(monkeypatch, cog, events)
+
+    await cog.hold(message, 9, ["giveaway wording"], NOW)
+
+    assert captured["cutoff"] == NOW - datetime.timedelta(minutes=60)
+
+
+@pytest.mark.asyncio
+async def test_hold_puts_the_sweep_result_on_the_staff_embed(monkeypatch):
+    events = []
+    cog, message, channel = build_cog(monkeypatch, events)
+    record_sweep(monkeypatch, cog, events)
+
+    await cog.hold(message, 9, ["giveaway wording"], NOW)
+
+    fields = {f.name: f.value for f in channel.sent[1]["embed"].fields}
+    assert fields["Also removed"] == "1 more message in #memes (1 with attachments)"
+
+
+# --- one case per member, not one per message ---
+
+
+@pytest.mark.asyncio
+async def test_a_second_message_from_a_held_member_is_ignored(monkeypatch):
+    """Without this a scammer who posts twice gets two forwards, two embeds and two sweeps."""
+    events = []
+    cog, message, _ = build_cog(monkeypatch, events)
+    monkeypatch.setattr(antiscam.config, "antiscam_data", RULES)
+    cog._held.add(message.author.id)
+
+    await cog.on_message(message)
+
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_allowing_a_member_lets_them_be_flagged_again(monkeypatch):
+    monkeypatch.setattr(antiscam.config, "has_leadership", lambda user: True)
+    monkeypatch.setattr(antiscam.config, "is_bot_dev", lambda user: False)
+    released = []
+    member = FakeAuthor(FakeGuild(FakeRole()))
+    member.guild_events = []
+    view = antiscam.ScamReviewView(member, 7, on_resolved=lambda: released.append(True))
+
+    await view.allow.callback(FakeClicker())
+
+    assert released == [True]
+
+
+@pytest.mark.asyncio
+async def test_on_message_credits_a_photo_the_author_posted_in_another_message(monkeypatch):
+    """The case that prompted all of this: the pitch and the photos arrived separately, so
+    the text on its own would have scored 8 rather than 9."""
+    events = []
+    cog, message, _ = build_cog(monkeypatch, events)
+    monkeypatch.setattr(antiscam.config, "antiscam_data", RULES)
+    message.attachments = []
+    message.author.created_at = discord.utils.utcnow() - datetime.timedelta(days=3)
+    cog.bot.cached_messages = [
+        SimpleNamespace(
+            id=2,
+            author=SimpleNamespace(id=message.author.id),
+            attachments=[object()],
+            guild="a-guild",
+            created_at=discord.utils.utcnow() - datetime.timedelta(minutes=5),
+        )
+    ]
+
+    await cog.on_message(message)
+
+    assert "attachment" in message.author.timeouts[0]["reason"]
+    assert "score 9" in message.author.timeouts[0]["reason"]
