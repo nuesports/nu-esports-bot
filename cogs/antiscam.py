@@ -54,6 +54,19 @@ def account_age_days(created_at: datetime.datetime, now: datetime.datetime) -> f
     return (now - created_at).total_seconds() / 86400
 
 
+def effective_age_days(member_id: int, created_at: datetime.datetime,
+                       now: datetime.datetime, overrides: dict) -> float:
+    """Account age, unless a local-testing override pins it to something else.
+
+    Nobody's real account is three days old on demand, so there is no way to exercise this
+    end to end without lying about an age somewhere. `test_account_ages` only ever exists in
+    a developer's own config.yaml, which is gitignored -- it cannot follow the bot to
+    production, and the cog prints a warning at load if it is set."""
+    if member_id in overrides:
+        return overrides[member_id]
+    return account_age_days(created_at, now)
+
+
 def age_weight(age_days: float, bands: list[dict]) -> int:
     """Score contribution from account age alone: the weight of the first band the age falls
     under, or 0 if it is older than every band.
@@ -82,8 +95,34 @@ def recent_attachment(messages, author_id: int, cutoff, exclude_id: int) -> bool
     )
 
 
+def normalise(content: str) -> str:
+    """Lowercase, and fold the quote characters phones insert down to plain ASCII.
+
+    These posts are written on a phone or pasted out of one, so "who's" arrives as
+    "who’s" and never matches a phrase list spelled with a straight apostrophe. Silent
+    misses, and the sort that only show up once a scam has already gone unflagged."""
+    return content.lower().replace("’", "'").replace("‘", "'")
+
+
 def _phrase_hits(lowered: str, phrases: list[str]) -> bool:
     return any(phrase in lowered for phrase in phrases)
+
+
+def _phrase_count(lowered: str, phrases: list[str]) -> int:
+    return sum(1 for phrase in phrases if phrase in lowered)
+
+
+def giveaway_weight(lowered: str, phrases: list[str], weights: dict) -> int:
+    """Giveaway wording escalates with how many distinct phrases fire, capped.
+
+    One of these phrases is something a real member says. Five of them stacked in one post
+    is boilerplate, and counting the category once threw that difference away -- an obvious
+    scam from an older account came out level with an honest offer from the same account."""
+    count = _phrase_count(lowered, phrases)
+    if not count:
+        return 0
+    escalated = weights["giveaway_phrase"] + (count - 1) * weights["giveaway_phrase_each_extra"]
+    return min(escalated, weights["giveaway_phrase_max"])
 
 
 def score_message(content: str, has_attachment: bool, age_days: float, rules: dict) -> tuple[int, list[str]]:
@@ -91,7 +130,7 @@ def score_message(content: str, has_attachment: bool, age_days: float, rules: di
 
     The reasons come back alongside the number so the staff alert can say *why* something was
     flagged, which is what makes a false positive diagnosable without re-running anything."""
-    lowered = content.lower()
+    lowered = normalise(content)
     weights = rules["weights"]
     phrases = rules["phrases"]
 
@@ -103,9 +142,10 @@ def score_message(content: str, has_attachment: bool, age_days: float, rules: di
         score += age
         reasons.append(f"new account (+{age})")
 
-    if _phrase_hits(lowered, phrases["giveaway_phrase"]):
-        score += weights["giveaway_phrase"]
-        reasons.append("giveaway wording")
+    giveaway = giveaway_weight(lowered, phrases["giveaway_phrase"], weights)
+    if giveaway:
+        score += giveaway
+        reasons.append(f"giveaway wording (+{giveaway})")
 
     offplatform = _phrase_hits(lowered, phrases["offplatform_contact"]) or bool(
         PHONE_RE.search(content) or EMAIL_RE.search(content)
@@ -225,6 +265,10 @@ class AntiScam(commands.Cog):
         self.timeout_days = min(cfg["timeout_days"], MAX_TIMEOUT_DAYS)
         self.ban_delete_days = min(cfg["ban_delete_message_days"], MAX_BAN_DELETE_DAYS)
         self.purge_window_minutes = cfg["purge_window_minutes"]
+        # Local testing only, and .get() so it can be absent everywhere else.
+        self.test_ages = cfg.get("test_account_ages") or {}
+        if self.test_ages:
+            print(f"[antiscam] TESTING: {len(self.test_ages)} account(s) have a faked age")
         # Members with a case already open. Without this a scammer who posts twice gets two
         # forwards, two embeds and two whole sweeps. Process-local, like the buttons.
         self._held: set[int] = set()
@@ -238,7 +282,9 @@ class AntiScam(commands.Cog):
 
         rules = config.antiscam_data
         now = discord.utils.utcnow()
-        age = account_age_days(message.author.created_at, now)
+        age = effective_age_days(
+            message.author.id, message.author.created_at, now, self.test_ages
+        )
 
         # Older accounts are never scanned, so the regexes never run for the vast majority
         # of traffic.

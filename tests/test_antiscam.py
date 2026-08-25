@@ -9,7 +9,7 @@ from cogs import antiscam
 NOW = datetime.datetime(2026, 8, 24, tzinfo=datetime.timezone.utc)
 
 RULES = {
-    "threshold": 8,
+    "threshold": 6,
     "account_age_bands": [
         {"max_days": 7, "weight": 4},
         {"max_days": 30, "weight": 3},
@@ -18,6 +18,8 @@ RULES = {
     ],
     "weights": {
         "giveaway_phrase": 3,
+        "giveaway_phrase_each_extra": 1,
+        "giveaway_phrase_max": 7,
         "offplatform_contact": 3,
         "dm_solicitation": 1,
         "mass_mention_text": 2,
@@ -88,23 +90,25 @@ def test_camera_scam_from_a_fresh_account_clears_the_threshold():
 def test_ps5_scam_from_a_fresh_account_clears_the_threshold():
     """No WhatsApp or phone number in this one -- it clears on age, wording and the image."""
     score, reasons = antiscam.score_message(PS5_SCAM, True, age(3), RULES)
-    assert score == 9  # age 4 + giveaway 3 + dm 1 + attachment 1
+    assert score == 11  # age 4 + giveaway 3+2 for the extra phrases + dm 1 + attachment 1
     assert score >= RULES["threshold"]
     assert "off-platform contact" not in reasons
+
+
+def test_the_same_ps5_text_from_an_established_account_still_clears_it():
+    """Age barely helps here and it is meant not to. The post lays on five separate
+    giveaway phrases, and stacked boilerplate is the tell that survives an older account."""
+    score, _ = antiscam.score_message(PS5_SCAM, True, age(240), RULES)
+    assert score >= RULES["threshold"]
 
 
 # --- score_message: the cases that must NOT flag ---
 
 
-def test_the_same_ps5_text_from_an_established_account_stays_under():
-    """Pinned deliberately. A weight change that starts catching older members should fail
-    here rather than surprise someone in production."""
-    score, _ = antiscam.score_message(PS5_SCAM, True, age(240), RULES)
-    assert score == 6
-    assert score < RULES["threshold"]
-
-
-def test_a_real_member_offering_a_textbook_stays_under():
+def test_a_single_giveaway_phrase_from_an_old_account_stays_under():
+    """The quiet floor. One phrase, no off-platform contact, no image, an account near the
+    9-month line: that is as far as the detector leans back, and it is deliberately not far.
+    Anything more than this is expected to flag."""
     score, _ = antiscam.score_message(
         "giving away my old textbook, DM me if you want it", False, age(240), RULES
     )
@@ -462,12 +466,12 @@ def test_recent_attachment_ignores_messages_carrying_no_file():
     assert not antiscam.recent_attachment([cached(2, attachments=0)], 7, CUTOFF, exclude_id=1)
 
 
-def test_the_ps5_text_alone_sits_exactly_on_the_threshold():
-    """Why the split matters. Without the image the text is at 8 exactly, so the same post
-    without "message me if" drops to 7 and slips through -- which is what crediting a photo
-    from another recent message is there to prevent."""
-    score, _ = antiscam.score_message(PS5_SCAM, False, age(3), RULES)
-    assert score == RULES["threshold"]
+def test_the_split_post_costs_the_scammer_the_attachment_weight():
+    """Why crediting a photo from another message matters: splitting the post is otherwise
+    worth a free point to whoever does it."""
+    with_image, _ = antiscam.score_message(PS5_SCAM, True, age(3), RULES)
+    without, _ = antiscam.score_message(PS5_SCAM, False, age(3), RULES)
+    assert with_image - without == RULES["weights"]["attachment"]
 
 
 # --- sweep_recent: the last hour, everywhere the bot can reach ---
@@ -731,4 +735,105 @@ async def test_on_message_credits_a_photo_the_author_posted_in_another_message(m
     await cog.on_message(message)
 
     assert "attachment" in message.author.timeouts[0]["reason"]
-    assert "score 9" in message.author.timeouts[0]["reason"]
+    assert "score 11" in message.author.timeouts[0]["reason"]
+
+
+# --- the two reports, scored against the real data/antiscam.yaml ---
+#
+# Everything above runs on RULES, a trimmed mirror, which proves the arithmetic but says
+# nothing about what ships. These run on the file the bot actually loads, with the text
+# exactly as it was pasted -- curly apostrophes, stray direction marks and all.
+
+REAL_RULES = antiscam.config.antiscam_data
+SIX_MONTHS = 182
+
+REPORTED_CAMERA = (
+    "@everyone\"Just upgraded! Giving away my old camera. It's still functional and in good "
+    "shape. Perfect for photography enthusiasts or anyone wanting to start! DM me if "
+    "interested in picking it up dm me on WhatsApp…..\n\n"
+    "‪+1 249 546 1998\n\niMessage ….Sophiaheart85@gmail.com"
+)
+REPORTED_PS5 = (
+    "Giving away a PS5 to anyone who's interested!\n"
+    "I’m upgrading my gaming set up and i want to pass on my old console to someone "
+    "who’ll enjoy it, first come first served. \n"
+    "Message me if you're interested!"
+)
+
+
+def test_the_reported_camera_scam_flags_at_six_months():
+    score, _ = antiscam.score_message(REPORTED_CAMERA, False, SIX_MONTHS, REAL_RULES)
+    assert score >= REAL_RULES["threshold"]
+
+
+def test_the_reported_ps5_scam_flags_at_six_months():
+    """The harder of the two: no phone number, no email, no @everyone. It clears on the
+    stacked giveaway wording alone -- five separate phrases in three sentences."""
+    score, _ = antiscam.score_message(REPORTED_PS5, False, SIX_MONTHS, REAL_RULES)
+    assert score >= REAL_RULES["threshold"]
+
+
+def test_neither_report_needs_an_image_to_flag():
+    """The photos arrive as their own message, so nothing may depend on them being here."""
+    for text in (REPORTED_CAMERA, REPORTED_PS5):
+        score, _ = antiscam.score_message(text, False, SIX_MONTHS, REAL_RULES)
+        assert score >= REAL_RULES["threshold"]
+
+
+def test_a_curly_apostrophe_still_matches_the_phrase_list():
+    """Typed on a phone this arrives as U+2019, which matched nothing before normalise()."""
+    curly, _ = antiscam.score_message("to anyone who’s interested", False, 3, REAL_RULES)
+    straight, _ = antiscam.score_message("to anyone who's interested", False, 3, REAL_RULES)
+    assert curly == straight
+    assert curly > antiscam.age_weight(3, REAL_RULES["account_age_bands"])
+
+
+# --- giveaway wording escalates with the number of distinct phrases ---
+
+
+def test_giveaway_wording_escalates_with_each_extra_phrase():
+    """One of these is something a person says. Several stacked is an advertisement."""
+    weights, phrases = RULES["weights"], RULES["phrases"]["giveaway_phrase"]
+    assert antiscam.giveaway_weight("nothing of interest here", phrases, weights) == 0
+    assert antiscam.giveaway_weight("giving away my desk", phrases, weights) == 3
+    assert antiscam.giveaway_weight("giving away, upgrading my rig", phrases, weights) == 4
+
+
+def test_giveaway_wording_is_capped():
+    weights = dict(RULES["weights"], giveaway_phrase_max=4)
+    phrases = RULES["phrases"]["giveaway_phrase"]
+    stacked = "giving away, upgrading my rig, first come first served"
+    assert antiscam.giveaway_weight(stacked, phrases, weights) == 4
+
+
+# --- the local-testing age override ---
+
+
+def test_effective_age_uses_the_real_account_age_by_default():
+    created = NOW - datetime.timedelta(days=42)
+    assert antiscam.effective_age_days(7, created, NOW, {}) == pytest.approx(42)
+
+
+def test_effective_age_honours_a_local_testing_override():
+    """Nobody has a three-day-old account on demand, so without this the flow can't be
+    exercised end to end against a real Discord guild."""
+    created = NOW - datetime.timedelta(days=3700)
+    assert antiscam.effective_age_days(7, created, NOW, {7: 180}) == 180
+
+
+def test_the_override_only_touches_the_listed_account():
+    created = NOW - datetime.timedelta(days=3700)
+    assert antiscam.effective_age_days(8, created, NOW, {7: 180}) == pytest.approx(3700)
+
+
+@pytest.mark.asyncio
+async def test_a_faked_age_makes_an_otherwise_unscannable_account_scannable(monkeypatch):
+    events = []
+    cog, message, _ = build_cog(monkeypatch, events)
+    monkeypatch.setattr(antiscam.config, "antiscam_data", RULES)
+    cog.test_ages = {message.author.id: 180}
+    message.author.created_at = discord.utils.utcnow() - datetime.timedelta(days=3700)
+
+    await cog.on_message(message)
+
+    assert events[:2] == ["forward", "delete"]

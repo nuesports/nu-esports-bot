@@ -2,13 +2,17 @@
 #
 # A message is flagged when its total weight reaches `threshold`. Nothing here is a
 # hard trigger on its own -- the point of scoring rather than keyword matching is that
-# a real member offering a textbook hits one category and stays under, while a scam
-# hits several and clears it.
+# a scam hits several categories at once.
 #
-# Tuning: raise `threshold` to make the detector less trigger-happy, which is the first
-# thing to reach for if it starts catching real members. No code change needed.
+# Tuned toward false positives on purpose. Almost nobody gives away real hardware to a
+# Discord server, and the rare person who does writes it like a person rather than an
+# advertisement, so giveaway wording is a far stronger signal than it first looks. A
+# false positive costs one Allow click; a false negative is the scam staying up.
+#
+# Tuning: raise `threshold` if it starts catching real members, lower it to catch more.
+# No code change needed either way.
 
-threshold: 8
+threshold: 6
 
 # Account age is itself a signal: the younger the account, the more suspicious. First
 # band whose max_days the account falls under wins. An account older than every band
@@ -22,6 +26,12 @@ account_age_bands:
 
 weights:
   giveaway_phrase: 3
+  # Scam posts stack the boilerplate. The PS5 report hits five of the phrases below and the
+  # camera report two, while a real member offering a textbook hits one. Each phrase past
+  # the first adds this much, up to the cap -- which is what lets an older account still be
+  # caught for laying it on thick, without dropping the threshold for everyone.
+  giveaway_phrase_each_extra: 1
+  giveaway_phrase_max: 7
   offplatform_contact: 3
   # Deliberately much lower than offplatform_contact. "DM me" is ordinary Discord
   # behaviour and a genuine student selling a textbook will say it; being pushed to
