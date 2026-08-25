@@ -71,8 +71,8 @@ def age_weight(age_days: float, bands: list[dict]) -> int:
     """Score contribution from account age alone: the weight of the first band the age falls
     under, or 0 if it is older than every band.
 
-    That 0 is also what makes a member unscannable, so the widest band doubles as the overall
-    cutoff instead of the same threshold being configured in two places."""
+    0 means age adds nothing, not that the member is exempt. A giveaway advertisement is a
+    scam whoever posts it, so every message is scored and age is only ever evidence."""
     for band in bands:
         if age_days < band["max_days"]:
             return band["weight"]
@@ -279,6 +279,10 @@ class AntiScam(commands.Cog):
             return
         if message.author.id in self._held:
             return
+        # The people who can clear a hold are not held. Otherwise an official club giveaway
+        # posted by leadership would delete itself and mute whoever ran it.
+        if config.has_leadership(message.author) or config.is_bot_dev(message.author):
+            return
 
         rules = config.antiscam_data
         now = discord.utils.utcnow()
@@ -286,17 +290,24 @@ class AntiScam(commands.Cog):
             message.author.id, message.author.created_at, now, self.test_ages
         )
 
-        # Older accounts are never scanned, so the regexes never run for the vast majority
-        # of traffic.
-        if not age_weight(age, rules["account_age_bands"]):
-            return
+        score, reasons = score_message(message.content, bool(message.attachments), age, rules)
 
-        cutoff = now - datetime.timedelta(minutes=self.purge_window_minutes)
-        has_attachment = bool(message.attachments) or recent_attachment(
-            self.bot.cached_messages, message.author.id, cutoff, message.id
-        )
+        # Only walk the message cache when the point a separately-posted photo would add is
+        # the difference between flagging and not. Every message in the server comes through
+        # here, and there is no reason to scan the cache for the ones nowhere near the line.
+        attachment_weight = rules["weights"]["attachment"]
+        if (
+            not message.attachments
+            and score < rules["threshold"] <= score + attachment_weight
+            and recent_attachment(
+                self.bot.cached_messages,
+                message.author.id,
+                now - datetime.timedelta(minutes=self.purge_window_minutes),
+                message.id,
+            )
+        ):
+            score, reasons = score_message(message.content, True, age, rules)
 
-        score, reasons = score_message(message.content, has_attachment, age, rules)
         if score < rules["threshold"]:
             return
 

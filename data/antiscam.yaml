@@ -16,8 +16,9 @@ threshold: 6
 
 # Account age is itself a signal: the younger the account, the more suspicious. First
 # band whose max_days the account falls under wins. An account older than every band
-# scores 0, and scoring 0 here is what makes a member unscannable at all -- so the last
-# band doubles as the overall cutoff (270 days, about 9 months).
+# scores 0, which means age adds nothing -- not that the member is exempt. A giveaway
+# advertisement is a scam whoever posts it, so every message is scored regardless and
+# age is only ever evidence on top.
 account_age_bands:
   - {max_days: 7, weight: 4}
   - {max_days: 30, weight: 3}

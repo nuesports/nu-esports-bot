@@ -66,7 +66,7 @@ def test_age_weight_band_boundaries_are_exclusive():
 
 
 def test_age_weight_is_zero_past_the_widest_band():
-    """0 is what makes a member unscannable, so this doubles as the 9-month cutoff."""
+    """0 means age stops adding anything, not that the member stops being scored."""
     assert antiscam.age_weight(270, RULES["account_age_bands"]) == 0
     assert antiscam.age_weight(4000, RULES["account_age_bands"]) == 0
 
@@ -278,6 +278,8 @@ def build_cog(monkeypatch, events, role=FakeRole(), guild=None):
         {"antiscam": {"alert_channel": 5, "staff_role": 99, "timeout_days": 28,
                       "ban_delete_message_days": 7, "purge_window_minutes": 60}},
     )
+    monkeypatch.setattr(antiscam.config, "has_leadership", lambda member: False)
+    monkeypatch.setattr(antiscam.config, "is_bot_dev", lambda member: False)
     channel = FakeAlertChannel(events)
     cog = antiscam.AntiScam(bot=FakeBot(channel))
     guild = guild or FakeGuild(role)
@@ -715,11 +717,14 @@ async def test_allowing_a_member_lets_them_be_flagged_again(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_on_message_credits_a_photo_the_author_posted_in_another_message(monkeypatch):
-    """The case that prompted all of this: the pitch and the photos arrived separately, so
-    the text on its own would have scored 8 rather than 9."""
+    """The pitch and the photos arrive separately, so the photo has to count for the message
+    that scored. Only matters for a message sitting one point below the line, which is why
+    this one is deliberately thin -- anything blatant is over the threshold on wording alone
+    and never reaches the cache at all."""
     events = []
     cog, message, _ = build_cog(monkeypatch, events)
     monkeypatch.setattr(antiscam.config, "antiscam_data", RULES)
+    message.content = "dm me if you want it"
     message.attachments = []
     message.author.created_at = discord.utils.utcnow() - datetime.timedelta(days=3)
     cog.bot.cached_messages = [
@@ -735,7 +740,7 @@ async def test_on_message_credits_a_photo_the_author_posted_in_another_message(m
     await cog.on_message(message)
 
     assert "attachment" in message.author.timeouts[0]["reason"]
-    assert "score 11" in message.author.timeouts[0]["reason"]
+    assert "score 6" in message.author.timeouts[0]["reason"]
 
 
 # --- the two reports, scored against the real data/antiscam.yaml ---
@@ -827,7 +832,9 @@ def test_the_override_only_touches_the_listed_account():
 
 
 @pytest.mark.asyncio
-async def test_a_faked_age_makes_an_otherwise_unscannable_account_scannable(monkeypatch):
+async def test_a_faked_age_is_what_gets_scored(monkeypatch):
+    """The account is really ten years old, so age would contribute 0. Pinned to 180 it
+    contributes 1, and the score says so."""
     events = []
     cog, message, _ = build_cog(monkeypatch, events)
     monkeypatch.setattr(antiscam.config, "antiscam_data", RULES)
@@ -836,4 +843,63 @@ async def test_a_faked_age_makes_an_otherwise_unscannable_account_scannable(monk
 
     await cog.on_message(message)
 
+    assert "score 8" in message.author.timeouts[0]["reason"]
+    assert "new account (+1)" in message.author.timeouts[0]["reason"]
+
+
+# --- age is evidence, not a gate ---
+
+
+def test_both_reports_flag_from_an_account_years_old():
+    """This wording is a scam whoever posts it, so nothing is exempt on age alone."""
+    assert antiscam.age_weight(4000, REAL_RULES["account_age_bands"]) == 0
+    for text in (REPORTED_CAMERA, REPORTED_PS5):
+        score, _ = antiscam.score_message(text, False, 4000, REAL_RULES)
+        assert score >= REAL_RULES["threshold"]
+
+
+@pytest.mark.asyncio
+async def test_an_established_account_is_still_scored(monkeypatch):
+    events = []
+    cog, message, _ = build_cog(monkeypatch, events)
+    monkeypatch.setattr(antiscam.config, "antiscam_data", RULES)
+    message.author.created_at = discord.utils.utcnow() - datetime.timedelta(days=4000)
+
+    await cog.on_message(message)
+
     assert events[:2] == ["forward", "delete"]
+
+
+@pytest.mark.asyncio
+async def test_staff_are_never_held(monkeypatch):
+    """They are the ones who click Allow. An official club giveaway posted by leadership
+    must not delete itself and mute whoever ran it."""
+    events = []
+    cog, message, _ = build_cog(monkeypatch, events)
+    monkeypatch.setattr(antiscam.config, "antiscam_data", RULES)
+    monkeypatch.setattr(antiscam.config, "has_leadership", lambda member: True)
+
+    await cog.on_message(message)
+
+    assert events == []
+
+
+class ExplodingCache:
+    def __iter__(self):
+        raise AssertionError("the message cache should not be walked for this message")
+
+
+@pytest.mark.asyncio
+async def test_an_ordinary_message_never_walks_the_message_cache(monkeypatch):
+    """Every message in the server reaches on_message now that age gates nothing, so the
+    cache scan has to stay off the path for anything nowhere near the threshold."""
+    events = []
+    cog, message, _ = build_cog(monkeypatch, events)
+    monkeypatch.setattr(antiscam.config, "antiscam_data", RULES)
+    cog.bot.cached_messages = ExplodingCache()
+    message.content = "hey does anyone want to queue"
+    message.attachments = []
+
+    await cog.on_message(message)
+
+    assert events == []
