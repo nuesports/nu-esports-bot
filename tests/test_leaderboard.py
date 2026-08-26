@@ -2,6 +2,7 @@ import discord
 import pytest
 
 from cogs import leaderboard
+from tests.conftest import select_interaction
 
 
 class FakeMember:
@@ -304,7 +305,7 @@ async def test_role_select_gives_its_paginator_a_message_handle(monkeypatch):
         requester_id=1, guild=FakeGuild({1: FakeMember("Alex")}), game="overwatch"
     )
     view.select._selected_values = [view._MIXED]
-    view.select._interaction = object()
+    view.select._interaction = select_interaction()
 
     interaction = FakeRoleSelectInteraction(1)
     await view.on_select(interaction)

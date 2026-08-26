@@ -2,6 +2,7 @@ import asyncio
 import shutil
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest_asyncio
 
@@ -20,6 +21,17 @@ def _stage(example_name: str, real_name: str) -> None:
 
 _stage("config.example.yaml", "config.yaml")
 _stage("secrets.example.yaml", "secrets.yaml")
+
+
+def select_interaction():
+    """Stands in for the interaction a Select records when someone picks an option.
+
+    Tests force a selection by setting `select._selected_values` and `select._interaction`
+    by hand. py-cord 2.7 changed Select.values to read `self._interaction.data` before
+    handing back those values, where 2.6 only checked that _interaction was set -- so a
+    bare object() sentinel now raises AttributeError. Only needs `.data` to be non-None:
+    for a string select, values returns _selected_values as soon as that check passes."""
+    return SimpleNamespace(data={})
 
 
 class FakeMessage:
