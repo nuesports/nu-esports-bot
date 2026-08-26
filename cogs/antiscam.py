@@ -170,25 +170,28 @@ def score_message(content: str, has_attachment: bool, age_days: float, rules: di
     return score, reasons
 
 
-def build_alert_embed(member: discord.Member, channel_name: str, content: str, score: int,
-                      reasons: list[str], now: datetime.datetime,
+def build_alert_embed(member: discord.Member, channel, score: int, reasons: list[str],
                       sweep: SweepResult | None = None,
-                      problems: list[str] | None = None) -> discord.Embed:
+                      problems: list[str] | None = None,
+                      content: str | None = None) -> discord.Embed:
     """The member-info embed that carries the Allow/Ban buttons.
 
-    Also repeats the message text, so staff still have something to judge if the forward above
-    it renders empty for any reason."""
-    age = account_age_days(member.created_at, now)
-    held = "was timed out and their message deleted" if not problems else "posted a likely scam"
+    Carries no copy of the message: the forward under it is the message, and repeating the
+    text just made staff read the scam twice. `content` is the exception, passed only when
+    the forward failed and there would otherwise be nothing to judge.
+
+    Account age is a Discord timestamp rather than a computed number of days, so it renders
+    in the reader's own locale and stays right however long the alert sits unread."""
+    created = int(member.created_at.timestamp())
     embed = discord.Embed(
         title="Possible scam held for review",
-        description=f"{member.mention} {held}.",
+        description=f"**Score {score}** — {', '.join(reasons)}",
         color=discord.Color.from_rgb(78, 42, 132),
     )
-    embed.add_field(name="Member", value=f"{member.display_name}\n`{member.id}`", inline=True)
-    embed.add_field(name="Account age", value=f"{age:.1f} days", inline=True)
-    embed.add_field(name="Posted in", value=f"#{channel_name}", inline=True)
-    embed.add_field(name="Score", value=f"**{score}** — {', '.join(reasons)}", inline=False)
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="Member", value=f"{member.mention}\n`{member.id}`", inline=True)
+    embed.add_field(name="Account age", value=f"<t:{created}:R>\n<t:{created}:D>", inline=True)
+    embed.add_field(name="Posted in", value=channel.mention, inline=True)
     if content:
         excerpt = content if len(content) <= 1000 else content[:997] + "..."
         embed.add_field(name="Message", value=f">>> {excerpt}", inline=False)
@@ -327,13 +330,16 @@ class AntiScam(commands.Cog):
         await self.hold(message, score, reasons, now)
 
     async def hold(self, message, score: int, reasons: list[str], now) -> None:
-        """Forward the message to staff, delete it, time the poster out, sweep the rest of
-        their last hour, then post the review embed.
+        """Post the review embed, forward the message under it, delete it, time the poster
+        out, sweep the rest of their last hour, then edit the outcome back into the embed.
 
-        Order matters. The forward has to happen while the original still exists, and the
-        delete has to beat everything else because the message being visible is the actual
-        harm. The timeout goes ahead of the sweep rather than after it: the sweep is many
-        round-trips, and an un-muted scammer can keep posting right through it."""
+        The embed leads so the ping arrives on the message staff act on, with the forward
+        reading as its evidence rather than the other way round. That means the alert is
+        posted before the sweep has run, so what the sweep found is edited in afterwards.
+
+        The forward still has to happen while the original exists, and the timeout goes
+        ahead of the sweep: the sweep is many round-trips and an un-muted scammer can keep
+        posting right through it."""
         channel = self.bot.get_channel(self.alert_channel_id)
         if not channel:
             return
@@ -345,19 +351,31 @@ class AntiScam(commands.Cog):
             everyone=False, users=False, roles=[staff_role] if staff_role else False
         )
 
+        ping = staff_role.mention if staff_role else ""
+        alert = await channel.send(
+            content=f"{ping} held a possible scam from {message.author.display_name}",
+            embed=build_alert_embed(message.author, message.channel, score, reasons),
+            view=ScamReviewView(
+                message.author,
+                self.ban_delete_days,
+                on_resolved=lambda: self._held.discard(message.author.id),
+            ),
+            allowed_mentions=mentions,
+        )
+
         # None of these three is allowed to abort the rest. Half-acting -- deleting the
         # message and then bailing before staff are told -- is worse than any one failure.
         problems = []
 
         # A forward carries no content of its own: Discord rejects the pair outright with
-        # 400 error 160011. The staff ping goes on the embed below instead.
+        # 400 error 160011, which is why the ping rides on the embed above.
         try:
             await channel.send(
                 reference=message.to_reference(type=discord.MessageReferenceType.forward)
             )
         except Exception as exc:
             traceback.print_exception(exc)
-            problems.append("Could not forward the message; the text is quoted above.")
+            problems.append("Could not forward the message; the text is quoted below.")
 
         try:
             await message.delete()
@@ -382,21 +400,15 @@ class AntiScam(commands.Cog):
         cutoff = now - datetime.timedelta(minutes=self.purge_window_minutes)
         sweep = await self.sweep_recent(message.guild, message.author, cutoff)
 
-        embed = build_alert_embed(
-            message.author, message.channel.name, message.content, score, reasons, now, sweep,
-            problems,
-        )
-        ping = staff_role.mention if staff_role else ""
-        await channel.send(
-            content=f"{ping} held a possible scam from {message.author.display_name}",
-            embed=embed,
-            view=ScamReviewView(
-                message.author,
-                self.ban_delete_days,
-                on_resolved=lambda: self._held.discard(message.author.id),
-            ),
-            allowed_mentions=mentions,
-        )
+        # Only quote the text when the forward that was meant to carry it did not go out.
+        fallback = message.content if any("forward" in p for p in problems) else None
+        try:
+            await alert.edit(embed=build_alert_embed(
+                message.author, message.channel, score, reasons, sweep, problems, fallback
+            ))
+        except Exception as exc:
+            # The buttons still work, so this costs the sweep summary rather than the case.
+            traceback.print_exception(exc)
 
     async def sweep_recent(self, guild, author, cutoff) -> SweepResult:
         """Delete everything `author` posted since `cutoff`, in every channel the bot can act

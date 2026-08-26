@@ -162,31 +162,59 @@ class FakeMember:
         self.display_name = display_name
         self.mention = f"<@{id}>"
         self.created_at = NOW - datetime.timedelta(days=created_days_ago)
+        self.display_avatar = SimpleNamespace(url="https://cdn.example/avatar.png")
 
 
-def test_alert_embed_reports_the_age_score_and_reasons():
-    embed = antiscam.build_alert_embed(
-        FakeMember(), "general", PS5_SCAM, 9, ["new account (+4)", "giveaway wording"], NOW
+def build_embed(member=None, channel=None, score=9, reasons=("giveaway wording",), **kwargs):
+    return antiscam.build_alert_embed(
+        member or FakeMember(), channel or FakeSourceChannel(), score, list(reasons), **kwargs
     )
-    fields = {f.name: f.value for f in embed.fields}
-    assert "3.0 days" in fields["Account age"]
-    assert "**9**" in fields["Score"]
-    assert "giveaway wording" in fields["Score"]
-    assert "#general" in fields["Posted in"]
+
+
+def test_alert_embed_leads_with_the_score_and_reasons():
+    embed = build_embed(score=9, reasons=["new account (+4)", "giveaway wording"])
+    assert "Score 9" in embed.description
+    assert "giveaway wording" in embed.description
+
+
+def test_alert_embed_mentions_the_member_and_keeps_the_id():
+    """The mention so staff can click through, the id because the buttons die on a restart
+    and someone then has to act by hand."""
+    fields = {f.name: f.value for f in build_embed().fields}
+    assert "<@7>" in fields["Member"]
     assert "7" in fields["Member"]
 
 
-def test_alert_embed_repeats_the_message_text():
-    """Belt and braces: the forward above it should carry the content, but if it renders
-    empty the staff copy is still readable."""
-    embed = antiscam.build_alert_embed(FakeMember(), "general", PS5_SCAM, 9, ["x"], NOW)
-    fields = {f.name: f.value for f in embed.fields}
+def test_alert_embed_renders_the_account_age_as_a_discord_timestamp():
+    """A stored "3.0 days" goes stale while the alert sits unread; <t:...> does not, and it
+    renders in each reader's own locale."""
+    created = int((NOW - datetime.timedelta(days=3)).timestamp())
+    fields = {f.name: f.value for f in build_embed().fields}
+    assert f"<t:{created}:R>" in fields["Account age"]
+    assert f"<t:{created}:D>" in fields["Account age"]
+
+
+def test_alert_embed_links_the_channel_rather_than_naming_it():
+    fields = {f.name: f.value for f in build_embed().fields}
+    assert fields["Posted in"] == "<#4242>"
+
+
+def test_alert_embed_shows_the_offenders_avatar():
+    assert build_embed().thumbnail.url == "https://cdn.example/avatar.png"
+
+
+def test_alert_embed_does_not_repeat_the_message():
+    """The forward under it is the message. Quoting it too made staff read the scam twice."""
+    assert "Message" not in {f.name for f in build_embed().fields}
+
+
+def test_alert_embed_quotes_the_message_only_when_the_forward_failed():
+    fields = {f.name: f.value for f in build_embed(content=PS5_SCAM).fields}
     assert "Giving away a PS5" in fields["Message"]
 
 
-def test_alert_embed_truncates_a_very_long_message():
-    embed = antiscam.build_alert_embed(FakeMember(), "general", "x" * 4000, 9, ["x"], NOW)
-    fields = {f.name: f.value for f in embed.fields}
+def test_alert_embed_truncates_a_very_long_quoted_message():
+    fields = {f.name: f.value for f in build_embed(content="x" * 4000).fields}
     assert len(fields["Message"]) < 1100
     assert fields["Message"].endswith("...")
 
@@ -238,19 +266,36 @@ class FakeAuthor(FakeMember):
         self.timeouts.append({"duration": duration, "reason": reason})
 
 
+class FakeAlertMessage:
+    """What channel.send() hands back. hold() keeps it so the sweep result can be edited in
+    after the fact, since the alert now goes out before the sweep has run."""
+
+    def __init__(self, events):
+        self.events = events
+        self.edits = []
+
+    async def edit(self, **kwargs):
+        self.events.append("update")
+        self.edits.append(kwargs)
+
+
 class FakeAlertChannel:
     def __init__(self, events):
         self.events = events
         self.sent = []
+        self.messages = []
 
     async def send(self, content=None, **kwargs):
         self.events.append("forward" if "reference" in kwargs else "embed")
         self.sent.append({"content": content, **kwargs})
-        return None
+        message = FakeAlertMessage(self.events)
+        self.messages.append(message)
+        return message
 
 
 class FakeSourceChannel:
     name = "general"
+    mention = "<#4242>"
 
 
 class FakeScamMessage:
@@ -301,16 +346,37 @@ def build_cog(monkeypatch, events, role=FakeRole(), guild=None):
     return cog, message, channel
 
 
+def final_embed(channel):
+    """The alert goes out before the sweep runs, so the finished embed is the edited one."""
+    return channel.messages[0].edits[-1]["embed"]
+
+
 @pytest.mark.asyncio
 async def test_hold_forwards_before_deleting_and_deletes_before_timing_out(monkeypatch):
-    """Forward first or there is nothing left to forward; delete before the timeout because
-    the timeout is the slower call and the message being visible is the actual harm."""
+    """The embed leads so the ping lands on the message staff act on. Then forward before
+    the delete or there is nothing left to forward, and delete before the timeout because
+    the message being visible is the actual harm."""
     events = []
     cog, message, _ = build_cog(monkeypatch, events)
 
     await cog.hold(message, 9, ["giveaway wording"], NOW)
 
-    assert events[:3] == ["forward", "delete", "timeout"]
+    assert events[:4] == ["embed", "forward", "delete", "timeout"]
+
+
+@pytest.mark.asyncio
+async def test_the_pinged_embed_is_posted_above_the_forward(monkeypatch):
+    """Reading order. The ping belongs on the message staff act on, with the forward beneath
+    it as the evidence -- not a forwarded scam followed by a ping about it."""
+    events = []
+    cog, message, channel = build_cog(monkeypatch, events)
+
+    await cog.hold(message, 9, ["giveaway wording"], NOW)
+
+    assert [e for e in events if e in ("embed", "forward")] == ["embed", "forward"]
+    assert "<@&99>" in channel.sent[0]["content"]
+    assert "embed" in channel.sent[0]
+    assert "reference" in channel.sent[1]
 
 
 @pytest.mark.asyncio
@@ -321,7 +387,7 @@ async def test_hold_forwards_rather_than_reposting_the_text(monkeypatch):
     await cog.hold(message, 9, ["giveaway wording"], NOW)
 
     assert message.reference_type is discord.MessageReferenceType.forward
-    assert channel.sent[0]["reference"] == {"forwarded": True}
+    assert channel.sent[1]["reference"] == {"forwarded": True}
 
 
 @pytest.mark.asyncio
@@ -333,9 +399,9 @@ async def test_the_forward_carries_no_content_of_its_own(monkeypatch):
 
     await cog.hold(message, 9, ["giveaway wording"], NOW)
 
-    assert channel.sent[0]["reference"] == {"forwarded": True}
-    assert channel.sent[0]["content"] is None
-    assert "embed" not in channel.sent[0]
+    assert channel.sent[1]["reference"] == {"forwarded": True}
+    assert channel.sent[1]["content"] is None
+    assert "embed" not in channel.sent[1]
 
 
 @pytest.mark.asyncio
@@ -348,10 +414,10 @@ async def test_hold_pings_staff_without_letting_the_scam_ping_anyone(monkeypatch
 
     await cog.hold(message, 9, ["giveaway wording"], NOW)
 
-    mentions = channel.sent[1]["allowed_mentions"]
+    mentions = channel.sent[0]["allowed_mentions"]
     assert mentions.everyone is False
     assert mentions.users is False
-    assert "<@&99>" in channel.sent[1]["content"]
+    assert "<@&99>" in channel.sent[0]["content"]
 
 
 @pytest.mark.asyncio
@@ -371,9 +437,10 @@ async def test_a_refused_forward_still_reaches_staff(monkeypatch):
 
     await cog.hold(message, 9, ["giveaway wording"], NOW)
 
-    assert events[:2] == ["delete", "timeout"]
-    fields = {f.name: f.value for f in channel.sent[0]["embed"].fields}
+    assert events[:3] == ["embed", "delete", "timeout"]
+    fields = {f.name: f.value for f in final_embed(channel).fields}
     assert "Could not forward" in fields["⚠ Needs a human"]
+    # The quoted copy is the fallback for exactly this case, and only this case.
     assert "Giving away a PS5" in fields["Message"]
 
 
@@ -417,8 +484,8 @@ async def test_hold_survives_a_missing_staff_role(monkeypatch):
 
     await cog.hold(message, 9, ["giveaway wording"], NOW)
 
-    assert events[:3] == ["forward", "delete", "timeout"]
-    assert channel.sent[1]["allowed_mentions"].roles is False
+    assert events[:4] == ["embed", "forward", "delete", "timeout"]
+    assert channel.sent[0]["allowed_mentions"].roles is False
 
 
 # --- the review buttons ---
@@ -680,16 +747,12 @@ def test_alert_embed_reports_what_else_the_sweep_removed():
     existed -- and the photo is the half of the scam that isn't in the text."""
     sweep = antiscam.SweepResult(2, ["general", "memes"], 1)
 
-    embed = antiscam.build_alert_embed(FakeMember(), "general", PS5_SCAM, 9, ["x"], NOW, sweep)
-
-    fields = {f.name: f.value for f in embed.fields}
+    fields = {f.name: f.value for f in build_embed(sweep=sweep).fields}
     assert fields["Also removed"] == "2 more messages in #general, #memes (1 with attachments)"
 
 
 def test_alert_embed_omits_the_sweep_line_when_there_was_nothing_else():
-    embed = antiscam.build_alert_embed(
-        FakeMember(), "general", PS5_SCAM, 9, ["x"], NOW, antiscam.SweepResult(0, [], 0)
-    )
+    embed = build_embed(sweep=antiscam.SweepResult(0, [], 0))
 
     assert "Also removed" not in {f.name for f in embed.fields}
 
@@ -710,8 +773,10 @@ def record_sweep(monkeypatch, cog, events, result=antiscam.SweepResult(1, ["meme
 
 
 @pytest.mark.asyncio
-async def test_hold_sweeps_after_the_timeout_and_before_the_embed(monkeypatch):
-    """The timeout goes first because the sweep is many round-trips, and an un-muted
+async def test_hold_edits_the_sweep_result_in_after_the_fact(monkeypatch):
+    """The whole sequence. The alert leads so the ping lands on the message staff act on,
+    which means it goes out before the sweep has run and the outcome is edited in at the
+    end. The timeout still precedes the sweep: the sweep is many round-trips and an un-muted
     scammer can keep posting right through it."""
     events = []
     cog, message, _ = build_cog(monkeypatch, events)
@@ -719,7 +784,7 @@ async def test_hold_sweeps_after_the_timeout_and_before_the_embed(monkeypatch):
 
     await cog.hold(message, 9, ["giveaway wording"], NOW)
 
-    assert events == ["forward", "delete", "timeout", "sweep", "embed"]
+    assert events == ["embed", "forward", "delete", "timeout", "sweep", "update"]
 
 
 @pytest.mark.asyncio
@@ -741,7 +806,7 @@ async def test_hold_puts_the_sweep_result_on_the_staff_embed(monkeypatch):
 
     await cog.hold(message, 9, ["giveaway wording"], NOW)
 
-    fields = {f.name: f.value for f in channel.sent[1]["embed"].fields}
+    fields = {f.name: f.value for f in final_embed(channel).fields}
     assert fields["Also removed"] == "1 more message in #memes (1 with attachments)"
 
 
@@ -927,7 +992,7 @@ async def test_an_established_account_is_still_scored(monkeypatch):
 
     await cog.on_message(message)
 
-    assert events[:2] == ["forward", "delete"]
+    assert events[:2] == ["embed", "forward"]
 
 
 @pytest.mark.asyncio
@@ -956,7 +1021,7 @@ async def test_the_staff_exemption_can_be_turned_off_for_testing(monkeypatch):
 
     await cog.on_message(message)
 
-    assert events[:2] == ["forward", "delete"]
+    assert events[:2] == ["embed", "forward"]
 
 
 # --- a blocked timeout must not swallow the whole alert ---
@@ -976,7 +1041,7 @@ async def test_a_refused_timeout_still_reaches_staff(monkeypatch):
 
     await cog.hold(message, 9, ["giveaway wording"], NOW)
 
-    fields = {f.name: f.value for f in channel.sent[1]["embed"].fields}
+    fields = {f.name: f.value for f in final_embed(channel).fields}
     assert "still post" in fields["⚠ Needs a human"]
 
 
@@ -992,15 +1057,17 @@ async def test_a_refused_delete_still_reaches_staff(monkeypatch):
 
     await cog.hold(message, 9, ["giveaway wording"], NOW)
 
-    fields = {f.name: f.value for f in channel.sent[1]["embed"].fields}
+    fields = {f.name: f.value for f in final_embed(channel).fields}
     assert "may still be up" in fields["⚠ Needs a human"]
 
 
-def test_the_embed_does_not_claim_a_timeout_that_did_not_happen():
-    embed = antiscam.build_alert_embed(
-        FakeMember(), "general", PS5_SCAM, 9, ["x"], NOW, None, ["Could not time them out."]
-    )
-    assert "was timed out" not in embed.description
+def test_problems_are_surfaced_rather_than_left_for_staff_to_notice():
+    """Silently half-acting is the worst outcome: staff would read the alert and assume the
+    member was muted while they are still talking."""
+    embed = build_embed(problems=["Could not time them out."])
+
+    fields = {f.name: f.value for f in embed.fields}
+    assert fields["⚠ Needs a human"] == "Could not time them out."
 
 
 class ExplodingCache:
