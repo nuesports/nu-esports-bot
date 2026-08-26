@@ -74,3 +74,24 @@ gameheads:
 github_backlog:
   pr_channel: #<channel_id>
   issue_channel: #<channel_id>
+
+antiscam:
+  # where flagged messages and their member-info embed get posted
+  alert_channel: #<channel_id>
+  # pinged when something is flagged
+  staff_role: #<role_id>
+  # 28 is Discord's maximum; the timeout is meant to hold until staff clear it
+  timeout_days: 28
+  # how much of a banned member's history the ban purges, Discord allows up to 7
+  ban_delete_message_days: 7
+  # how far back a flag sweeps the poster's messages: scams routinely split the pitch
+  # and the photos across two posts, and deleting only the scoring one leaves the rest up
+  purge_window_minutes: 60
+  # leadership and bot devs are never held -- they are the ones who click Allow, and they
+  # run the real giveaways. Set false in a dev guild to test the flow from your own account
+  exempt_staff: true
+  # LOCAL TESTING ONLY -- pretend these accounts are this many days old, since nobody's
+  # real account is three days old on demand. Leave commented out; the cog prints a
+  # warning at load if it is set, and this file's real counterpart is gitignored.
+  #test_account_ages:
+  #  <your_discord_id>: 180

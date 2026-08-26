@@ -32,6 +32,7 @@ cogs_list = [
     "pugs",
     "matchmaking",
     "moderation",
+    "antiscam",
     "presence",
     "profile",
     "leaderboard",
