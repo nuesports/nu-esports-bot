@@ -478,6 +478,26 @@ async def test_hold_does_nothing_when_the_alert_channel_is_missing(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_refused_alert_leaves_the_member_flaggable(monkeypatch):
+    """The alert is the one send that cannot degrade -- there is nowhere to report the case
+    without it. Marking the member held before it lands would ignore every later scam from
+    them for the life of the process, and silently."""
+    events = []
+    cog, message, channel = build_cog(monkeypatch, events)
+
+    async def refuse(content=None, **kwargs):
+        raise http_error()
+
+    channel.send = refuse
+
+    await cog.hold(message, 9, ["giveaway wording"], NOW)
+
+    assert message.author.id not in cog._held
+    # Nothing deleted either: better to leave it up than delete it into silence.
+    assert events == []
+
+
+@pytest.mark.asyncio
 async def test_hold_survives_a_missing_staff_role(monkeypatch):
     events = []
     cog, message, channel = build_cog(monkeypatch, events, role=None)
@@ -504,11 +524,16 @@ class FakeResponse:
 
 
 class FakeClicker:
-    def __init__(self, leadership=True):
+    def __init__(self, leadership=True, moderate_members=True, ban_members=True):
         self.leadership = leadership
         self.mention = "<@1>"
         self.response = FakeResponse()
         self.user = self
+        # Discord reports every permission as granted for an administrator, so these two
+        # standing separately is what a non-admin moderator actually looks like.
+        self.guild_permissions = SimpleNamespace(
+            moderate_members=moderate_members, ban_members=ban_members
+        )
 
 
 @pytest.mark.asyncio
@@ -539,6 +564,86 @@ async def test_ban_purges_recent_messages_too(monkeypatch):
     await view.ban.callback(FakeClicker())
 
     assert guild.bans[0]["seconds"] == 7 * 86400
+
+
+@pytest.mark.asyncio
+async def test_each_button_needs_the_permission_its_action_needs(monkeypatch):
+    """Being leadership gets you as far as the buttons; it does not stand in for the
+    permission. Someone who cannot ban by hand must not ban through the bot."""
+    monkeypatch.setattr(antiscam.config, "has_leadership", lambda user: True)
+    monkeypatch.setattr(antiscam.config, "is_bot_dev", lambda user: False)
+    guild = FakeGuild(FakeRole())
+    member = FakeAuthor(guild)
+    member.guild_events = []
+    view = antiscam.ScamReviewView(member, ban_delete_days=7)
+
+    no_timeout = FakeClicker(moderate_members=False)
+    await view.allow.callback(no_timeout)
+    assert "Moderate Members" in no_timeout.response.messages[0]
+    assert member.timeouts == []
+
+    no_ban = FakeClicker(ban_members=False)
+    await view.ban.callback(no_ban)
+    assert "Ban Members" in no_ban.response.messages[0]
+    assert guild.bans == []
+
+
+@pytest.mark.asyncio
+async def test_the_two_permissions_are_checked_independently(monkeypatch):
+    """A moderator who can time out but not ban still gets to use Allow."""
+    monkeypatch.setattr(antiscam.config, "has_leadership", lambda user: True)
+    monkeypatch.setattr(antiscam.config, "is_bot_dev", lambda user: False)
+    member = FakeAuthor(FakeGuild(FakeRole()))
+    member.guild_events = []
+    view = antiscam.ScamReviewView(member, ban_delete_days=7)
+
+    await view.allow.callback(FakeClicker(ban_members=False))
+
+    assert member.timeouts[0]["until"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_button_that_cannot_act_says_so(monkeypatch):
+    """Otherwise staff get a bare "interaction failed" and the buttons stay lit, with no
+    way to tell whether the member was cleared or not."""
+    monkeypatch.setattr(antiscam.config, "has_leadership", lambda user: True)
+    monkeypatch.setattr(antiscam.config, "is_bot_dev", lambda user: False)
+    member = FakeAuthor(FakeGuild(FakeRole()))
+    member.guild_events = []
+
+    async def refuse(until, reason=None):
+        raise http_error()
+
+    member.timeout = refuse
+    view = antiscam.ScamReviewView(member, ban_delete_days=7)
+    interaction = FakeClicker()
+
+    await view.allow.callback(interaction)
+
+    assert "Could not clear the timeout" in interaction.response.messages[0]
+    # Still actionable: a transient failure must not disarm the case.
+    assert not any(child.disabled for child in view.children)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_ban_leaves_the_buttons_live(monkeypatch):
+    monkeypatch.setattr(antiscam.config, "has_leadership", lambda user: True)
+    monkeypatch.setattr(antiscam.config, "is_bot_dev", lambda user: False)
+    guild = FakeGuild(FakeRole())
+
+    async def refuse(member, delete_message_seconds=None, reason=None):
+        raise http_error()
+
+    guild.ban = refuse
+    member = FakeAuthor(guild)
+    member.guild_events = []
+    view = antiscam.ScamReviewView(member, ban_delete_days=7)
+    interaction = FakeClicker()
+
+    await view.ban.callback(interaction)
+
+    assert "Could not ban them" in interaction.response.messages[0]
+    assert not any(child.disabled for child in view.children)
 
 
 @pytest.mark.asyncio
@@ -713,6 +818,30 @@ async def test_sweep_keeps_going_when_one_channel_fails(monkeypatch):
         )
 
         assert result == antiscam.SweepResult(1, ["general"], 0)
+
+
+@pytest.mark.asyncio
+async def test_sweep_reports_the_batches_that_did_land(monkeypatch):
+    """A channel busy enough to need a second batch used to report zero for the whole
+    channel if that second call failed -- telling staff the scam was still up when 100 of
+    its messages had in fact gone."""
+    channel = FakeSweepChannel("general", [posted(i) for i in range(150)])
+    calls = []
+    original = channel.delete_messages
+
+    async def fail_on_the_second(messages):
+        calls.append(messages)
+        if len(calls) == 2:
+            raise http_error()
+        await original(messages)
+
+    channel.delete_messages = fail_on_the_second
+
+    result = await sweep_cog(monkeypatch).sweep_recent(
+        FakeGuild(text_channels=[channel]), AUTHOR, CUTOFF
+    )
+
+    assert result == antiscam.SweepResult(100, ["general"], 0)
 
 
 @pytest.mark.asyncio

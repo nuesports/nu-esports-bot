@@ -241,10 +241,44 @@ class ScamReviewView(discord.ui.View):
         if self.on_resolved:
             self.on_resolved()
 
+    async def _may(self, interaction: discord.Interaction, permission: str, label: str) -> bool:
+        """Whether the clicker holds the Discord permission the action actually needs.
+
+        Being leadership gets you as far as the buttons; it does not stand in for the
+        permission itself. Someone who cannot ban by hand should not ban through the bot,
+        and the two are different permissions, so this is per button rather than on
+        interaction_check. Administrators pass automatically -- Discord reports every
+        permission as granted for them."""
+        if getattr(interaction.user.guild_permissions, permission, False):
+            return True
+        await interaction.response.send_message(
+            f"You need **{label}** to do that.", ephemeral=True
+        )
+        return False
+
+    async def _report_failure(self, interaction: discord.Interaction, what: str) -> None:
+        """Say what went wrong instead of leaving a bare "interaction failed".
+
+        The member may have left, or the hierarchy may have moved since the hold. Without
+        this the buttons stay lit and staff have no idea whether anything happened."""
+        await interaction.response.send_message(
+            f"Could not {what} — they may have left, or the bot may sit below them in the "
+            f"role list. Nothing was changed.",
+            ephemeral=True,
+        )
+
     @discord.ui.button(label="Allow", style=discord.ButtonStyle.success)
     async def allow(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
         """Clear the timeout and let them talk again."""
-        await self.member.timeout(None, reason=f"Scam hold cleared by {interaction.user}")
+        if not await self._may(interaction, "moderate_members", "Moderate Members"):
+            return
+        try:
+            await self.member.timeout(None, reason=f"Scam hold cleared by {interaction.user}")
+        except Exception as exc:
+            traceback.print_exception(exc)
+            await self._report_failure(interaction, "clear the timeout")
+            return
+
         self._finish()
         await interaction.response.edit_message(
             content=f"✅ Allowed by {interaction.user.mention} — timeout cleared.", view=self
@@ -254,11 +288,19 @@ class ScamReviewView(discord.ui.View):
     async def ban(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
         """Ban, and purge their recent history in the same call -- that is what cleans up
         anything they posted in other channels before being caught."""
-        await self.member.guild.ban(
-            self.member,
-            delete_message_seconds=self.ban_delete_days * 86400,
-            reason=f"Scam confirmed by {interaction.user}",
-        )
+        if not await self._may(interaction, "ban_members", "Ban Members"):
+            return
+        try:
+            await self.member.guild.ban(
+                self.member,
+                delete_message_seconds=self.ban_delete_days * 86400,
+                reason=f"Scam confirmed by {interaction.user}",
+            )
+        except Exception as exc:
+            traceback.print_exception(exc)
+            await self._report_failure(interaction, "ban them")
+            return
+
         self._finish()
         await interaction.response.edit_message(
             content=f"🔨 Banned by {interaction.user.mention}.", view=self
@@ -344,24 +386,32 @@ class AntiScam(commands.Cog):
         if not channel:
             return
 
-        self._held.add(message.author.id)
-
         staff_role = message.guild.get_role(self.staff_role_id)
         mentions = discord.AllowedMentions(
             everyone=False, users=False, roles=[staff_role] if staff_role else False
         )
 
+        # If this fails there is nowhere to report the case, which is the same position as
+        # having no alert channel at all: leave the message up rather than delete it into
+        # silence. Crucially the member is only marked held once it has landed -- marking
+        # first and then raising would ignore every later scam from them, forever.
         ping = staff_role.mention if staff_role else ""
-        alert = await channel.send(
-            content=f"{ping} held a possible scam from {message.author.display_name}",
-            embed=build_alert_embed(message.author, message.channel, score, reasons),
-            view=ScamReviewView(
-                message.author,
-                self.ban_delete_days,
-                on_resolved=lambda: self._held.discard(message.author.id),
-            ),
-            allowed_mentions=mentions,
-        )
+        try:
+            alert = await channel.send(
+                content=f"{ping} held a possible scam from {message.author.display_name}",
+                embed=build_alert_embed(message.author, message.channel, score, reasons),
+                view=ScamReviewView(
+                    message.author,
+                    self.ban_delete_days,
+                    on_resolved=lambda: self._held.discard(message.author.id),
+                ),
+                allowed_mentions=mentions,
+            )
+        except Exception as exc:
+            traceback.print_exception(exc)
+            return
+
+        self._held.add(message.author.id)
 
         # None of these three is allowed to abort the rest. Half-acting -- deleting the
         # message and then bailing before staff are told -- is worse than any one failure.
@@ -424,22 +474,28 @@ class AntiScam(commands.Cog):
             perms = channel.permissions_for(guild.me)
             if not (perms.read_message_history and perms.manage_messages):
                 continue
+            # Counted per batch as it lands, not once at the end: a channel busy enough to
+            # need a second batch would otherwise report zero for everything it did delete
+            # if that second call failed, and staff would be told the scam is still up.
+            removed = []
             try:
                 stale = [
                     m
                     async for m in channel.history(after=cutoff, limit=SWEEP_LIMIT)
                     if m.author.id == author.id
                 ]
-                if not stale:
-                    continue
                 for start in range(0, len(stale), BULK_DELETE_MAX):
-                    await channel.delete_messages(stale[start:start + BULK_DELETE_MAX])
+                    batch = stale[start:start + BULK_DELETE_MAX]
+                    await channel.delete_messages(batch)
+                    removed.extend(batch)
             except discord.HTTPException:
                 # Forbidden included. One locked channel must not stop the others.
-                continue
+                traceback.print_exc()
 
-            deleted += len(stale)
-            with_files += sum(1 for m in stale if m.attachments)
+            if not removed:
+                continue
+            deleted += len(removed)
+            with_files += sum(1 for m in removed if m.attachments)
             channels.append(channel.name)
 
         return SweepResult(deleted, channels, with_files)
