@@ -566,7 +566,7 @@ requires-dist = [
     { name = "emoji", specifier = ">=2.15.0" },
     { name = "pillow", specifier = "==10.4.0" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = "==3.2.6" },
-    { name = "py-cord", specifier = "==2.6.1" },
+    { name = "py-cord", specifier = "==2.8.1" },
     { name = "pyyaml", specifier = "==6.0.2" },
 ]
 
@@ -879,15 +879,15 @@ wheels = [
 
 [[package]]
 name = "py-cord"
-version = "2.6.1"
+version = "2.8.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
-    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
+    { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/27/c7/c539d69d5cfa1ea5891d596212f73d619e40c7fc9f02ae906f4147993b94/py_cord-2.6.1.tar.gz", hash = "sha256:36064f225f2c7bbddfe542d5ed581f2a5744f618e039093cf7cd2659a58bc79b", size = 965087, upload-time = "2024-09-15T19:36:39.245Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/48/99/371cafe39067d46db88477a4badbbf4128938d5a11971f9f0b8f4581efa1/py_cord-2.8.1.tar.gz", hash = "sha256:b1ebd22416941bbeccb6d26df5cbd65ff6b1d47fcbbc9652efae039e46e8a562", size = 1173996, upload-time = "2026-07-25T16:40:10.435Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e7/90/2690ded84e34b15ca2619932a358c1b7dc6d28fe845dfbd01929fc33c9da/py_cord-2.6.1-py3-none-any.whl", hash = "sha256:e3d3b528c5e37b0e0825f5b884cbb9267860976c1e4878e28b55da8fd3af834b", size = 1089154, upload-time = "2024-09-15T19:36:35.34Z" },
+    { url = "https://files.pythonhosted.org/packages/e3/a6/7aeceb7dfa04c0d390b89ea0b4b980963b93cd972ab6306ad9684811dc6c/py_cord-2.8.1-py3-none-any.whl", hash = "sha256:8b97a61cceb4ca9000fc3ac1190fa4c45ef6a521d88707953f7eeadc1bd57071", size = 1264633, upload-time = "2026-07-25T16:40:08.96Z" },
 ]
 
 [[package]]

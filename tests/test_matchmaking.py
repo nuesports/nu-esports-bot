@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from cogs import matchmaking
-from tests.conftest import FakeInteraction, FakeMessage
+from tests.conftest import FakeInteraction, FakeMessage, select_interaction
 
 class FakeMember:
     def __init__(self, id):
@@ -1123,7 +1123,7 @@ async def test_cancelling_a_lobby_refunds_every_outstanding_bet(betting_session,
     cog.active_sessions[betting_session.key] = betting_session
     view = matchmaking.CancelConfirmView(betting_session)
     view.select._selected_values = ["confirm"]
-    view.select._interaction = object()   # values property short-circuits to None until set
+    view.select._interaction = select_interaction()
     interaction = FakeInteraction(
         gamehead(5), client=FakeClient(cog)
     )
@@ -1142,7 +1142,7 @@ async def test_backing_out_of_the_cancel_leaves_the_bets_alone(betting_session, 
     betting_session.bets = {7: {"team": "a", "points": 100}}
     view = matchmaking.CancelConfirmView(betting_session)
     view.select._selected_values = ["back"]
-    view.select._interaction = object()   # values property short-circuits to None until set
+    view.select._interaction = select_interaction()
     interaction = FakeInteraction(gamehead(5))
 
     await view.on_select(interaction)
@@ -1319,7 +1319,7 @@ async def test_swapping_defers_before_restarting_the_window(betting_session, fak
     round trips before the panel would otherwise get its reply."""
     view = matchmaking.SwapSelectView(betting_session)
     view.select._selected_values = ["1", "3"]
-    view.select._interaction = object()
+    view.select._interaction = select_interaction()
     interaction = FakeInteraction(gamehead(5))
 
     try:
@@ -1446,7 +1446,7 @@ async def test_swapping_refunds_bets_placed_on_the_old_lineup(betting_session, f
 
     view = matchmaking.SwapSelectView(betting_session)
     view.select._selected_values = ["1", "3"]
-    view.select._interaction = object()
+    view.select._interaction = select_interaction()
     try:
         await view.on_select(FakeInteraction(gamehead(5)))
 
@@ -1467,7 +1467,7 @@ async def test_swapping_refunds_bets_placed_on_the_old_lineup(betting_session, f
 async def test_swapping_is_gated_to_game_heads(betting_session, fake_db, gamehead_roles):
     view = matchmaking.SwapSelectView(betting_session)
     view.select._selected_values = ["1", "3"]
-    view.select._interaction = object()
+    view.select._interaction = select_interaction()
     interaction = FakeInteraction(member(99))
 
     await view.on_select(interaction)
@@ -1697,7 +1697,7 @@ async def test_swapping_survives_a_lobby_that_never_got_its_message(betting_sess
     betting_session.message = None
     view = matchmaking.SwapSelectView(betting_session)
     view.select._selected_values = ["1", "3"]
-    view.select._interaction = object()
+    view.select._interaction = select_interaction()
 
     await view.on_select(FakeInteraction(gamehead(5)))
 
@@ -1711,7 +1711,7 @@ async def test_cancelling_survives_a_lobby_that_never_got_its_message(betting_se
     cog.active_sessions[betting_session.key] = betting_session
     view = matchmaking.CancelConfirmView(betting_session)
     view.select._selected_values = ["confirm"]
-    view.select._interaction = object()
+    view.select._interaction = select_interaction()
 
     await view.on_select(FakeInteraction(gamehead(5), client=FakeClient(cog)))
 
@@ -1733,7 +1733,7 @@ async def test_cancelling_defers_before_the_refund_and_the_edit(betting_session,
     cog.active_sessions[betting_session.key] = betting_session
     view = matchmaking.CancelConfirmView(betting_session)
     view.select._selected_values = ["confirm"]
-    view.select._interaction = object()
+    view.select._interaction = select_interaction()
     interaction = FakeInteraction(gamehead(5), client=FakeClient(cog))
 
     await view.on_select(interaction)
@@ -1779,7 +1779,7 @@ async def test_cancelling_takes_the_admin_panels_down_with_it(betting_session, f
     cog.active_sessions[betting_session.key] = betting_session
     view = matchmaking.CancelConfirmView(betting_session)
     view.select._selected_values = ["confirm"]
-    view.select._interaction = object()
+    view.select._interaction = select_interaction()
 
     await view.on_select(FakeInteraction(gamehead(5), client=FakeClient(cog)))
 
