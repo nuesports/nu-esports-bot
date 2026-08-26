@@ -211,7 +211,6 @@ def build_alert_embed(member: discord.Member, channel, score: int, reasons: list
         # other cases. Silently half-acting is the worst outcome: staff would assume the
         # member was muted when they are still talking.
         embed.add_field(name="⚠ Needs a human", value="\n".join(problems), inline=False)
-    embed.set_footer(text="Allow clears the timeout. Ban also deletes their recent messages.")
     return embed
 
 
