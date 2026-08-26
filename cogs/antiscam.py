@@ -15,6 +15,7 @@ makes any of this testable without a Discord connection.
 
 import datetime
 import re
+import traceback
 from typing import NamedTuple
 
 import discord
@@ -171,15 +172,17 @@ def score_message(content: str, has_attachment: bool, age_days: float, rules: di
 
 def build_alert_embed(member: discord.Member, channel_name: str, content: str, score: int,
                       reasons: list[str], now: datetime.datetime,
-                      sweep: SweepResult | None = None) -> discord.Embed:
+                      sweep: SweepResult | None = None,
+                      problems: list[str] | None = None) -> discord.Embed:
     """The member-info embed that carries the Allow/Ban buttons.
 
     Also repeats the message text, so staff still have something to judge if the forward above
     it renders empty for any reason."""
     age = account_age_days(member.created_at, now)
+    held = "was timed out and their message deleted" if not problems else "posted a likely scam"
     embed = discord.Embed(
         title="Possible scam held for review",
-        description=f"{member.mention} was timed out and their message deleted.",
+        description=f"{member.mention} {held}.",
         color=discord.Color.from_rgb(78, 42, 132),
     )
     embed.add_field(name="Member", value=f"{member.display_name}\n`{member.id}`", inline=True)
@@ -200,6 +203,11 @@ def build_alert_embed(member: discord.Member, channel_name: str, content: str, s
             value=f"{sweep.deleted} more message{plural} in {where}{files}",
             inline=False,
         )
+    if problems:
+        # Discord refuses to time out an administrator, and role hierarchy blocks plenty of
+        # other cases. Silently half-acting is the worst outcome: staff would assume the
+        # member was muted when they are still talking.
+        embed.add_field(name="⚠ Needs a human", value="\n".join(problems), inline=False)
     embed.set_footer(text="Allow clears the timeout. Ban also deletes their recent messages.")
     return embed
 
@@ -265,6 +273,8 @@ class AntiScam(commands.Cog):
         self.timeout_days = min(cfg["timeout_days"], MAX_TIMEOUT_DAYS)
         self.ban_delete_days = min(cfg["ban_delete_message_days"], MAX_BAN_DELETE_DAYS)
         self.purge_window_minutes = cfg["purge_window_minutes"]
+        # Defaults on: staff run real giveaways. Off is for testing from your own account.
+        self.exempt_staff = cfg.get("exempt_staff", True)
         # Local testing only, and .get() so it can be absent everywhere else.
         self.test_ages = cfg.get("test_account_ages") or {}
         if self.test_ages:
@@ -280,8 +290,11 @@ class AntiScam(commands.Cog):
         if message.author.id in self._held:
             return
         # The people who can clear a hold are not held. Otherwise an official club giveaway
-        # posted by leadership would delete itself and mute whoever ran it.
-        if config.has_leadership(message.author) or config.is_bot_dev(message.author):
+        # posted by leadership would delete itself and mute whoever ran it. Turn this off in
+        # a dev guild to test the flow from your own account.
+        if self.exempt_staff and (
+            config.has_leadership(message.author) or config.is_bot_dev(message.author)
+        ):
             return
 
         rules = config.antiscam_data
@@ -332,34 +345,57 @@ class AntiScam(commands.Cog):
             everyone=False, users=False, roles=[staff_role] if staff_role else False
         )
 
-        ping = staff_role.mention if staff_role else ""
-        await channel.send(
-            content=f"{ping} held a possible scam from {message.author.display_name}",
-            reference=message.to_reference(type=discord.MessageReferenceType.forward),
-            allowed_mentions=mentions,
-        )
+        # None of these three is allowed to abort the rest. Half-acting -- deleting the
+        # message and then bailing before staff are told -- is worse than any one failure.
+        problems = []
 
-        await message.delete()
+        # A forward carries no content of its own: Discord rejects the pair outright with
+        # 400 error 160011. The staff ping goes on the embed below instead.
+        try:
+            await channel.send(
+                reference=message.to_reference(type=discord.MessageReferenceType.forward)
+            )
+        except Exception as exc:
+            traceback.print_exception(exc)
+            problems.append("Could not forward the message; the text is quoted above.")
 
-        await message.author.timeout(
-            datetime.timedelta(days=self.timeout_days),
-            reason=f"Possible giveaway scam (score {score}: {', '.join(reasons)})",
-        )
+        try:
+            await message.delete()
+        except Exception as exc:
+            traceback.print_exception(exc)
+            problems.append("Could not delete the message; it may still be up.")
+
+        try:
+            # timeout_for() takes the duration; timeout() wants an absolute datetime.
+            await message.author.timeout_for(
+                datetime.timedelta(days=self.timeout_days),
+                reason=f"Possible giveaway scam (score {score}: {', '.join(reasons)})",
+            )
+        except Exception as exc:
+            # Discord will not time out an administrator, and role hierarchy blocks the rest.
+            # Deliberately broad: whatever goes wrong here, staff still need the alert, and
+            # the traceback still reaches the log rather than being swallowed.
+            traceback.print_exception(exc)
+            problems.append("**Could not time them out** — they can still post. Check the "
+                            "bot's role position, and note admins cannot be timed out.")
 
         cutoff = now - datetime.timedelta(minutes=self.purge_window_minutes)
         sweep = await self.sweep_recent(message.guild, message.author, cutoff)
 
         embed = build_alert_embed(
-            message.author, message.channel.name, message.content, score, reasons, now, sweep
+            message.author, message.channel.name, message.content, score, reasons, now, sweep,
+            problems,
         )
+        ping = staff_role.mention if staff_role else ""
         await channel.send(
+            content=f"{ping} held a possible scam from {message.author.display_name}",
             embed=embed,
             view=ScamReviewView(
                 message.author,
                 self.ban_delete_days,
                 on_resolved=lambda: self._held.discard(message.author.id),
             ),
-            allowed_mentions=discord.AllowedMentions.none(),
+            allowed_mentions=mentions,
         )
 
     async def sweep_recent(self, guild, author, cutoff) -> SweepResult:

@@ -1,4 +1,5 @@
 import datetime
+import inspect
 from types import SimpleNamespace
 
 import discord
@@ -221,9 +222,20 @@ class FakeAuthor(FakeMember):
         self.bot = False
         self.timeouts = []
 
+    # Two methods because py-cord has two: timeout() takes an absolute datetime and is what
+    # Allow uses to clear a hold, timeout_for() takes the duration. Handing a timedelta to
+    # the first is what crashed the first real flag, so the fakes mirror both signatures.
     async def timeout(self, until, reason=None):
+        if isinstance(until, datetime.timedelta):
+            # What py-cord does, one layer down: it calls until.isoformat() and blows up.
+            # The fake used to accept this happily, which is how it reached production.
+            raise TypeError("timeout() takes an absolute datetime; use timeout_for()")
         self.guild_events.append("timeout")
         self.timeouts.append({"until": until, "reason": reason})
+
+    async def timeout_for(self, duration, reason=None):
+        self.guild_events.append("timeout")
+        self.timeouts.append({"duration": duration, "reason": reason})
 
 
 class FakeAlertChannel:
@@ -313,18 +325,56 @@ async def test_hold_forwards_rather_than_reposting_the_text(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_hold_pings_staff_without_letting_the_scam_ping_anyone(monkeypatch):
-    """These posts carry a literal @everyone -- echoing one with default mentions would hand
-    the scammer the mass ping they could not send themselves."""
+async def test_the_forward_carries_no_content_of_its_own(monkeypatch):
+    """Discord rejects a forward sent with content outright: 400, error code 160011. The
+    staff ping rode on it until that 400 showed up in the container logs."""
     events = []
     cog, message, channel = build_cog(monkeypatch, events)
 
     await cog.hold(message, 9, ["giveaway wording"], NOW)
 
-    mentions = channel.sent[0]["allowed_mentions"]
+    assert channel.sent[0]["reference"] == {"forwarded": True}
+    assert channel.sent[0]["content"] is None
+    assert "embed" not in channel.sent[0]
+
+
+@pytest.mark.asyncio
+async def test_hold_pings_staff_without_letting_the_scam_ping_anyone(monkeypatch):
+    """These posts carry a literal @everyone -- echoing one with default mentions would hand
+    the scammer the mass ping they could not send themselves. The ping goes on the embed,
+    which is the message staff can actually act on anyway."""
+    events = []
+    cog, message, channel = build_cog(monkeypatch, events)
+
+    await cog.hold(message, 9, ["giveaway wording"], NOW)
+
+    mentions = channel.sent[1]["allowed_mentions"]
     assert mentions.everyone is False
     assert mentions.users is False
-    assert "<@&99>" in channel.sent[0]["content"]
+    assert "<@&99>" in channel.sent[1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_forward_still_reaches_staff(monkeypatch):
+    """This is the failure that actually happened, and it aborted the whole hold: the scam
+    stayed up, nobody was muted and no alert was posted."""
+    events = []
+    cog, message, channel = build_cog(monkeypatch, events)
+    original_send = channel.send
+
+    async def refuse_forward(content=None, **kwargs):
+        if "reference" in kwargs:
+            raise http_error()
+        return await original_send(content, **kwargs)
+
+    channel.send = refuse_forward
+
+    await cog.hold(message, 9, ["giveaway wording"], NOW)
+
+    assert events[:2] == ["delete", "timeout"]
+    fields = {f.name: f.value for f in channel.sent[0]["embed"].fields}
+    assert "Could not forward" in fields["⚠ Needs a human"]
+    assert "Giving away a PS5" in fields["Message"]
 
 
 @pytest.mark.asyncio
@@ -334,8 +384,18 @@ async def test_hold_times_out_for_the_configured_span(monkeypatch):
 
     await cog.hold(message, 9, ["giveaway wording"], NOW)
 
-    assert message.author.timeouts[0]["until"] == datetime.timedelta(days=28)
+    assert message.author.timeouts[0]["duration"] == datetime.timedelta(days=28)
     assert "score 9" in message.author.timeouts[0]["reason"]
+
+
+def test_the_timeout_call_matches_pycords_real_signature():
+    """The fakes accept whatever they are given, so a timedelta passed to timeout() -- which
+    wants an absolute datetime -- sailed through every test and then blew up on the first
+    real flag. This binds the arguments against the actual library instead."""
+    inspect.signature(discord.Member.timeout_for).bind(
+        None, datetime.timedelta(days=28), reason="scam"
+    )
+    inspect.signature(discord.Member.timeout).bind(None, None, reason="cleared")
 
 
 @pytest.mark.asyncio
@@ -358,7 +418,7 @@ async def test_hold_survives_a_missing_staff_role(monkeypatch):
     await cog.hold(message, 9, ["giveaway wording"], NOW)
 
     assert events[:3] == ["forward", "delete", "timeout"]
-    assert channel.sent[0]["allowed_mentions"].roles is False
+    assert channel.sent[1]["allowed_mentions"].roles is False
 
 
 # --- the review buttons ---
@@ -882,6 +942,65 @@ async def test_staff_are_never_held(monkeypatch):
     await cog.on_message(message)
 
     assert events == []
+
+
+@pytest.mark.asyncio
+async def test_the_staff_exemption_can_be_turned_off_for_testing(monkeypatch):
+    """Otherwise there is no way to exercise this from a developer's own account, since a
+    bot dev is exempt and every admin is treated as one."""
+    events = []
+    cog, message, _ = build_cog(monkeypatch, events)
+    monkeypatch.setattr(antiscam.config, "antiscam_data", RULES)
+    monkeypatch.setattr(antiscam.config, "has_leadership", lambda member: True)
+    cog.exempt_staff = False
+
+    await cog.on_message(message)
+
+    assert events[:2] == ["forward", "delete"]
+
+
+# --- a blocked timeout must not swallow the whole alert ---
+
+
+@pytest.mark.asyncio
+async def test_a_refused_timeout_still_reaches_staff(monkeypatch):
+    """Discord will not time out an administrator. Deleting the message and then bailing
+    before the alert is posted would leave staff with no idea anything happened."""
+    events = []
+    cog, message, channel = build_cog(monkeypatch, events)
+
+    async def refuse(duration, reason=None):
+        raise http_error()
+
+    message.author.timeout_for = refuse
+
+    await cog.hold(message, 9, ["giveaway wording"], NOW)
+
+    fields = {f.name: f.value for f in channel.sent[1]["embed"].fields}
+    assert "still post" in fields["⚠ Needs a human"]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_delete_still_reaches_staff(monkeypatch):
+    events = []
+    cog, message, channel = build_cog(monkeypatch, events)
+
+    async def refuse():
+        raise http_error()
+
+    message.delete = refuse
+
+    await cog.hold(message, 9, ["giveaway wording"], NOW)
+
+    fields = {f.name: f.value for f in channel.sent[1]["embed"].fields}
+    assert "may still be up" in fields["⚠ Needs a human"]
+
+
+def test_the_embed_does_not_claim_a_timeout_that_did_not_happen():
+    embed = antiscam.build_alert_embed(
+        FakeMember(), "general", PS5_SCAM, 9, ["x"], NOW, None, ["Could not time them out."]
+    )
+    assert "was timed out" not in embed.description
 
 
 class ExplodingCache:
