@@ -289,6 +289,14 @@ class ScamReviewView(discord.ui.View):
         anything they posted in other channels before being caught."""
         if not await self._may(interaction, "ban_members", "Ban Members"):
             return
+        
+        try:
+            await self.member.timeout(None, reason=f"Timeout cleared before ban by {interaction.user}")
+        except Exception as exc:
+            traceback.print_exception(exc)
+            await self._report_failure(interaction, "clear the timeout")
+            return
+        
         try:
             await self.member.guild.ban(
                 self.member,
