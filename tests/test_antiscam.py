@@ -1012,7 +1012,7 @@ REPORTED_CAMERA = (
     "@everyone\"Just upgraded! Giving away my old camera. It's still functional and in good "
     "shape. Perfect for photography enthusiasts or anyone wanting to start! DM me if "
     "interested in picking it up dm me on WhatsApp…..\n\n"
-    "‪+1 249 546 1998\n\niMessage ….Sophiaheart85@gmail.com"
+    "+1 249 546 1998\n\niMessage ….Sophiaheart85@gmail.com"
 )
 REPORTED_PS5 = (
     "Giving away a PS5 to anyone who's interested!\n"
