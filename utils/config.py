@@ -54,12 +54,21 @@ def load_fun_data():
     with open(fun_file, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
+def load_antiscam_data():
+    """Load the scam-detector scoring rules from data/antiscam.yaml."""
+    antiscam_file = Path("data/antiscam.yaml")
+    if not antiscam_file.exists():
+        raise FileNotFoundError("data/antiscam.yaml not found in local directory")
+    with open(antiscam_file, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
 config = load_config()
 secrets = load_secrets()
 game_data = load_game_data()
 gameroom_data = load_gameroom_data()
 matchmaking_data = load_matchmaking_data()
 fun_data = load_fun_data()
+antiscam_data = load_antiscam_data()
 
 def _role_ids(value) -> set[int]:
     """Normalize a roles config value (int, list, or None) to a set of role IDs."""

@@ -943,7 +943,9 @@ class BetTeamSelectView(discord.ui.View):
             existing = self.session.bets.get(interaction.user.id)
             current_bet = existing["points"] if existing else 0
 
-            row = await db.fetch_one("SELECT points FROM users WHERE discordid = %s;", (interaction.user.id,))
+            # COALESCE because points is nullable, and the `if row else 0` below only
+            # guards a missing row, not a row holding a NULL.
+            row = await db.fetch_one("SELECT COALESCE(points, 0) FROM users WHERE discordid = %s;", (interaction.user.id,))
             balance = row[0] if row else 0
 
             await interaction.response.send_modal(BetModal(self.session, interaction.user, team, current_bet, balance))

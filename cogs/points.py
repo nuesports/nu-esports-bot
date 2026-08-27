@@ -36,14 +36,16 @@ class Points(commands.Cog):
 
         target_user = user if user else ctx.user
 
-        sql = "SELECT points FROM users WHERE discordid = %s;"
+        # COALESCE because users.points is nullable: a NULL would reach the :, format spec
+        # below as None and raise TypeError, where the unformatted version just printed it.
+        sql = "SELECT COALESCE(points, 0) FROM users WHERE discordid = %s;"
         data = [target_user.id]
         result = await db.fetch_one(sql, data)
 
         points = result[0] if result else 0
         embed = discord.Embed(
             title=f"{target_user.display_name}'s points",
-            description=f"{points} points",
+            description=f"{points:,} points",
             color=discord.Color.from_rgb(78, 42, 132),
         )
         await ctx.followup.send(embed=embed)
@@ -228,7 +230,10 @@ class PredictionView(discord.ui.View):
                         f"{interaction.user.mention} tried to change sides..."
                     )
                     return
-                sql = "SELECT points FROM users WHERE discordid = %s;"
+                # COALESCE because points is nullable, and `result[0] if result else 0`
+                # only guards a missing row -- a NULL column reaches the modal as None
+                # and raises on the `user_points < points` comparison.
+                sql = "SELECT COALESCE(points, 0) FROM users WHERE discordid = %s;"
                 data = [interaction.user.id]
                 result = await db.fetch_one(sql, data)
 

@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from cogs import matchmaking
-from tests.conftest import FakeInteraction, FakeMessage
+from tests.conftest import FakeInteraction, FakeMessage, select_interaction
 
 
 class FakeMember:
@@ -201,6 +201,7 @@ def fake_db(monkeypatch):
             self.perform_one_calls = []
             self.rowcount = 1        # what perform_one reports back to the caller
             self.fetch_one_result = None
+            self.fetch_one_calls = []
 
     rec = Recorder()
 
@@ -212,6 +213,7 @@ def fake_db(monkeypatch):
         return rec.rowcount
 
     async def fetch_one(sql, parameters=None):
+        rec.fetch_one_calls.append((sql, parameters))
         return rec.fetch_one_result
 
     monkeypatch.setattr(matchmaking.db, "perform_many", perform_many)
@@ -1122,7 +1124,7 @@ async def test_cancelling_a_lobby_refunds_every_outstanding_bet(betting_session,
     cog.active_sessions[betting_session.key] = betting_session
     view = matchmaking.CancelConfirmView(betting_session)
     view.select._selected_values = ["confirm"]
-    view.select._interaction = object()   # values property short-circuits to None until set
+    view.select._interaction = select_interaction()
     interaction = FakeInteraction(
         gamehead(5), client=FakeClient(cog)
     )
@@ -1141,7 +1143,7 @@ async def test_backing_out_of_the_cancel_leaves_the_bets_alone(betting_session, 
     betting_session.bets = {7: {"team": "a", "points": 100}}
     view = matchmaking.CancelConfirmView(betting_session)
     view.select._selected_values = ["back"]
-    view.select._interaction = object()   # values property short-circuits to None until set
+    view.select._interaction = select_interaction()
     interaction = FakeInteraction(gamehead(5))
 
     await view.on_select(interaction)
@@ -1318,7 +1320,7 @@ async def test_swapping_defers_before_restarting_the_window(betting_session, fak
     round trips before the panel would otherwise get its reply."""
     view = matchmaking.SwapSelectView(betting_session)
     view.select._selected_values = ["1", "3"]
-    view.select._interaction = object()
+    view.select._interaction = select_interaction()
     interaction = FakeInteraction(gamehead(5))
 
     try:
@@ -1445,7 +1447,7 @@ async def test_swapping_refunds_bets_placed_on_the_old_lineup(betting_session, f
 
     view = matchmaking.SwapSelectView(betting_session)
     view.select._selected_values = ["1", "3"]
-    view.select._interaction = object()
+    view.select._interaction = select_interaction()
     try:
         await view.on_select(FakeInteraction(gamehead(5)))
 
@@ -1466,7 +1468,7 @@ async def test_swapping_refunds_bets_placed_on_the_old_lineup(betting_session, f
 async def test_swapping_is_gated_to_game_heads(betting_session, fake_db, gamehead_roles):
     view = matchmaking.SwapSelectView(betting_session)
     view.select._selected_values = ["1", "3"]
-    view.select._interaction = object()
+    view.select._interaction = select_interaction()
     interaction = FakeInteraction(member(99))
 
     await view.on_select(interaction)
@@ -1696,7 +1698,7 @@ async def test_swapping_survives_a_lobby_that_never_got_its_message(betting_sess
     betting_session.message = None
     view = matchmaking.SwapSelectView(betting_session)
     view.select._selected_values = ["1", "3"]
-    view.select._interaction = object()
+    view.select._interaction = select_interaction()
 
     await view.on_select(FakeInteraction(gamehead(5)))
 
@@ -1710,7 +1712,7 @@ async def test_cancelling_survives_a_lobby_that_never_got_its_message(betting_se
     cog.active_sessions[betting_session.key] = betting_session
     view = matchmaking.CancelConfirmView(betting_session)
     view.select._selected_values = ["confirm"]
-    view.select._interaction = object()
+    view.select._interaction = select_interaction()
 
     await view.on_select(FakeInteraction(gamehead(5), client=FakeClient(cog)))
 
@@ -1732,7 +1734,7 @@ async def test_cancelling_defers_before_the_refund_and_the_edit(betting_session,
     cog.active_sessions[betting_session.key] = betting_session
     view = matchmaking.CancelConfirmView(betting_session)
     view.select._selected_values = ["confirm"]
-    view.select._interaction = object()
+    view.select._interaction = select_interaction()
     interaction = FakeInteraction(gamehead(5), client=FakeClient(cog))
 
     await view.on_select(interaction)
@@ -1778,7 +1780,7 @@ async def test_cancelling_takes_the_admin_panels_down_with_it(betting_session, f
     cog.active_sessions[betting_session.key] = betting_session
     view = matchmaking.CancelConfirmView(betting_session)
     view.select._selected_values = ["confirm"]
-    view.select._interaction = object()
+    view.select._interaction = select_interaction()
 
     await view.on_select(FakeInteraction(gamehead(5), client=FakeClient(cog)))
 
@@ -1884,3 +1886,17 @@ async def test_every_panel_view_checks_the_lobby_is_still_live(betting_session, 
 
     for view in panels:
         assert await view.interaction_check(FakeInteraction(gamehead(5))) is False, type(view).__name__
+
+
+@pytest.mark.asyncio
+async def test_bet_balance_is_read_through_coalesce(betting_session, fake_db):
+    """users.points is nullable, and `row[0] if row else 0` only guards a missing row.
+    A row holding NULL gets past it as None, which then formats into the modal label
+    as "None available" and breaks the comparison the modal does on submit."""
+    fake_db.fetch_one_result = (250,)
+    view = matchmaking.BetTeamSelectView(betting_session, FakeMember(7))
+
+    await view.make_callback("a")(FakeInteraction(FakeMember(7)))
+
+    sql, _ = fake_db.fetch_one_calls[0]
+    assert "COALESCE(points, 0)" in sql

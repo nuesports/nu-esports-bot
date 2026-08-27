@@ -1,0 +1,69 @@
+# Scoring rules for the giveaway-scam detector (cogs/antiscam.py).
+#
+# A message is flagged when its total weight reaches `threshold`. Nothing here is a
+# hard trigger on its own -- the point of scoring rather than keyword matching is that
+# a scam hits several categories at once.
+#
+# Tuned toward false positives on purpose. Almost nobody gives away real hardware to a
+# Discord server, and the rare person who does writes it like a person rather than an
+# advertisement, so giveaway wording is a far stronger signal than it first looks. A
+# false positive costs one Allow click; a false negative is the scam staying up.
+#
+# Tuning: raise `threshold` if it starts catching real members, lower it to catch more.
+# No code change needed either way.
+
+threshold: 6
+
+# Account age is itself a signal: the younger the account, the more suspicious. First
+# band whose max_days the account falls under wins. An account older than every band
+# scores 0, which means age adds nothing -- not that the member is exempt. A giveaway
+# advertisement is a scam whoever posts it, so every message is scored regardless and
+# age is only ever evidence on top.
+account_age_bands:
+  - {max_days: 7, weight: 4}
+  - {max_days: 30, weight: 3}
+  - {max_days: 90, weight: 2}
+  - {max_days: 270, weight: 1}
+
+weights:
+  giveaway_phrase: 3
+  # Scam posts stack the boilerplate. The PS5 report hits five of the phrases below and the
+  # camera report two, while a real member offering a textbook hits one. Each phrase past
+  # the first adds this much, up to the cap -- which is what lets an older account still be
+  # caught for laying it on thick, without dropping the threshold for everyone.
+  giveaway_phrase_each_extra: 1
+  giveaway_phrase_max: 7
+  offplatform_contact: 3
+  # Deliberately much lower than offplatform_contact. "DM me" is ordinary Discord
+  # behaviour and a genuine student selling a textbook will say it; being pushed to
+  # WhatsApp or a phone number is the actual scam tell.
+  dm_solicitation: 1
+  mass_mention_text: 2
+  attachment: 1
+
+phrases:
+  giveaway_phrase:
+    - "giving away"
+    - "give away"
+    - "giveaway"
+    - "first come first served"
+    - "first come, first served"
+    - "upgrading my"
+    - "upgrading and"
+    - "student in need"
+    - "perfect condition"
+    - "still functional"
+    - "to anyone who's interested"
+    - "to anyone interested"
+    - "pass on my old"
+  offplatform_contact:
+    - "whatsapp"
+    - "imessage"
+    - "telegram"
+    - "signal me"
+    - "text me on"
+  dm_solicitation:
+    - "dm me"
+    - "message me if"
+    - "message me for"
+    - "hmu"
