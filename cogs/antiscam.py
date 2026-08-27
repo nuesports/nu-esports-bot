@@ -272,7 +272,7 @@ class ScamReviewView(discord.ui.View):
             return
         try:
             await self.member.timeout(None, reason=f"Scam hold cleared by {interaction.user}")
-        except Exception as exc:
+        except discord.HTTPException as exc:
             traceback.print_exception(exc)
             await self._report_failure(interaction, "clear the timeout")
             return
@@ -291,7 +291,7 @@ class ScamReviewView(discord.ui.View):
         
         try:
             await self.member.timeout(None, reason=f"Timeout cleared before ban by {interaction.user}")
-        except Exception as exc:
+        except discord.HTTPException as exc:
             traceback.print_exception(exc)
             await self._report_failure(interaction, "clear the timeout")
             return
@@ -302,7 +302,7 @@ class ScamReviewView(discord.ui.View):
                 delete_message_seconds=self.ban_delete_days * 86400,
                 reason=f"Scam confirmed by {interaction.user}",
             )
-        except Exception as exc:
+        except discord.HTTPException as exc:
             traceback.print_exception(exc)
             await self._report_failure(interaction, "ban them")
             return
@@ -413,7 +413,7 @@ class AntiScam(commands.Cog):
                 ),
                 allowed_mentions=mentions,
             )
-        except Exception as exc:
+        except discord.HTTPException as exc:
             traceback.print_exception(exc)
             return
 
@@ -429,13 +429,13 @@ class AntiScam(commands.Cog):
             await channel.send(
                 reference=message.to_reference(type=discord.MessageReferenceType.forward)
             )
-        except Exception as exc:
+        except discord.HTTPException as exc:
             traceback.print_exception(exc)
             problems.append("Could not forward the message; the text is quoted below.")
 
         try:
             await message.delete()
-        except Exception as exc:
+        except discord.HTTPException as exc:
             traceback.print_exception(exc)
             problems.append("Could not delete the message; it may still be up.")
 
@@ -445,7 +445,7 @@ class AntiScam(commands.Cog):
                 datetime.timedelta(days=self.timeout_days),
                 reason=f"Possible giveaway scam (score {score}: {', '.join(reasons)})",
             )
-        except Exception as exc:
+        except discord.HTTPException as exc:
             # Discord will not time out an administrator, and role hierarchy blocks the rest.
             # Deliberately broad: whatever goes wrong here, staff still need the alert, and
             # the traceback still reaches the log rather than being swallowed.
@@ -462,7 +462,7 @@ class AntiScam(commands.Cog):
             await alert.edit(embed=build_alert_embed(
                 message.author, message.channel, score, reasons, sweep, problems, fallback
             ))
-        except Exception as exc:
+        except discord.HTTPException as exc:
             # The buttons still work, so this costs the sweep summary rather than the case.
             traceback.print_exception(exc)
 
