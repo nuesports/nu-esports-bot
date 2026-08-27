@@ -23,7 +23,6 @@ from discord.ext import commands
 
 from utils import config
 
-
 # Counted as offplatform_contact: a scam's whole purpose is moving you somewhere Discord
 # can't see. Deliberately conservative -- PHONE_RE wants separators or a leading +, so a
 # bare year like "2026" or a price like "150" doesn't match.
