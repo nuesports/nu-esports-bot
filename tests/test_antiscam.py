@@ -227,6 +227,7 @@ class FakeRole:
         self.id = id
         self.mention = f"<@&{id}>"
 
+DEFAULT_ROLE = FakeRole()
 
 class FakeGuild:
     def __init__(self, role=None, text_channels=(), threads=()):
@@ -328,7 +329,7 @@ class FakeBot:
         return self.channel
 
 
-def build_cog(monkeypatch, events, role=None, guild=None):
+def build_cog(monkeypatch, events, role=DEFAULT_ROLE, guild=None):
     monkeypatch.setattr(
         antiscam.config,
         "config",
@@ -339,7 +340,6 @@ def build_cog(monkeypatch, events, role=None, guild=None):
     monkeypatch.setattr(antiscam.config, "is_bot_dev", lambda member: False)
     channel = FakeAlertChannel(events)
     cog = antiscam.AntiScam(bot=FakeBot(channel))
-    role = role if role is not None else FakeRole()
     guild = guild or FakeGuild(role)
     author = FakeAuthor(guild)
     author.guild_events = events
