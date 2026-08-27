@@ -890,7 +890,8 @@ def test_alert_embed_omits_the_sweep_line_when_there_was_nothing_else():
 # --- hold(): where the sweep sits in the sequence ---
 
 
-def record_sweep(monkeypatch, cog, events, result=antiscam.SweepResult(1, ["memes"], 1)):
+def record_sweep(monkeypatch, cog, events, result=None):
+    result = result if result is not None else antiscam.SweepResult(1, ["memes"], 1)
     captured = {}
 
     async def sweep_recent(guild, author, cutoff):
