@@ -1,15 +1,12 @@
 import asyncio
 import contextlib
-import discord
 import random
 import time
+
+import discord
 from discord.ext import commands
 
-from utils import config
-from utils import db
-from utils import elo
-from utils import wallet
-
+from utils import config, db, elo, wallet
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
 GAME_CHOICES = list(config.game_data.keys())
@@ -78,7 +75,7 @@ def generate_postgame_embed(session: "MatchmakingSession", team: str, players: l
     if richest_chatter is not None:
         # Discord requires a non-empty name and value for embed fields. Zero-width
         # space matches the spacer pattern already used in cogs/pcs.py.
-        embed.add_field(name="​", value="​", inline=True)
+        embed.add_field(name="\u200b", value="\u200b", inline=True)
         embed.add_field(name="Richest Chatter", value=richest_chatter, inline=True)
     return embed
 

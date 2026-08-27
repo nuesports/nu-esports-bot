@@ -4,7 +4,11 @@ import discord
 import pytest
 
 from cogs import game
-from tests.conftest import FakeApplicationContext, FakeInteraction, FakeInteractionResponse
+from tests.conftest import (
+    FakeApplicationContext,
+    FakeInteraction,
+    FakeInteractionResponse,
+)
 
 
 class FakeUser:

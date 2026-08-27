@@ -27,9 +27,9 @@ async def cursor():
             async with conn.cursor() as cur:
                 yield cur
                 await conn.commit()
-        except Exception as e:
+        except Exception:
             await conn.rollback()
-            raise e
+            raise
 
 
 async def fetch_one(sql, parameters=None):

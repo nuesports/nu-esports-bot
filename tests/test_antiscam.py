@@ -227,6 +227,7 @@ class FakeRole:
         self.id = id
         self.mention = f"<@&{id}>"
 
+DEFAULT_ROLE = FakeRole()
 
 class FakeGuild:
     def __init__(self, role=None, text_channels=(), threads=()):
@@ -328,7 +329,7 @@ class FakeBot:
         return self.channel
 
 
-def build_cog(monkeypatch, events, role=FakeRole(), guild=None):
+def build_cog(monkeypatch, events, role=DEFAULT_ROLE, guild=None):
     monkeypatch.setattr(
         antiscam.config,
         "config",
@@ -889,7 +890,8 @@ def test_alert_embed_omits_the_sweep_line_when_there_was_nothing_else():
 # --- hold(): where the sweep sits in the sequence ---
 
 
-def record_sweep(monkeypatch, cog, events, result=antiscam.SweepResult(1, ["memes"], 1)):
+def record_sweep(monkeypatch, cog, events, result=None):
+    result = result if result is not None else antiscam.SweepResult(1, ["memes"], 1)
     captured = {}
 
     async def sweep_recent(guild, author, cutoff):
@@ -1010,7 +1012,7 @@ REPORTED_CAMERA = (
     "@everyone\"Just upgraded! Giving away my old camera. It's still functional and in good "
     "shape. Perfect for photography enthusiasts or anyone wanting to start! DM me if "
     "interested in picking it up dm me on WhatsApp…..\n\n"
-    "‪+1 249 546 1998\n\niMessage ….Sophiaheart85@gmail.com"
+    "+1 249 546 1998\n\niMessage ….Sophiaheart85@gmail.com"
 )
 REPORTED_PS5 = (
     "Giving away a PS5 to anyone who's interested!\n"

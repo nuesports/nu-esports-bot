@@ -6,7 +6,6 @@ from discord.ext import commands
 
 from utils import config, db
 
-
 GUILD_ID = config.secrets["discord"]["guild_id"]
 CENTRAL_TZ = ZoneInfo("America/Chicago")
 
@@ -56,14 +55,14 @@ class Gameroom(commands.Cog):
             return
 
         try:
-            start = datetime.datetime.strptime(start_date, "%Y-%m-%d").date()
+            start = datetime.datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=CENTRAL_TZ).date()
         except ValueError:
             await ctx.respond("Invalid start date. Use YYYY-MM-DD.", ephemeral=True)
             return
 
         if end_date:
             try:
-                end = datetime.datetime.strptime(end_date, "%Y-%m-%d").date()
+                end = datetime.datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=CENTRAL_TZ).date()
             except ValueError:
                 await ctx.respond("Invalid end date. Use YYYY-MM-DD.", ephemeral=True)
                 return
@@ -147,7 +146,7 @@ class Gameroom(commands.Cog):
     async def hours(self, ctx):
         default_hours = config.gameroom_data["default_hours"]
 
-        today = datetime.date.today()
+        today = datetime.datetime.now(tz=CENTRAL_TZ).date()
         start = today - datetime.timedelta(days=today.weekday())
         end = start + datetime.timedelta(days=6)
         week = [start + datetime.timedelta(days=i) for i in range(7)]

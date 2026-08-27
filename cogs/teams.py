@@ -2,7 +2,6 @@ from discord.ext import commands
 
 from utils import config
 
-
 GUILD_ID = config.secrets["discord"]["guild_id"]
 
 

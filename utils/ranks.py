@@ -1,5 +1,6 @@
 from utils import config
 
+
 def get_tiers(game: str) -> list[str]:
     """Returns the ordered list of rank tiers for a game, lowest to highest."""
     return config.game_data[game]["tiers"]

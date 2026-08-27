@@ -1,5 +1,4 @@
 import asyncio
-from typing import Dict, Tuple, List
 import random
 
 import discord
@@ -25,16 +24,16 @@ class PUGSession:
         self.blue_channel = blue_channel
         self.red_channel = red_channel
         self.num_players = num_players
-        self.blue_team: List[discord.Member] = []
-        self.red_team: List[discord.Member] = []
+        self.blue_team: list[discord.Member] = []
+        self.red_team: list[discord.Member] = []
         self.active: bool = True
-        self.player_session_stats: Dict[int, Tuple[int, int]] = {}
+        self.player_session_stats: dict[int, tuple[int, int]] = {}
 
 
 class PUGs(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot: commands.Bot = bot
-        self.active_sessions: Dict[int, PUGSession] = {}
+        self.active_sessions: dict[int, PUGSession] = {}
 
     pugs_group = discord.SlashCommandGroup(
         "pugs", "Lobby and voice channel tools for PUGs"
@@ -279,8 +278,8 @@ class MatchEndView(discord.ui.View):
         self,
         cog: PUGs,
         session: PUGSession,
-        blue_team: List[discord.Member],
-        red_team: List[discord.Member],
+        blue_team: list[discord.Member],
+        red_team: list[discord.Member],
         winner: str,
     ):
         super().__init__(timeout=None)

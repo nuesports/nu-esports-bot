@@ -1,8 +1,7 @@
 import asyncio
 import io
 import os
-from datetime import datetime, timedelta, timezone, date
-from typing import Dict, Tuple, List
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import aiohttp
@@ -10,9 +9,7 @@ import discord
 from discord.ext import commands, tasks
 from PIL import Image, ImageDraw, ImageFont
 
-from utils import config
-from utils import db
-
+from utils import config, db
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
 BOT_CHANNEL_ID = 741898302055907388
@@ -172,7 +169,7 @@ class PCs(commands.Cog):
 
     def get_gameroom_hours_for_date(
         self, target_date: date, overrides: dict
-    ) -> Tuple[datetime, datetime] | None:
+    ) -> tuple[datetime, datetime] | None:
         """Return open/close datetimes in Central, or None if closed or the hours text
         isn't a parseable time range (e.g. a free-text override like "Reduced hours")."""
         hours = overrides.get(target_date)
@@ -221,7 +218,7 @@ class PCs(commands.Cog):
 
     async def get_reservations_in_range(
         self, start_time: datetime, end_time: datetime
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """Fetch reservations that overlap with the given time range from database"""
         sql = """
             SELECT id, team, pcs, start_time, end_time, manager, is_prime_time
@@ -265,7 +262,7 @@ class PCs(commands.Cog):
     async def save_reservation(
         self,
         team: str,
-        pcs: List[int],
+        pcs: list[int],
         start_time: datetime,
         end_time: datetime,
         manager: str,
@@ -285,7 +282,7 @@ class PCs(commands.Cog):
     async def _send_cancellation_notification(
         self,
         team: str,
-        pcs: List[int],
+        pcs: list[int],
         start_time: datetime,
         end_time: datetime,
         cancelled_by: str,
@@ -343,7 +340,7 @@ class PCs(commands.Cog):
                 await reservations_channel.send(f"<@{staff_id}>", embed=embed)
             else:
                 await reservations_channel.send(embed=embed)
-        except Exception as e:
+        except discord.HTTPException as e:
             print(f"Failed to send cancellation notification: {e}")
 
     async def cog_command_error(self, ctx, error):
@@ -362,7 +359,7 @@ class PCs(commands.Cog):
             # Re-raise other errors
             raise error
 
-    def parse_time_range(self, time_str: str) -> Tuple[datetime, datetime]:
+    def parse_time_range(self, time_str: str) -> tuple[datetime, datetime]:
         """Parse time range string like '2025-10-10 7:00PM-9:00PM' into datetime objects (CST)"""
         # Split date and time range
         try:
@@ -373,19 +370,19 @@ class PCs(commands.Cog):
             year, month, day = map(int, date_part.split("-"))
 
             # Parse start time
-            start_time = datetime.strptime(start_time_str.strip(), "%I:%M%p")
+            start_time = datetime.strptime(start_time_str.strip(), "%I:%M%p").replace(tzinfo=CENTRAL_TZ)
             start_dt = datetime(
                 year, month, day, start_time.hour, start_time.minute, tzinfo=CENTRAL_TZ
             )
 
             # Parse end time
-            end_time = datetime.strptime(end_time_str.strip(), "%I:%M%p")
+            end_time = datetime.strptime(end_time_str.strip(), "%I:%M%p").replace(tzinfo=CENTRAL_TZ)
             end_dt = datetime(
                 year, month, day, end_time.hour, end_time.minute, tzinfo=CENTRAL_TZ
             )
 
             return start_dt, end_dt
-        except Exception:
+        except ValueError:
             raise ValueError(
                 "Invalid time format. Expected format: 'YYYY-MM-DD H:MMAM/PM-H:MMAM/PM' (e.g., '2025-10-10 7:00PM-9:00PM')"
             )
@@ -397,7 +394,7 @@ class PCs(commands.Cog):
         return days_ahead >= ADVANCE_BOOKING_DAYS
 
     def is_prime_time(
-        self, start_time: datetime, end_time: datetime, pcs: List[int]
+        self, start_time: datetime, end_time: datetime, pcs: list[int]
     ) -> bool:
         """
         Check if reservation qualifies as prime time.
@@ -423,11 +420,7 @@ class PCs(commands.Cog):
         )
 
         # If reservation ends before prime time starts, not prime time
-        if end_time <= prime_start:
-            return False
-
-        # If reservation starts before prime time but extends into it, or starts during prime time, it's prime time
-        return True
+        return end_time > prime_start
 
     def get_week_start(self, dt: datetime) -> datetime:
         """Get the start of the week (Monday 00:00) for a given datetime"""
@@ -455,7 +448,7 @@ class PCs(commands.Cog):
 
     async def check_prime_time_quota(
         self, team: str, start_time: datetime
-    ) -> Tuple[bool, int]:
+    ) -> tuple[bool, int]:
         """
         Check if team has prime time slots available.
         Returns (has_quota, used_count)
@@ -466,7 +459,7 @@ class PCs(commands.Cog):
 
     async def check_conflicts(
         self, start_time: datetime, end_time: datetime, num_pcs: int
-    ) -> Tuple[bool, str, str]:
+    ) -> tuple[bool, str, str]:
         """
         Check for conflicts with existing reservations.
         Returns (has_conflict, conflicting_team, conflicting_manager)
@@ -540,7 +533,7 @@ class PCs(commands.Cog):
 
     async def allocate_pcs(
         self, start_time: datetime, end_time: datetime, num_pcs: int
-    ) -> List[int]:
+    ) -> list[int]:
         """
         Allocate PCs optimally: back room first (14, 15, streaming), then main room (contiguous).
         Returns list of PC numbers, or empty list if can't allocate.
@@ -603,21 +596,20 @@ class PCs(commands.Cog):
 
         return allocated
 
-    async def fetch_pcs(self) -> Dict:
+    async def fetch_pcs(self) -> dict:
         return await self.fetch_json_with_retries(PCS_ENDPOINT)
 
-    async def fetch_json_with_retries(self, url: str) -> Dict:
+    async def fetch_json_with_retries(self, url: str) -> dict:
         timeout = aiohttp.ClientTimeout(total=10)
         max_attempts = 4
         retry_delay_seconds = 5
 
         for attempt in range(max_attempts):
             try:
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.get(url) as resp:
-                        resp.raise_for_status()
-                        return await resp.json()
-            except Exception:
+                async with aiohttp.ClientSession(timeout=timeout) as session, session.get(url) as resp:
+                    resp.raise_for_status()
+                    return await resp.json()
+            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
                 if attempt == max_attempts - 1:
                     raise
                 await asyncio.sleep(retry_delay_seconds)
@@ -628,7 +620,7 @@ class PCs(commands.Cog):
         return key.strip().lower()
 
     @staticmethod
-    def extract_sort_key(name: str) -> Tuple[int, str]:
+    def extract_sort_key(name: str) -> tuple[int, str]:
         # Attempt to sort by numeric desk id if present; fallback to name
         # Examples: "Desk 009" -> (9, "Desk 009"), "Desk 000 - Streaming" -> (999, name)
         try:
@@ -641,14 +633,14 @@ class PCs(commands.Cog):
                     if desk_num == 0:
                         return (999, name)
                     return (desk_num, name)
-        except Exception:
+        except ValueError:
             pass
         return (10**9, name)
 
     @staticmethod
     def build_pcs_entries(
-        data: Dict, reservations: List[Dict] = None
-    ) -> Tuple[List[Dict], Dict[str, str]]:
+        data: dict, reservations: list[dict] | None = None
+    ) -> tuple[list[dict], dict[str, str]]:
         """Build normalized display entries for /pcs text and image rendering."""
 
         def should_include(name: str) -> bool:
@@ -665,7 +657,7 @@ class PCs(commands.Cog):
                         return False
             return True
 
-        normalized_data: Dict[str, Dict] = {}
+        normalized_data: dict[str, dict] = {}
         if isinstance(data, list):
             for item in data:
                 if not isinstance(item, dict):
@@ -715,8 +707,8 @@ class PCs(commands.Cog):
                         ):
                             upcoming_reservations[machine] = int(time_diff)
 
-        id_to_state: Dict[str, str] = {}
-        entries: List[Dict] = []
+        id_to_state: dict[str, str] = {}
+        entries: list[dict] = []
         for name, info in items:
             state = info.get("state", "Unknown")
             id_to_state[name] = state
@@ -759,7 +751,7 @@ class PCs(commands.Cog):
         return entries, id_to_state
 
     @staticmethod
-    def build_pcs_grid_image(entries: List[Dict], columns: int = 5) -> io.BytesIO:
+    def build_pcs_grid_image(entries: list[dict], columns: int = 5) -> io.BytesIO:
         """Render a two-column PC status grid image for /pcs."""
         bg_color = (47, 49, 54)
         text_color = (220, 221, 222)
@@ -776,7 +768,7 @@ class PCs(commands.Cog):
         def load_font(path: str, size: int) -> ImageFont.ImageFont:
             try:
                 return ImageFont.truetype(path, size)
-            except Exception:
+            except OSError:
                 try:
                     return ImageFont.load_default(size=size)
                 except TypeError:
@@ -804,11 +796,11 @@ class PCs(commands.Cog):
         probe_img = Image.new("RGB", (1, 1), bg_color)
         probe_draw = ImageDraw.Draw(probe_img)
 
-        def text_size(text: str, font: ImageFont.ImageFont) -> Tuple[int, int]:
+        def text_size(text: str, font: ImageFont.ImageFont) -> tuple[int, int]:
             left, top, right, bottom = probe_draw.textbbox((0, 0), text, font=font)
             return right - left, bottom - top
 
-        def text_metrics(text: str, font: ImageFont.ImageFont) -> Tuple[int, int, int]:
+        def text_metrics(text: str, font: ImageFont.ImageFont) -> tuple[int, int, int]:
             left, top, right, bottom = probe_draw.textbbox((0, 0), text, font=font)
             return right - left, bottom - top, top
 
@@ -821,7 +813,7 @@ class PCs(commands.Cog):
         top_padding = 14
         bottom_padding = 14
 
-        def build_text_parts(entry: Dict) -> Tuple[str, str]:
+        def build_text_parts(entry: dict) -> tuple[str, str]:
             if entry["state"] == "ReadyForUser":
                 main_text = ""
             else:
@@ -831,7 +823,7 @@ class PCs(commands.Cog):
                 warning_text = f"Reserved in {entry['reserved_in']}m"
             return main_text, warning_text
 
-        def measure_text(entry: Dict) -> int:
+        def measure_text(entry: dict) -> int:
             main_text, warning_text = build_text_parts(entry)
             main_font = bold_font if entry["should_bold"] else regular_font
             main_w = 0
@@ -862,7 +854,7 @@ class PCs(commands.Cog):
 
         img = Image.new("RGB", (width, height), bg_color)
         draw = ImageDraw.Draw(img)
-        icon_cache: Dict[Tuple[str, int, int], Image.Image] = {}
+        icon_cache: dict[tuple[str, int, int], Image.Image] = {}
 
         # Keep dedicated text columns on both sides of the PC icons.
         # This avoids clipping when one side has much longer warning text.
@@ -890,10 +882,10 @@ class PCs(commands.Cog):
                     )
                 icon_cache[key] = icon
                 return icon
-            except Exception:
+            except (OSError, ValueError):
                 return None
 
-        def draw_text(entry: Dict, left_anchor_x: int, y: int, align_right: bool):
+        def draw_text(entry: dict, left_anchor_x: int, y: int, align_right: bool):
             main_font = bold_font if entry["should_bold"] else regular_font
             main_text, warning_text = build_text_parts(entry)
             main_w = 0
@@ -940,7 +932,7 @@ class PCs(commands.Cog):
                     font=warning_font,
                 )
 
-        def draw_pc_icon(entry: Dict, square_x: int, square_y: int):
+        def draw_pc_icon(entry: dict, square_x: int, square_y: int):
             pc_num = entry.get("pc_num")
             color = PCs.get_entry_icon_color(entry)
             if isinstance(pc_num, int):
@@ -982,8 +974,8 @@ class PCs(commands.Cog):
 
     @staticmethod
     def build_grid(
-        data: Dict, reservations: List[Dict] = None, columns: int = 5
-    ) -> Tuple[str, Dict[str, str]]:
+        data: dict, reservations: list[dict] | None = None, columns: int = 5
+    ) -> tuple[str, dict[str, str]]:
         entries, id_to_state = PCs.build_pcs_entries(data, reservations)
         cells = []
         for entry in entries:
@@ -1027,7 +1019,7 @@ class PCs(commands.Cog):
         return ("\n".join(rows) if rows else "No PCs found.", id_to_state)
 
     @staticmethod
-    def get_entry_icon_color(entry: Dict) -> str:
+    def get_entry_icon_color(entry: dict) -> str:
         if entry.get("should_bold"):
             return "orange"
         if entry.get("currently_reserved"):
@@ -1077,7 +1069,7 @@ class PCs(commands.Cog):
             return
         try:
             data = await self.fetch_pcs()
-        except Exception as e:
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
             print(e)
             # Reset cooldown so user can retry
             self.pcs.reset_cooldown(ctx)
@@ -1093,13 +1085,13 @@ class PCs(commands.Cog):
             date_str = today.strftime("%Y-%m-%d")
             reservations_data = await self.fetch_reservations(date_str)
             reservations = reservations_data.get("reservations", [])
-        except Exception as e:
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, AttributeError) as e:
             print(f"Failed to fetch reservations: {e}")
             reservations = []
 
         entries, _ = self.build_pcs_entries(data, reservations)
 
-        color_counts: Dict[str, int] = {
+        color_counts: dict[str, int] = {
             "green": 0,
             "red": 0,
             "black": 0,
@@ -1139,7 +1131,7 @@ class PCs(commands.Cog):
             await ctx.followup.send(
                 embed=embed, file=file, ephemeral=(not in_bot_channel)
             )
-        except Exception as e:
+        except (OSError, ValueError, discord.HTTPException) as e:
             print(f"Failed to render /pcs image, falling back to text: {e}")
             grid, _ = self.build_grid(data, reservations)
             embed.add_field(name="Grid", value=grid, inline=False)
@@ -1164,13 +1156,13 @@ class PCs(commands.Cog):
         await ctx.defer()
         try:
             data = await self.fetch_pcs()
-        except Exception:
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
             await ctx.followup.send(
                 "Failed to fetch PC data. Please try again later.", ephemeral=True
             )
             return
 
-        normalized_data: Dict[str, Dict] = {}
+        normalized_data: dict[str, dict] = {}
         if isinstance(data, list):
             for item in data:
                 if not isinstance(item, dict):
@@ -1192,7 +1184,7 @@ class PCs(commands.Cog):
             date_str = today.strftime("%Y-%m-%d")
             reservations_data = await self.fetch_reservations(date_str)
             reservations = reservations_data.get("reservations", [])
-        except Exception as e:
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, AttributeError) as e:
             print(f"Failed to fetch reservations: {e}")
             reservations = []
 
@@ -1291,8 +1283,7 @@ class PCs(commands.Cog):
         # Parse or default to today (in Central Time)
         if date:
             try:
-                target_date = datetime.strptime(date, "%Y-%m-%d")
-                target_date = target_date.replace(tzinfo=CENTRAL_TZ)
+                target_date = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=CENTRAL_TZ)
             except ValueError:
                 await ctx.followup.send(
                     "Invalid date format. Please use YYYY-MM-DD (e.g., 2025-09-30)",
@@ -1307,7 +1298,7 @@ class PCs(commands.Cog):
         # Fetch GGLeap reservations
         try:
             data = await self.fetch_reservations(date_str)
-        except Exception as e:
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
             print(e)
             await ctx.followup.send(
                 "Failed to fetch reservations. Please try again later.", ephemeral=True
@@ -1350,8 +1341,8 @@ class PCs(commands.Cog):
         await ctx.followup.send(embeds=embeds, file=file, view=view)
 
     def _find_pending_pcs(
-        self, db_res: Dict, ggleap_reservations: List[Dict]
-    ) -> List[int]:
+        self, db_res: dict, ggleap_reservations: list[dict]
+    ) -> list[int]:
         """
         Find which PCs from a database reservation are NOT yet in GGLeap.
         Returns list of PC numbers that are pending (not in GGLeap).
@@ -1386,8 +1377,8 @@ class PCs(commands.Cog):
         return pending_pcs
 
     def _process_db_reservations(
-        self, db_reservations: List[Dict], ggleap_reservations: List[Dict]
-    ) -> Tuple[List[Dict], List[Dict]]:
+        self, db_reservations: list[dict], ggleap_reservations: list[dict]
+    ) -> tuple[list[dict], list[dict]]:
         """
         Process database reservations to separate external and pending reservations.
 
@@ -1429,7 +1420,7 @@ class PCs(commands.Cog):
 
         return external_as_ggleap, pending_reservations
 
-    async def fetch_reservations(self, date_str: str) -> Dict:
+    async def fetch_reservations(self, date_str: str) -> dict:
         url = f"{RESERVATIONS_ENDPOINT}/{date_str}"
         return await self.fetch_json_with_retries(url)
 
@@ -1554,7 +1545,7 @@ class PCs(commands.Cog):
             )
             return
 
-        res_id, team, pcs, start_time, end_time, manager, is_prime_time = row
+        _res_id, team, pcs, start_time, end_time, manager, is_prime_time = row
 
         # Format current user's username
         user = ctx.author
@@ -1610,12 +1601,12 @@ class PCs(commands.Cog):
 
     @staticmethod
     def build_reservation_image(
-        reservations: List[Dict],
+        reservations: list[dict],
         target_date: datetime,
         start_hour: int,
         end_hour: int,
         end_minute: int = 0,
-        pending_reservations: List[Dict] = None,
+        pending_reservations: list[dict] | None = None,
     ) -> io.BytesIO:
         """Build a 2D grid image with time slots (x-axis) and desks (y-axis)
 
@@ -1692,10 +1683,9 @@ class PCs(commands.Cog):
                     for slot_idx, slot_time in enumerate(time_slots):
                         slot_end = slot_time + timedelta(minutes=30)
                         # Check if this slot overlaps with the reservation
-                        if start_time < slot_end and end_time > slot_time:
+                        if start_time < slot_end and end_time > slot_time and slot_idx not in desk_reservations[desk_name]["reserved"]:
                             # Only mark as pending if not already reserved (purple takes precedence)
-                            if slot_idx not in desk_reservations[desk_name]["reserved"]:
-                                desk_reservations[desk_name]["pending"].add(slot_idx)
+                            desk_reservations[desk_name]["pending"].add(slot_idx)
 
         # Image dimensions
         cell_size = 30
@@ -1720,7 +1710,7 @@ class PCs(commands.Cog):
         try:
             font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 14)
             small_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 12)
-        except Exception:
+        except OSError:
             font = ImageFont.load_default()
             small_font = ImageFont.load_default()
 
@@ -1839,7 +1829,7 @@ class ReservationTimeModal(discord.ui.Modal):
         try:
             start_time, end_time = self.cog.parse_time_range(times)
         except ValueError as e:
-            await interaction.followup.send(f"❌ {str(e)}", ephemeral=True)
+            await interaction.followup.send(f"❌ {e!s}", ephemeral=True)
             return
 
         # Ensure end time is after start time
@@ -2020,7 +2010,7 @@ class ReservationTimeModal(discord.ui.Modal):
                     }
                 else:
                     await reservations_channel.send(embed=embed)
-        except Exception as e:
+        except discord.HTTPException as e:
             print(f"Failed to send notification to nexus-reservations: {e}")
 
 
@@ -2073,7 +2063,7 @@ class ExternalReservationTimeModal(discord.ui.Modal):
         try:
             start_time, end_time = self.cog.parse_time_range(times)
         except ValueError as e:
-            await interaction.followup.send(f"❌ {str(e)}", ephemeral=True)
+            await interaction.followup.send(f"❌ {e!s}", ephemeral=True)
             return
 
         # Ensure end time is after start time
@@ -2094,7 +2084,7 @@ class ExternalReservationTimeModal(discord.ui.Modal):
         overlapping = await self.cog.get_reservations_in_range(start_time, end_time)
         if overlapping:
             # Build conflict message
-            conflict_teams = list(set(res["team"] for res in overlapping))
+            conflict_teams = list({res["team"] for res in overlapping})
             await interaction.followup.send(
                 f"❌ Cannot reserve all PCs - existing reservations conflict with this time slot.\n"
                 f"**Conflicting teams:** {', '.join(conflict_teams)}\n"
@@ -2137,10 +2127,10 @@ class ExternalReservationTimeModal(discord.ui.Modal):
 class ReservationView(discord.ui.View):
     def __init__(
         self,
-        reservations: List[Dict],
+        reservations: list[dict],
         target_date: datetime,
         cog: "PCs",
-        pending_reservations: List[Dict] = None,
+        pending_reservations: list[dict] | None = None,
     ):
         super().__init__(timeout=600)
         self.reservations = reservations
@@ -2155,7 +2145,7 @@ class ReservationView(discord.ui.View):
         open_hour = 12 if is_weekend else 14
         return (open_hour, 22, 30)  # Open to close
 
-    async def build_embed_and_file(self) -> Tuple[List[discord.Embed], discord.File]:
+    async def build_embed_and_file(self) -> tuple[list[discord.Embed], discord.File]:
         start_hour, end_hour, end_minute = self.get_hours_for_range()
         image_buffer = PCs.build_reservation_image(
             self.reservations,
@@ -2251,7 +2241,7 @@ class ReservationView(discord.ui.View):
             await self._fetch_and_update(new_date)
             embeds, file = await self.build_embed_and_file()
             await interaction.message.edit(embeds=embeds, file=file, view=self)
-        except Exception as e:
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError, discord.HTTPException) as e:
             print(e)
             await interaction.followup.send(
                 "Failed to fetch reservations for that date.", ephemeral=True
@@ -2268,7 +2258,7 @@ class ReservationView(discord.ui.View):
             await self._fetch_and_update(new_date)
             embeds, file = await self.build_embed_and_file()
             await interaction.message.edit(embeds=embeds, file=file, view=self)
-        except Exception as e:
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError, discord.HTTPException) as e:
             print(e)
             await interaction.followup.send(
                 "Failed to fetch reservations for that date.", ephemeral=True

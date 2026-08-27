@@ -85,6 +85,7 @@ class FakeBettor:
 async def prediction(monkeypatch):
     """A live prediction with its db writes recorded rather than executed."""
     import discord
+
     from tests.conftest import FakeMessage
 
     calls = []

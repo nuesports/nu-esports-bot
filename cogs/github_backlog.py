@@ -9,8 +9,8 @@ import hmac
 import re
 
 import discord
-from discord.ext import commands
 from aiohttp import web
+from discord.ext import commands
 
 from utils import config, db
 

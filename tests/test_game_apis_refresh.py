@@ -1,8 +1,10 @@
 import asyncio
 
+import psycopg
 import pytest
 
 from utils.game_apis import refresh
+from utils.game_apis.base import GameAPIError, LinkError
 
 
 class FakeClient:
@@ -37,8 +39,16 @@ def _always_stale(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_fetch_with_lock_swallows_exceptions(monkeypatch, capsys):
-    client = FakeClient(exc=ValueError("boom"))
+@pytest.mark.parametrize("exc", [
+    GameAPIError("provider fell over"),
+    LinkError("API key not configured"),
+    psycopg.OperationalError("database is gone"),
+])
+async def test_fetch_with_lock_swallows_what_fetch_and_store_can_fail_at(monkeypatch, capsys, exc):
+    """The three things that legitimately go wrong on a refresh: the provider, the
+    API key, and the write. Any of them skips one player rather than reaching
+    /profile view, which calls this through asyncio.gather with no handler of its own."""
+    client = FakeClient(exc=exc)
     monkeypatch.setitem(refresh.CLIENTS, "fakegame", client)
     _always_stale(monkeypatch)
 
@@ -46,6 +56,18 @@ async def test_fetch_with_lock_swallows_exceptions(monkeypatch, capsys):
 
     assert client.calls == 1
     assert "refresh failed for 123/fakegame" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_fetch_with_lock_lets_an_unexpected_error_through(monkeypatch):
+    """Deliberate: the catch names what the API and the DB can do, so a bug in our own
+    code surfaces instead of being logged and lost like everything used to be."""
+    client = FakeClient(exc=AttributeError("someone typoed a field name"))
+    monkeypatch.setitem(refresh.CLIENTS, "fakegame", client)
+    _always_stale(monkeypatch)
+
+    with pytest.raises(AttributeError):
+        await refresh._fetch_with_lock(123, "fakegame", (), force=False)
 
 
 @pytest.mark.asyncio
