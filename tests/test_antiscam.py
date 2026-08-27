@@ -761,12 +761,22 @@ class FakePerms:
         self.manage_messages = manage
 
 
-def posted(id, author_id=7, attachments=0):
-    return SimpleNamespace(
-        id=id,
-        author=SimpleNamespace(id=author_id),
-        attachments=[object()] * attachments,
-    )
+class FakeSwept:
+    """A message the sweep finds: forwardable while it still exists, and timestamped so the
+    sweep can tell which photo is the newest of everything it is about to delete."""
+
+    def __init__(self, id, author_id=7, attachments=0, minutes_ago=0):
+        self.id = id
+        self.author = SimpleNamespace(id=author_id)
+        self.attachments = [object()] * attachments
+        self.created_at = NOW - datetime.timedelta(minutes=minutes_ago)
+
+    def to_reference(self, type=None):
+        return {"forwarded": self.id, "type": type}
+
+
+def posted(id, author_id=7, attachments=0, minutes_ago=0):
+    return FakeSwept(id, author_id, attachments, minutes_ago)
 
 
 class FakeSweepChannel:
@@ -914,12 +924,132 @@ async def test_sweep_covers_threads_and_counts_where_the_files_were(monkeypatch)
     assert result == antiscam.SweepResult(2, ["general", "pugs-thread"], 1)
 
 
+# --- forwarding the one photo that outlives the sweep ---
+
+
+@pytest.mark.asyncio
+async def test_sweep_forwards_the_newest_photo_before_anything_is_deleted(monkeypatch):
+    """Discord builds a forward's snapshot at send time, so a swept message can only be
+    forwarded while it is still up -- and which photo is newest is only knowable once every
+    channel has been read, which is why all the reads come before any of the deletes."""
+    order = []
+    alert = FakeAlertChannel(order)
+    older = FakeSweepChannel("general", [posted(2, attachments=1, minutes_ago=30)])
+    newer = FakeSweepChannel("memes", [posted(3, attachments=1, minutes_ago=5)])
+    for channel in (older, newer):
+        delete = channel.delete_messages
+
+        async def watched(messages, _delete=delete, _name=channel.name):
+            order.append(f"delete {_name}")
+            await _delete(messages)
+
+        channel.delete_messages = watched
+
+    result = await sweep_cog(monkeypatch).sweep_recent(
+        FakeGuild(text_channels=[older, newer]), AUTHOR, CUTOFF, alert
+    )
+
+    assert order == ["forward", "delete general", "delete memes"]
+    assert alert.sent[0]["reference"]["forwarded"] == 3
+    assert result.forwarded is True
+
+
+@pytest.mark.asyncio
+async def test_sweep_forwards_the_newest_photo_not_the_last_one_read(monkeypatch):
+    """Channel order is whatever the guild hands back, so the newest photo is as likely to
+    sit in the channel read first as the one read last."""
+    alert = FakeAlertChannel([])
+    first = FakeSweepChannel("general", [posted(2, attachments=1, minutes_ago=1)])
+    second = FakeSweepChannel("memes", [posted(3, attachments=1, minutes_ago=45)])
+
+    await sweep_cog(monkeypatch).sweep_recent(
+        FakeGuild(text_channels=[first, second]), AUTHOR, CUTOFF, alert
+    )
+
+    assert [sent["reference"]["forwarded"] for sent in alert.sent] == [2]
+
+
+@pytest.mark.asyncio
+async def test_sweep_forwards_the_message_rather_than_its_file(monkeypatch):
+    """A forward keeps the author, channel and timestamp on the photo; a re-uploaded file
+    would arrive stripped of all three."""
+    alert = FakeAlertChannel([])
+    channel = FakeSweepChannel("general", [posted(2, attachments=1)])
+
+    await sweep_cog(monkeypatch).sweep_recent(
+        FakeGuild(text_channels=[channel]), AUTHOR, CUTOFF, alert
+    )
+
+    assert alert.sent[0]["reference"]["type"] == discord.MessageReferenceType.forward
+    assert "files" not in alert.sent[0]
+
+
+@pytest.mark.asyncio
+async def test_sweep_forwards_nothing_when_no_swept_message_carried_a_file(monkeypatch):
+    alert = FakeAlertChannel([])
+    channel = FakeSweepChannel("general", [posted(2), posted(3)])
+
+    result = await sweep_cog(monkeypatch).sweep_recent(
+        FakeGuild(text_channels=[channel]), AUTHOR, CUTOFF, alert
+    )
+
+    assert alert.sent == []
+    assert result.forwarded is False
+    assert result.deleted == 2
+
+
+@pytest.mark.asyncio
+async def test_sweep_still_deletes_when_the_forward_fails(monkeypatch):
+    """There is no fallback -- the photo goes down with the message. Getting the scam off
+    the server is still the half that matters."""
+    alert = FakeAlertChannel([])
+
+    async def refuse(content=None, **kwargs):
+        raise http_error()
+
+    alert.send = refuse
+    channel = FakeSweepChannel("general", [posted(2, attachments=1)])
+
+    result = await sweep_cog(monkeypatch).sweep_recent(
+        FakeGuild(text_channels=[channel]), AUTHOR, CUTOFF, alert
+    )
+
+    assert result.forwarded is False
+    assert result.deleted == 1
+
+
+@pytest.mark.asyncio
+async def test_sweep_still_reports_a_forward_when_the_delete_then_fails(monkeypatch):
+    """That forward is in front of staff whether or not the delete lands, so reporting
+    nothing would send them looking for something already on their screen."""
+    alert = FakeAlertChannel([])
+    channel = FakeSweepChannel("general", [posted(2, attachments=1)], fails="delete")
+
+    result = await sweep_cog(monkeypatch).sweep_recent(
+        FakeGuild(text_channels=[channel]), AUTHOR, CUTOFF, alert
+    )
+
+    assert result == antiscam.SweepResult(0, [], 0, True)
+
+
+@pytest.mark.asyncio
+async def test_sweep_forwards_nothing_when_there_is_nowhere_to_forward(monkeypatch):
+    channel = FakeSweepChannel("general", [posted(2, attachments=1)])
+
+    result = await sweep_cog(monkeypatch).sweep_recent(
+        FakeGuild(text_channels=[channel]), AUTHOR, CUTOFF
+    )
+
+    assert result.forwarded is False
+    assert result.deleted == 1
+
+
 # --- what the sweep reports back to staff ---
 
 
 def test_alert_embed_reports_what_else_the_sweep_removed():
-    """Swept messages aren't forwarded, so this line is the only thing telling staff a photo
-    existed -- and the photo is the half of the scam that isn't in the text."""
+    """The photo is the half of the scam that isn't in the text, so the count of messages
+    carrying one is worth saying even before the files themselves come across."""
     sweep = antiscam.SweepResult(2, ["general", "memes"], 1)
 
     fields = {f.name: f.value for f in build_embed(sweep=sweep).fields}
@@ -929,10 +1059,28 @@ def test_alert_embed_reports_what_else_the_sweep_removed():
     )
 
 
-def test_alert_embed_omits_the_sweep_line_when_there_was_nothing_else():
-    embed = build_embed(sweep=antiscam.SweepResult(0, [], 0))
+def test_alert_embed_points_staff_at_the_forwarded_photo():
+    sweep = antiscam.SweepResult(3, ["general"], 2, True)
 
-    assert "Also removed" not in {f.name for f in embed.fields}
+    fields = {f.name: f.value for f in build_embed(sweep=sweep).fields}
+    assert "Newest attachment forwarded below." in fields["Also removed"]
+
+
+def test_alert_embed_still_counts_the_photos_it_did_not_forward():
+    """Only the newest comes across, so this count is the only thing telling staff the
+    others were ever there."""
+    sweep = antiscam.SweepResult(3, ["general"], 2, True)
+
+    fields = {f.name: f.value for f in build_embed(sweep=sweep).fields}
+    assert "(2 with attachments)" in fields["Also removed"]
+
+
+def test_alert_embed_reports_a_forward_even_when_nothing_could_be_deleted():
+    """A sweep that deleted nothing still leaves the forward on staff's screen."""
+    sweep = antiscam.SweepResult(0, [], 0, True)
+
+    fields = {f.name: f.value for f in build_embed(sweep=sweep).fields}
+    assert fields["Also removed"] == "Newest attachment forwarded below."
 
 
 # --- hold(): where the sweep sits in the sequence ---
@@ -942,9 +1090,10 @@ def record_sweep(monkeypatch, cog, events, result=None):
     result = result if result is not None else antiscam.SweepResult(1, ["memes"], 1)
     captured = {}
 
-    async def sweep_recent(guild, author, cutoff):
+    async def sweep_recent(guild, author, cutoff, alert_channel=None):
         events.append("sweep")
         captured["cutoff"] = cutoff
+        captured["alert_channel"] = alert_channel
         return result
 
     monkeypatch.setattr(cog, "sweep_recent", sweep_recent)
@@ -987,6 +1136,36 @@ async def test_hold_puts_the_sweep_result_on_the_staff_embed(monkeypatch):
 
     fields = {f.name: f.value for f in final_embed(channel).fields}
     assert fields["Also removed"] == "1 more message in #memes (1 with attachments)"
+
+
+# --- what hold() hands the sweep ---
+
+
+@pytest.mark.asyncio
+async def test_hold_gives_the_sweep_the_channel_to_forward_into(monkeypatch):
+    """The sweep forwards the newest photo before deleting it, so it needs the alert
+    channel -- the same one the embed and the scored message's forward went to."""
+    events = []
+    cog, message, channel = build_cog(monkeypatch, events)
+    captured = record_sweep(monkeypatch, cog, events)
+
+    await cog.hold(message, 9, ["giveaway wording"], NOW)
+
+    assert captured["alert_channel"] is channel
+
+
+@pytest.mark.asyncio
+async def test_hold_posts_nothing_of_its_own_after_the_sweep(monkeypatch):
+    """hold() re-uploads nothing: the alert channel gets the embed, the scored message's
+    forward, and whatever the sweep itself forwarded."""
+    events = []
+    cog, message, channel = build_cog(monkeypatch, events)
+    record_sweep(monkeypatch, cog, events)
+
+    await cog.hold(message, 9, ["giveaway wording"], NOW)
+
+    assert events == ["embed", "forward", "delete", "timeout", "sweep", "update"]
+    assert len(channel.sent) == 2
 
 
 # --- one case per member, not one per message ---

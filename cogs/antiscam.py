@@ -40,11 +40,16 @@ BULK_DELETE_MAX = 100
 
 
 class SweepResult(NamedTuple):
-    """What the post-flag cleanup removed, for the staff embed to report."""
+    """What the post-flag cleanup removed, for the staff embed to report.
+
+    `forwarded` says whether the newest photo made it out ahead of the delete. The rest of
+    what the sweep takes down is reported as a count and nothing more -- staff get the case,
+    one photo, and the numbers, rather than the scammer's whole album re-posted at them."""
 
     deleted: int
     channels: list[str]
     with_files: int
+    forwarded: bool = False
 
 
 def account_age_days(created_at: datetime.datetime, now: datetime.datetime) -> float:
@@ -93,6 +98,10 @@ def recent_attachment(messages, author_id: int, cutoff, exclude_id: int) -> bool
         and message.created_at >= cutoff
         for message in messages
     )
+
+
+def _plural(count: int, word: str) -> str:
+    return f"{count} {word}" if count == 1 else f"{count} {word}s"
 
 
 def normalise(content: str) -> str:
@@ -169,6 +178,32 @@ def score_message(content: str, has_attachment: bool, age_days: float, rules: di
     return score, reasons
 
 
+async def forward_newest_attachment(messages, alert_channel) -> bool:
+    """Forward the newest of `messages` carrying a file, so one photo outlives the sweep.
+
+    Discord builds a forward's snapshot server-side at send time, so this only works ahead
+    of the delete -- afterwards there is nothing left to point at. A forward carries exactly
+    one message, and the newest photo is the one worth the slot: a scam's later posts are
+    the ones with the goods in them, and staff are deciding one question, not archiving.
+
+    A failure is reported rather than raised. The sweep's job is getting the scam down."""
+    if alert_channel is None:
+        return False
+    carrying = [message for message in messages if message.attachments]
+    if not carrying:
+        return False
+
+    newest = max(carrying, key=lambda message: message.created_at)
+    try:
+        await alert_channel.send(
+            reference=newest.to_reference(type=discord.MessageReferenceType.forward)
+        )
+    except discord.HTTPException:
+        traceback.print_exc()
+        return False
+    return True
+
+
 def build_alert_embed(member: discord.Member, channel, score: int, reasons: list[str],
                       sweep: SweepResult | None = None,
                       problems: list[str] | None = None,
@@ -194,17 +229,17 @@ def build_alert_embed(member: discord.Member, channel, score: int, reasons: list
     if content:
         excerpt = content if len(content) <= 1000 else content[:997] + "..."
         embed.add_field(name="Message", value=f">>> {excerpt}", inline=False)
-    if sweep and sweep.deleted:
-        # The swept messages aren't forwarded, so this line is the only thing telling staff
-        # a photo existed at all -- and the photo is the half of the scam that isn't text.
-        where = ", ".join(f"#{name}" for name in sweep.channels)
-        files = f" ({sweep.with_files} with attachments)" if sweep.with_files else ""
-        plural = "" if sweep.deleted == 1 else "s"
-        embed.add_field(
-            name="Also removed",
-            value=f"{sweep.deleted} more message{plural} in {where}{files}",
-            inline=False,
-        )
+    if sweep and (sweep.deleted or sweep.forwarded):
+        # Only the newest photo comes across, so the count of messages that carried one is
+        # still worth saying -- otherwise "1 more message" reads as nothing visual at all.
+        lines = []
+        if sweep.deleted:
+            where = ", ".join(f"#{name}" for name in sweep.channels)
+            files = f" ({sweep.with_files} with attachments)" if sweep.with_files else ""
+            lines.append(f"{_plural(sweep.deleted, 'more message')} in {where}{files}")
+        if sweep.forwarded:
+            lines.append("Newest attachment forwarded below.")
+        embed.add_field(name="Also removed", value="\n".join(lines), inline=False)
     if problems:
         # Discord refuses to time out an administrator, and role hierarchy blocks plenty of
         # other cases. Silently half-acting is the worst outcome: staff would assume the
@@ -454,7 +489,7 @@ class AntiScam(commands.Cog):
                             "bot's role position, and note admins cannot be timed out.")
 
         cutoff = now - datetime.timedelta(minutes=self.purge_window_minutes)
-        sweep = await self.sweep_recent(message.guild, message.author, cutoff)
+        sweep = await self.sweep_recent(message.guild, message.author, cutoff, channel)
 
         # Only quote the text when the forward that was meant to carry it did not go out.
         fallback = message.content if any("forward" in p for p in problems) else None
@@ -466,36 +501,55 @@ class AntiScam(commands.Cog):
             # The buttons still work, so this costs the sweep summary rather than the case.
             traceback.print_exception(exc)
 
-    async def sweep_recent(self, guild, author, cutoff) -> SweepResult:
+    async def sweep_recent(self, guild, author, cutoff, alert_channel=None) -> SweepResult:
         """Delete everything `author` posted since `cutoff`, in every channel the bot can act
         in -- the scam's photos are routinely a second message, sometimes somewhere else.
 
+        Reads every channel before deleting any of it, because the one photo that gets
+        forwarded is the newest across all of them and there is no telling which channel
+        holds it until they have all been read. The forward then goes out ahead of the
+        delete: Discord builds its snapshot server-side, so a deleted message cannot be
+        forwarded afterwards.
+
         The permission check is local, so channels the bot could not clean anyway cost no
         request. A channel that fails is skipped rather than aborting the rest of the sweep."""
-        deleted = 0
-        with_files = 0
-        channels: list[str] = []
-
+        found = []
         for channel in [*guild.text_channels, *guild.threads]:
             perms = channel.permissions_for(guild.me)
             if not (perms.read_message_history and perms.manage_messages):
                 continue
-            # Counted per batch as it lands, not once at the end: a channel busy enough to
-            # need a second batch would otherwise report zero for everything it did delete
-            # if that second call failed, and staff would be told the scam is still up.
-            removed = []
             try:
                 stale = [
                     m
                     async for m in channel.history(after=cutoff, limit=SWEEP_LIMIT)
                     if m.author.id == author.id
                 ]
+            except discord.HTTPException:
+                # Forbidden included. One locked channel must not stop the others.
+                traceback.print_exc()
+                continue
+            if stale:
+                found.append((channel, stale))
+
+        forwarded = await forward_newest_attachment(
+            [m for _, stale in found for m in stale], alert_channel
+        )
+
+        deleted = 0
+        with_files = 0
+        channels: list[str] = []
+
+        for channel, stale in found:
+            # Counted per batch as it lands, not once at the end: a channel busy enough to
+            # need a second batch would otherwise report zero for everything it did delete
+            # if that second call failed, and staff would be told the scam is still up.
+            removed = []
+            try:
                 for start in range(0, len(stale), BULK_DELETE_MAX):
                     batch = stale[start:start + BULK_DELETE_MAX]
                     await channel.delete_messages(batch)
                     removed.extend(batch)
             except discord.HTTPException:
-                # Forbidden included. One locked channel must not stop the others.
                 traceback.print_exc()
 
             if not removed:
@@ -504,7 +558,7 @@ class AntiScam(commands.Cog):
             with_files += sum(1 for m in removed if m.attachments)
             channels.append(channel.name)
 
-        return SweepResult(deleted, channels, with_files)
+        return SweepResult(deleted, channels, with_files, forwarded)
 
 
 def setup(bot):
