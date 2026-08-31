@@ -16,11 +16,15 @@ CENTRAL_TZ = ZoneInfo("America/Chicago")
 
 
 class Gameroom(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
+    def __init__(self, bot: discord.Bot) -> None:
+        self.bot: discord.Bot = bot
 
     @staticmethod
-    def _get_hours_for_day(adjusted_hours: dict, day: datetime.date, default: str):
+    def _get_hours_for_day(
+        adjusted_hours: dict[datetime.date | str, str],
+        day: datetime.date,
+        default: str,
+    ) -> str:
         value = adjusted_hours.get(day)
         if value is None:
             value = adjusted_hours.get(day.strftime("%Y-%m-%d"))
@@ -50,7 +54,7 @@ class Gameroom(commands.Cog):
                            description="Text to display, on Fri/Sat/Sun",
                            required=False
                        )
-                    ):
+                    ) -> None:
         if not config.is_gameroom_staff(ctx.author):
             await ctx.respond("You do not have permission to use this command.", ephemeral=True)
             return
@@ -92,8 +96,8 @@ class Gameroom(commands.Cog):
         weekday_dates = [d for d in dates if d.weekday() not in (4, 5, 6)]  # Fri, Sat, Sun
         weekend_dates = [d for d in dates if d.weekday() in (4, 5, 6)]
 
-        to_set = []
-        to_clear = []
+        to_set: list[tuple[datetime.date, str]] = []
+        to_clear: list[datetime.date] = []
 
         if regular_text:
             to_set += [(d, regular_text) for d in weekday_dates]
@@ -144,7 +148,7 @@ class Gameroom(commands.Cog):
     @gameroom.command(
         name="hours", description="Lists current game room hours", guild_ids=[GUILD_ID]
     )
-    async def hours(self, ctx):
+    async def hours(self, ctx: discord.ApplicationContext) -> None:
         default_hours = config.gameroom_data["default_hours"]
 
         today = datetime.datetime.now(tz=CENTRAL_TZ).date()
@@ -184,7 +188,7 @@ class Gameroom(commands.Cog):
         description="Lists games available on game room consoles",
         guild_ids=[GUILD_ID],
     )
-    async def games(self, ctx):
+    async def games(self, ctx: discord.ApplicationContext) -> None:
         games = config.gameroom_data["games"]
 
         embed = discord.Embed(
@@ -204,5 +208,5 @@ class Gameroom(commands.Cog):
         await ctx.respond("", embed=embed)
 
 
-def setup(bot):
+def setup(bot: discord.Bot) -> None:
     bot.add_cog(Gameroom(bot))
