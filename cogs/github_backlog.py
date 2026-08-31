@@ -1,9 +1,6 @@
-"""GitHub webhook receiver: posts PR/issue notifications and pins/unpins them.
+"""GitHub webhook receiver: posts PR/issue notifications and pins/unpins 
+them through a small aiohttp server from setup() via bot.loop.create_task()"""
 
-Runs a small aiohttp server alongside the bot's own gateway connection, started
-from setup() via bot.loop.create_task() -- not from on_ready, since on_ready can
-fire more than once on reconnect and would try to bind the port twice.
-"""
 import hashlib
 import hmac
 import re
@@ -24,9 +21,7 @@ COLOR_DONE = discord.Color.from_rgb(48, 199, 107)
 
 
 def strip_markdown(text: str) -> str:
-    """Strip Discord/GitHub markdown syntax down to plain text -- untrusted PR/issue
-    titles/bodies otherwise render as headings, bold blocks, masked links, etc.
-    (Discord embeds render '#'/'##' as actual large headings, not just message content.)"""
+    """Strip discord/github markdown syntax to plaintext"""
     collapsed = text.replace("\r\n", " ").replace("\n", " ").strip()
     collapsed = LEADING_HEADING.sub("", collapsed)
     collapsed = MASKED_LINK.sub(r"\1", collapsed)
@@ -34,7 +29,7 @@ def strip_markdown(text: str) -> str:
 
 
 def verify_signature(secret: str, body: bytes, signature_header: str | None) -> bool:
-    """Check GitHub's HMAC-SHA256 payload signature so nobody can spoof PR/issue events."""
+    """Check GitHub's HMAC-SHA256 payload signature so nobody can spoof PR/issue events"""
     if not signature_header or not signature_header.startswith("sha256="):
         return False
     expected = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
@@ -42,9 +37,8 @@ def verify_signature(secret: str, body: bytes, signature_header: str | None) -> 
 
 
 def opengraph_image_url(repo: str, kind: str, number: int) -> str:
-    """Same social-preview image a plain pasted GitHub link would show -- the
-    path-prefix segment GitHub normally signs isn't actually validated, any
-    value works, confirmed against the real endpoint."""
+    """Same social-preview image a plain pasted GitHub link would show; the
+    path-prefix segment isn't actually validated so any value works,"""
     path_kind = "pull" if kind == "pr" else "issues"
     return f"https://opengraph.githubassets.com/1/{repo}/{path_kind}/{number}"
 
@@ -75,8 +69,7 @@ def build_notification_embed(
 
 
 class GithubBacklog(commands.Cog):
-    """Posts and pins PR/issue notifications, unpins them on merge/close. No
-    slash commands -- driven entirely by the aiohttp webhook route in setup()."""
+    """Posts and pins PR/issue notifications, unpins them on merge/close"""
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
