@@ -9,6 +9,7 @@ the suspected account is timed out.
 import datetime
 import re
 import traceback
+from collections.abc import Callable
 from typing import NamedTuple
 
 import discord
@@ -57,7 +58,12 @@ def age_weight(age_days: float, bands: list[dict]) -> int:
     return 0
 
 
-def recent_attachment(messages, author_id: int, cutoff, exclude_id: int) -> bool:
+def recent_attachment(
+    messages: list[discord.Message],
+    author_id: int,
+    cutoff: datetime.datetime,
+    exclude_id: int,
+) -> bool:
     """True if the author posted a file in some *other* message since `cutoff`"""
     return any(
         message.attachments
@@ -138,7 +144,9 @@ def score_message(content: str, has_attachment: bool, age_days: float, rules: di
     return score, reasons
 
 
-async def forward_newest_attachment(messages, alert_channel) -> bool:
+async def forward_newest_attachment(
+    messages: list[discord.Message], alert_channel: discord.TextChannel | None
+) -> bool:
     """Forward the newest of `messages` carrying a file, so one photo outlives the sweep."""
     if alert_channel is None:
         return False
@@ -157,7 +165,9 @@ async def forward_newest_attachment(messages, alert_channel) -> bool:
     return True
 
 
-def build_alert_embed(member: discord.Member, channel, score: int, reasons: list[str],
+def build_alert_embed(member: discord.Member,
+                      channel: discord.TextChannel | discord.Thread,
+                      score: int, reasons: list[str],
                       sweep: SweepResult | None = None,
                       problems: list[str] | None = None,
                       content: str | None = None) -> discord.Embed:
@@ -194,7 +204,12 @@ def build_alert_embed(member: discord.Member, channel, score: int, reasons: list
 class ScamReviewView(discord.ui.View):
     """Summary embed with allow/ban buttons"""
 
-    def __init__(self, member: discord.Member, ban_delete_days: int, on_resolved=None):
+    def __init__(
+        self,
+        member: discord.Member,
+        ban_delete_days: int,
+        on_resolved: Callable[[], None] | None = None,
+    ) -> None:
         super().__init__(timeout=None)
         self.member = member
         self.ban_delete_days = ban_delete_days
@@ -282,8 +297,8 @@ class ScamReviewView(discord.ui.View):
 class AntiScam(commands.Cog):
     """Watches messages from young accounts and holds likely giveaway scams for staff."""
 
-    def __init__(self, bot):
-        self.bot = bot
+    def __init__(self, bot: discord.Bot) -> None:
+        self.bot: discord.Bot = bot
         cfg = config.config["antiscam"]
         self.alert_channel_id = cfg["alert_channel"]
         self.staff_role_id = cfg["staff_role"]
@@ -299,7 +314,7 @@ class AntiScam(commands.Cog):
         self._held: set[int] = set()
 
     @commands.Cog.listener()
-    async def on_message(self, message):
+    async def on_message(self, message: discord.Message) -> None:
         if message.author.bot or message.guild is None:
             return
         if message.author.id in self._held:
@@ -339,7 +354,13 @@ class AntiScam(commands.Cog):
 
         await self.hold(message, score, reasons, now)
 
-    async def hold(self, message, score: int, reasons: list[str], now) -> None:
+    async def hold(
+        self,
+        message: discord.Message,
+        score: int,
+        reasons: list[str],
+        now: datetime.datetime,
+    ) -> None:
         """Post the review embed, forward the message under it, delete it, time the poster
         out, sweep the rest of their last hour, then edit the outcome back into the embed.
         """
@@ -408,7 +429,13 @@ class AntiScam(commands.Cog):
         except discord.HTTPException as exc:
             traceback.print_exception(exc)
 
-    async def sweep_recent(self, guild, author, cutoff, alert_channel=None) -> SweepResult:
+    async def sweep_recent(
+        self,
+        guild: discord.Guild,
+        author: discord.User | discord.Member,
+        cutoff: datetime.datetime,
+        alert_channel: discord.TextChannel | None = None,
+    ) -> SweepResult:
         """Delete everything `author` posted since `cutoff`"""
         found = []
         for channel in [*guild.text_channels, *guild.threads]:
@@ -457,5 +484,5 @@ class AntiScam(commands.Cog):
         return SweepResult(deleted, channels, with_files, forwarded)
 
 
-def setup(bot):
+def setup(bot: discord.Bot) -> None:
     bot.add_cog(AntiScam(bot))

@@ -12,19 +12,19 @@ STREAM_LINK = "https://twitch.tv/NorthwesternEsports"
 CYCLE_MINS = 3
 
 class Presence(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
-        self.index = 0
-        self.lastindex = -1
-        self.statuses = load_statuses()
+    def __init__(self, bot: discord.Bot) -> None:
+        self.bot: discord.Bot = bot
+        self.index: int = 0
+        self.lastindex: int = -1
+        self.statuses: list[discord.Activity] = load_statuses()
 
     @commands.Cog.listener()
-    async def on_ready(self):
+    async def on_ready(self) -> None:
         if not self.cycle_status.is_running():
             self.cycle_status.start()
 
     @tasks.loop(minutes=CYCLE_MINS)
-    async def cycle_status(self):
+    async def cycle_status(self) -> None:
         while self.index == self.lastindex: #basic shuffle, won't do something twice in a row.
             self.index = random.randint(0,len(self.statuses)-1)
         await self.bot.change_presence(activity=self.statuses[self.index])
@@ -38,7 +38,7 @@ class Presence(commands.Cog):
     async def status(self, 
                     ctx: discord.ApplicationContext, 
                     type: str = discord.Option(str, "What kind of status?", choices=["streaming", "default", "custom"]),
-                    status: str = ""):
+                    status: str = "") -> None:
         if not (config.is_bot_dev(ctx.author) or config.is_stream_team(ctx.author)):
             await ctx.respond("You don't have permission to use this command.", ephemeral=True)
             return
@@ -67,5 +67,5 @@ class Presence(commands.Cog):
                 return
             await ctx.respond("🤖 Resumed cycling status!", ephemeral=True)
 
-def setup(bot):
+def setup(bot: discord.Bot) -> None:
     bot.add_cog(Presence(bot))

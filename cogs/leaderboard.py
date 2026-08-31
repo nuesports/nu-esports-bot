@@ -4,6 +4,8 @@ In-house Leaderboard;
 Provides a leaderboard for users to see how they stack up against others
 """
 
+from collections.abc import Callable
+
 import discord
 from discord.ext import commands
 
@@ -142,13 +144,13 @@ def format_points_entry(guild: discord.Guild, rank: int, discordid: int, points:
     tag = tag or "⭐"
     return f"{rank}. {tag} *{name}* — **{points:,} points**"
 
-def build_leaderboard_pages(guild: discord.Guild, game: str, rows: list[tuple], caller_id: int, role: str | None = None, format_row=None, unranked_note: str | None = None) -> list[discord.Embed] | None:
+def build_leaderboard_pages(guild: discord.Guild, game: str, rows: list[tuple], caller_id: int, role: str | None = None, format_row: Callable[[int, tuple], str] | None = None, unranked_note: str | None = None) -> list[discord.Embed] | None:
     """Build one embed per page of 10 leaderboard entries, ordered by win rate (see fetch_leaderboard_rows).
 
     Pass `role` for a per-role-ranks game's leaderboard, just to title the embed correctly.
     """
     if format_row is None:
-        def format_row(rank, row):
+        def format_row(rank: int, row: tuple) -> str:
             discordid, wins, losses, tag, entry_role = row
             return format_entry(guild, rank, discordid, wins, losses, tag, game, entry_role)
 
@@ -211,7 +213,7 @@ async def build_points_pages(guild: discord.Guild, caller_id: int) -> list[disco
 class GameSelectView(discord.ui.View):
     """Dropdown for switching the leaderboard to a different game, restricted to whoever ran /leaderboard."""
 
-    def __init__(self, requester_id: int, guild: discord.Guild):
+    def __init__(self, requester_id: int, guild: discord.Guild) -> None:
         super().__init__(timeout=120, disable_on_timeout=True)
         self.requester_id = requester_id
         self.guild = guild
@@ -263,7 +265,7 @@ class LeaderboardRoleSelectView(discord.ui.View):
 
     _MIXED = "__mixed__"
 
-    def __init__(self, requester_id: int, guild: discord.Guild, game: str):
+    def __init__(self, requester_id: int, guild: discord.Guild, game: str) -> None:
         super().__init__(timeout=120, disable_on_timeout=True)
         self.requester_id = requester_id
         self.guild = guild
@@ -308,7 +310,7 @@ class LeaderboardRoleSelectView(discord.ui.View):
 class EmptyLeaderboardView(discord.ui.View):
     """Shown when a game's leaderboard has nobody on it, just a way to switch games."""
 
-    def __init__(self, requester_id: int, guild: discord.Guild):
+    def __init__(self, requester_id: int, guild: discord.Guild) -> None:
         super().__init__(timeout=120, disable_on_timeout=True)
         self.requester_id = requester_id
         self.guild = guild
@@ -331,7 +333,7 @@ class EmptyLeaderboardView(discord.ui.View):
 class LeaderboardPaginator(discord.ui.View):
     """Left/right paginator over a leaderboard's pages of 10, restricted to whoever ran the command."""
 
-    def __init__(self, requester_id: int, pages: list[discord.Embed], guild: discord.Guild, game: str, role: str | None = None):
+    def __init__(self, requester_id: int, pages: list[discord.Embed], guild: discord.Guild, game: str, role: str | None = None) -> None:
         super().__init__(timeout=120, disable_on_timeout=True)
         self.requester_id = requester_id
         self.pages = pages
@@ -391,8 +393,8 @@ class LeaderboardPaginator(discord.ui.View):
 class Leaderboard(commands.Cog):
     """Cog housing the /leaderboard command: per-game rankings, ordered by elo but displayed by win/loss record."""
 
-    def __init__(self, bot):
-        self.bot = bot
+    def __init__(self, bot: discord.Bot) -> None:
+        self.bot: discord.Bot = bot
 
     @discord.slash_command(
         name="leaderboard",

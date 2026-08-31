@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import random
 import time
+from collections.abc import Awaitable, Callable
 
 import discord
 from discord.ext import commands
@@ -162,8 +163,7 @@ def generate_match_embed(session: MatchmakingSession) -> discord.Embed:
     )
     has_roles = bool(ROLE_REQUIREMENTS[session.game])
     lane_order = {lane: i for i, lane in enumerate(ROLE_REQUIREMENTS[session.game])}
-
-    def team_rows(team):
+    def team_rows(team: list[discord.Member]) -> str:
         ordered = sorted(
             team,
             key=lambda m: lane_order.get(session.role_assignments.get(m.id, ""), 99),
@@ -828,7 +828,7 @@ async def build_richest_chatter_field(summary: dict | None) -> str | None:
 class MatchmakingSession:
     """Tracks the state of one matchmaking lobby for one (channel, game) pair."""
 
-    def __init__(self, game):
+    def __init__(self, game: str) -> None:
         self.game: str = game
         self.joined: list[discord.Member] = []
         self.tags: dict[int, str] = {}  # member.id to tag
@@ -859,7 +859,7 @@ class MatchmakingSession:
 class Matchmaking(commands.Cog):
     """Cog housing the /matchmaking command group and the active lobby state for all channels."""
 
-    def __init__(self, bot):
+    def __init__(self, bot: discord.Bot) -> None:
         self.bot: discord.Bot = bot
         self.active_sessions: dict[tuple[int, str], MatchmakingSession] = {}
 
@@ -931,7 +931,7 @@ class Matchmaking(commands.Cog):
 class LobbyView(discord.ui.View):
     """Shared, persistent view on the public lobby message: Join / Leave / Settings."""
 
-    def __init__(self, session):
+    def __init__(self, session: "MatchmakingSession") -> None:
         super().__init__(timeout=None)
         self.session = session
         self.join.disabled = len(session.joined) >= LOBBY_SIZE[session.game]
@@ -1074,8 +1074,7 @@ class BetTeamSelectView(discord.ui.View):
     """Ephemeral team picker shown after clicking Bet. Players on a team can only
     bet on themselves, and once a bet is placed the opposing team's button disables too.
     """
-
-    def __init__(self, session: MatchmakingSession, user: discord.Member):
+    def __init__(self, session: "MatchmakingSession", user: discord.Member) -> None:
         super().__init__(timeout=BETTING_WINDOW_SECONDS)
         self.session = session
 
@@ -1093,7 +1092,9 @@ class BetTeamSelectView(discord.ui.View):
         team_b_button.callback = self.make_callback("b")
         self.add_item(team_b_button)
 
-    def make_callback(self, team: str):
+    def make_callback(
+        self, team: str
+    ) -> Callable[[discord.Interaction], Awaitable[None]]:
         async def callback(interaction: discord.Interaction) -> None:
             existing = self.session.bets.get(interaction.user.id)
             current_bet = existing["points"] if existing else 0
@@ -1119,15 +1120,7 @@ class BetModal(discord.ui.Modal):
     team rules and the epoch under a per-user lock, and deducts with an atomic conditional
     UPDATE so the balance can't go negative even across lobbies.
     """
-
-    def __init__(
-        self,
-        session: MatchmakingSession,
-        user: discord.Member,
-        team: str,
-        current_bet: int,
-        balance: int,
-    ):
+    def __init__(self, session: "MatchmakingSession", user: discord.Member, team: str, current_bet: int, balance: int) -> None:
         super().__init__(title="Place your bet")
         self.session = session
         self.user = user
@@ -1226,7 +1219,7 @@ class BetModal(discord.ui.Modal):
 
 class LobbyPanelView(discord.ui.View):
     """Base for every view reachable from a lobby's admin panel."""
-    def __init__(self, session: "MatchmakingSession"):
+    def __init__(self, session: "MatchmakingSession") -> None:
         super().__init__(timeout=180)
         self.session = session
 
@@ -1240,7 +1233,7 @@ class LobbyPanelView(discord.ui.View):
 
 
 class SwapSelectView(LobbyPanelView):
-    def __init__(self, session):
+    def __init__(self, session: "MatchmakingSession") -> None:
         super().__init__(session)
 
         options = []
@@ -1272,7 +1265,7 @@ class SwapSelectView(LobbyPanelView):
         back_button.callback = self.back
         self.add_item(back_button)
 
-    async def on_select(self, interaction: discord.Interaction):
+    async def on_select(self, interaction: discord.Interaction) -> None:
         """Swap the two selected players' team+lane slots and refresh every open view of this lobby."""
         if not has_privilege(interaction):
             await interaction.response.send_message(
@@ -1294,7 +1287,7 @@ class SwapSelectView(LobbyPanelView):
         )
         await refresh_admin_panels(self.session)
 
-    async def back(self, interaction: discord.Interaction):
+    async def back(self, interaction: discord.Interaction) -> None:
         """Return to the admin panel without swapping anyone."""
         if not has_privilege(interaction):
             await interaction.response.send_message(
@@ -1364,7 +1357,7 @@ async def declare_winner(
 
 
 class MapSelectView(LobbyPanelView):
-    def __init__(self, session):
+    def __init__(self, session: "MatchmakingSession") -> None:
         super().__init__(session)
 
         options = [
@@ -1387,7 +1380,7 @@ class MapSelectView(LobbyPanelView):
         back_button.callback = self.back
         self.add_item(back_button)
 
-    async def on_select(self, interaction: discord.Interaction):
+    async def on_select(self, interaction: discord.Interaction) -> None:
         """Set the session's map and refresh every open view of this lobby."""
         if not has_privilege(interaction):
             await interaction.response.send_message(
@@ -1402,7 +1395,7 @@ class MapSelectView(LobbyPanelView):
         )
         await refresh_admin_panels(self.session)
 
-    async def back(self, interaction: discord.Interaction):
+    async def back(self, interaction: discord.Interaction) -> None:
         """Return to the admin panel without changing the map."""
         if not has_privilege(interaction):
             await interaction.response.send_message(
@@ -1418,8 +1411,7 @@ class WinnerSelectView(LobbyPanelView):
     """Ephemeral team picker for declaring a winner.
 
     Uses manually-constructed buttons so their labels can show the session's actual team names instead of static text."""
-
-    def __init__(self, session):
+    def __init__(self, session: "MatchmakingSession") -> None:
         super().__init__(session)
 
         team_a_button = discord.ui.Button(
@@ -1465,8 +1457,7 @@ class SelfBetForfeitWarningView(LobbyPanelView):
     presses Winner. Requires confirmation first since declaring forfeits the bet outright.
     Uses buttons instead of a dropdown, since Select option text can get cut off on Discord's client.
     """
-
-    def __init__(self, session: MatchmakingSession, stake: int):
+    def __init__(self, session: "MatchmakingSession", stake: int) -> None:
         super().__init__(session)
 
         continue_button = discord.ui.Button(
@@ -1510,8 +1501,7 @@ class SelfBetForfeitWarningView(LobbyPanelView):
 
 class PostgameView(discord.ui.View):
     """Post-game view that allows for rematching."""
-
-    def __init__(self, session):
+    def __init__(self, session: "MatchmakingSession") -> None:
         super().__init__(timeout=180)
         self.session = session
 
@@ -1672,8 +1662,7 @@ class CancelConfirmView(LobbyPanelView):
 
     Uses a dropdown rather than buttons, so a misclick doesn't instantly end the game.
     """
-
-    def __init__(self, session):
+    def __init__(self, session: "MatchmakingSession") -> None:
         super().__init__(session)
 
         options = [

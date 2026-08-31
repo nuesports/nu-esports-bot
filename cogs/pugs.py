@@ -5,9 +5,7 @@ import discord
 from discord.ext import commands
 
 from utils import config
-
-# from utils import db
-
+#from utils import db
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
 
@@ -19,7 +17,7 @@ class PUGSession:
         blue_channel: discord.VoiceChannel,
         red_channel: discord.VoiceChannel,
         num_players: int,
-    ):
+    ) -> None:
         self.lobby_channel = lobby_channel
         self.blue_channel = blue_channel
         self.red_channel = red_channel
@@ -31,7 +29,7 @@ class PUGSession:
 
 
 class PUGs(commands.Cog):
-    def __init__(self, bot: commands.Bot):
+    def __init__(self, bot: commands.Bot) -> None:
         self.bot: commands.Bot = bot
         self.active_sessions: dict[int, PUGSession] = {}
 
@@ -64,7 +62,7 @@ class PUGs(commands.Cog):
         blue: discord.VoiceChannel,
         red: discord.VoiceChannel,
         num_players: int,
-    ):
+    ) -> None:
         """
         @brief Start a new lobby and add it to `active_sessions`.
         @param blue The blue team's voice channel.
@@ -103,7 +101,7 @@ class PUGs(commands.Cog):
     async def finish(
         self,
         ctx: discord.ApplicationContext
-    ):
+    ) -> None:
         """
         @brief End the PUGs lobby in this current channel.
         """
@@ -130,7 +128,7 @@ class PUGs(commands.Cog):
             )
 
 
-    async def _generate_match_logic(self, session: PUGSession):
+    async def _generate_match_logic(self, session: PUGSession) -> None:
         players = session.lobby_channel.members
 
         # TODO: real team creation logic
@@ -145,7 +143,7 @@ class PUGs(commands.Cog):
         session.blue_team = selected_players[:mid]
         session.red_team = selected_players[mid:]
 
-    async def _process_match_results(self, session: PUGSession, winner: str):
+    async def _process_match_results(self, session: PUGSession, winner: str) -> None:
         # Keep this method in this class in case we do global MMR system
         # In that case, TODO: coalesce results to DB
         if winner == "blue":
@@ -167,7 +165,7 @@ class LobbyCreatedView(discord.ui.View):
     View class allowing the first match to be generated.
     """
 
-    def __init__(self, cog: PUGs, session: PUGSession):
+    def __init__(self, cog: PUGs, session: PUGSession) -> None:
         super().__init__()
         self.cog = cog
         self.session = session
@@ -177,7 +175,7 @@ class LobbyCreatedView(discord.ui.View):
     )
     async def button_callback(
         self, button: discord.ui.Button, interaction: discord.Interaction
-    ):
+    ) -> None:
         # Get the cog's defined teams and pass them along to MatchStartView
         await interaction.response.defer()
         await self.cog._generate_match_logic(self.session)
@@ -194,7 +192,7 @@ class MatchStartView(discord.ui.View):
     View class to show teams and move players before/during a match.
     """
 
-    def __init__(self, cog: PUGs, session: PUGSession):
+    def __init__(self, cog: PUGs, session: PUGSession) -> None:
         super().__init__(timeout=None)
         self.cog = cog
         self.session = session
@@ -220,7 +218,7 @@ class MatchStartView(discord.ui.View):
     )
     async def move_callback(
         self, button: discord.ui.Button, interaction: discord.Interaction
-    ):
+    ) -> None:
         button.disabled = True
         await interaction.response.edit_message(view=self)
 
@@ -236,14 +234,20 @@ class MatchStartView(discord.ui.View):
                 print(result)
 
     @discord.ui.button(label="Blue Wins", style=discord.ButtonStyle.primary, emoji="🟦")
-    async def blue_win_callback(self, button, interaction: discord.Interaction):
+    async def blue_win_callback(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ) -> None:
         await self.process_winner(interaction, winner="blue")
 
     @discord.ui.button(label="Red Wins", style=discord.ButtonStyle.danger, emoji="🟥")
-    async def red_win_callback(self, button, interaction: discord.Interaction):
+    async def red_win_callback(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ) -> None:
         await self.process_winner(interaction, winner="red")
 
-    async def process_winner(self, interaction: discord.Interaction, winner: str):
+    async def process_winner(
+        self, interaction: discord.Interaction, winner: str
+    ) -> None:
         await interaction.response.defer()
 
         # Process match results in PUGs session storage
@@ -281,7 +285,7 @@ class MatchEndView(discord.ui.View):
         blue_team: list[discord.Member],
         red_team: list[discord.Member],
         winner: str,
-    ):
+    ) -> None:
         super().__init__(timeout=None)
         self.cog = cog
         self.session = session
@@ -289,7 +293,7 @@ class MatchEndView(discord.ui.View):
         self.red_team = red_team
         self.winner = winner
 
-    def generate_embed(self):
+    def generate_embed(self) -> discord.Embed:
         embed = discord.Embed(title=f"{self.winner.title()} Wins!")
         return embed
 
@@ -298,7 +302,7 @@ class MatchEndView(discord.ui.View):
     )
     async def button_callback(
         self, button: discord.ui.Button, interaction: discord.Interaction
-    ):
+    ) -> None:
         button.disabled = True
         await interaction.response.edit_message(view=self)
 
@@ -310,5 +314,5 @@ class MatchEndView(discord.ui.View):
         await interaction.followup.send(view=start_view, embed=start_embed)
 
 
-def setup(bot):
+def setup(bot: commands.Bot) -> None:
     bot.add_cog(PUGs(bot))

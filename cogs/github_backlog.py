@@ -75,11 +75,11 @@ def build_notification_embed(
 class GithubBacklog(commands.Cog):
     """Posts and pins PR/issue notifications, unpins them on merge/close"""
 
-    def __init__(self, bot: discord.Bot):
-        self.bot = bot
+    def __init__(self, bot: discord.Bot) -> None:
+        self.bot: discord.Bot = bot
         cfg = config.config["github_backlog"]
-        self.pr_channel_id = cfg["pr_channel"]
-        self.issue_channel_id = cfg["issue_channel"]
+        self.pr_channel_id: int = cfg["pr_channel"]
+        self.issue_channel_id: int = cfg["issue_channel"]
 
     async def post_and_pin(self, channel_id: int, repo: str, number: int, kind: str, embed: discord.Embed) -> None:
         channel = await self.bot.fetch_channel(channel_id)

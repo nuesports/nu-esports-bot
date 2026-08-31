@@ -8,8 +8,8 @@ GUILD_ID = config.secrets["discord"]["guild_id"]
 
 class Sushi(commands.Cog):
     """AYCE sushi leaderboard, per channel -- in-memory, resets on restart, that's fine for this."""
-    def __init__(self, bot):
-        self.bot = bot
+    def __init__(self, bot: discord.Bot) -> None:
+        self.bot: discord.Bot = bot
         self.boards: dict[int, dict[int, int]] = {}  # channel_id -> {user_id: count}
         self.board_messages: dict[int, discord.Message] = {}  # channel_id -> the live leaderboard message
 
@@ -44,7 +44,7 @@ class SushiView(discord.ui.View):
     """Add/Remove buttons for the sushi leaderboard. No timeout -- AYCE dinners run long."""
     def __init__(self, cog: Sushi) -> None:
         super().__init__(timeout=None)
-        self.cog = cog
+        self.cog: Sushi = cog
 
     @discord.ui.button(label="Add", style=discord.ButtonStyle.success, emoji="🍣")
     async def add(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
@@ -61,5 +61,5 @@ class SushiView(discord.ui.View):
         await self.cog.repost_board(interaction.channel)
 
 
-def setup(bot):
+def setup(bot: discord.Bot) -> None:
     bot.add_cog(Sushi(bot))

@@ -1,5 +1,6 @@
 import random
 import re
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -20,6 +21,9 @@ from utils.ranks import (
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
 GAME_CHOICES = list(config.game_data.keys())
+
+# Every editor view/modal takes a callback to run once the edit lands.
+OnDone = Callable[[discord.Interaction], Awaitable[None]]
 CUSTOM_EMOJI_RE = re.compile(r"^<a?:\w+:(?P<id>\d+)>$")
 
 ACCOUNT_EXAMPLE_CATEGORY = {
@@ -359,9 +363,8 @@ def build_game_embed(
 
 class Profile(commands.Cog):
     """Cog housing the /profile command group:"""
-
-    def __init__(self, bot):
-        self.bot = bot
+    def __init__(self, bot: discord.Bot) -> None:
+        self.bot: discord.Bot = bot
 
     profile = discord.SlashCommandGroup(
         "profile", "Profile tools", guild_ids=[GUILD_ID]
@@ -973,8 +976,9 @@ class Profile(commands.Cog):
 
 class ProfilePaginator(discord.ui.View):
     """Left/right paginator over a list of embeds, restricted to whoever ran the command."""
-
-    def __init__(self, requester_id, pages, start_index=0):
+    def __init__(
+        self, requester_id: int, pages: list[discord.Embed], start_index: int = 0
+    ) -> None:
         super().__init__(timeout=120, disable_on_timeout=True)
         self.requester_id = requester_id
         self.pages = pages
@@ -1029,10 +1033,7 @@ class RoleSelectView(discord.ui.View):
     On submit, this replaces the player's full role list for that game (delete then insert)
     rather than diffing against what was there before.
     """
-
-    def __init__(
-        self, requester_id: int, game: str, current_roles: list[str], on_done=None
-    ) -> None:
+    def __init__(self, requester_id: int, game: str, current_roles: list[str], on_done: OnDone | None = None) -> None:
         super().__init__(timeout=120)
         self.requester_id = requester_id
         self.game = game
@@ -1086,10 +1087,7 @@ class MainsModal(discord.ui.Modal):
     On success, this replaces the player's full mains list for that game,
     same delete-then-insert pattern as RoleSelectView.
     """
-
-    def __init__(
-        self, requester_id: int, game: str, current_mains: list[str], on_done=None
-    ) -> None:
+    def __init__(self, requester_id: int, game: str, current_mains: list[str], on_done: OnDone | None = None) -> None:
         super().__init__(title=f"Set your {game.title()} mains")
         self.requester_id = requester_id
         self.game = game
@@ -1173,8 +1171,7 @@ class RankSelectView(discord.ui.View):
     Starts with a tier dropdown. If the chosen tier has divisions, swaps to a division
     dropdown in the same message; otherwise saves immediately with division=1.
     """
-
-    def __init__(self, requester_id: int, game: str, on_done) -> None:
+    def __init__(self, requester_id: int, game: str, on_done: OnDone) -> None:
         super().__init__(timeout=120)
         self.requester_id = requester_id
         self.game = game
@@ -1244,15 +1241,7 @@ class RoleRankSelectView(discord.ui.View):
     Saves exactly one role per submission, same as RankSelectView saves one rank per
     submission; setting a second role means invoking this view again.
     """
-
-    def __init__(
-        self,
-        requester_id: int,
-        game: str,
-        on_done=None,
-        tier: str | None = None,
-        division: int | None = None,
-    ) -> None:
+    def __init__(self, requester_id: int, game: str, on_done: OnDone | None = None, tier: str | None = None, division: int | None = None) -> None:
         super().__init__(timeout=120)
         self.requester_id = requester_id
         self.game = game
@@ -1342,15 +1331,7 @@ class RoleRankSelectView(discord.ui.View):
 
 class PrimarySelectView(discord.ui.View):
     """Single-select dropdown for choosing a primary main from a player's own mains for one game."""
-
-    def __init__(
-        self,
-        requester_id: int,
-        game: str,
-        mains: list[str],
-        current_primary: str | None,
-        on_done,
-    ) -> None:
+    def __init__(self, requester_id: int, game: str, mains: list[str], current_primary: str | None, on_done: OnDone) -> None:
         super().__init__(timeout=120)
         self.requester_id = requester_id
         self.game = game
@@ -1385,8 +1366,7 @@ class PrimarySelectView(discord.ui.View):
 
 class TagModal(discord.ui.Modal):
     """Single-field modal for setting a player's emoji tag."""
-
-    def __init__(self, requester_id: int, current_tag: str | None, on_done) -> None:
+    def __init__(self, requester_id: int, current_tag: str | None, on_done: OnDone) -> None:
         super().__init__(title="Set your tag")
         self.requester_id = requester_id
         self.on_done = on_done
@@ -1424,8 +1404,7 @@ class TagModal(discord.ui.Modal):
 
 class BioModal(discord.ui.Modal):
     """Single-field modal for setting a player's bio."""
-
-    def __init__(self, requester_id: int, current_bio: str | None, on_done) -> None:
+    def __init__(self, requester_id: int, current_bio: str | None, on_done: OnDone) -> None:
         super().__init__(title="Set your bio")
         self.requester_id = requester_id
         self.on_done = on_done
@@ -1457,10 +1436,7 @@ class BioModal(discord.ui.Modal):
 
 class PictureModal(discord.ui.Modal):
     """Single-field modal for setting a player's main picture or thumbnail URL, for one fixed position."""
-
-    def __init__(
-        self, requester_id: int, position: str, current_url: str | None, on_done
-    ) -> None:
+    def __init__(self, requester_id: int, position: str, current_url: str | None, on_done: OnDone) -> None:
         super().__init__(title=f"Set your {position} picture")
         self.requester_id = requester_id
         self.position = position
@@ -1512,10 +1488,7 @@ class PictureModal(discord.ui.Modal):
 
 class AccountModal(discord.ui.Modal):
     """Single-field modal for linking an external game account, via /profile setup."""
-
-    def __init__(
-        self, requester_id: int, game: str, current_identifier: str | None, on_done
-    ) -> None:
+    def __init__(self, requester_id: int, game: str, current_identifier: str | None, on_done: OnDone) -> None:
         super().__init__(title=f"Link your {game.title()} account")
         self.requester_id = requester_id
         self.game = game
@@ -1570,8 +1543,7 @@ class AccountModal(discord.ui.Modal):
 
 class ResetConfirmView(discord.ui.View):
     """Confirm/cancel guard in front of the destructive per-game reset button."""
-
-    def __init__(self, requester_id: int, game: str, on_done) -> None:
+    def __init__(self, requester_id: int, game: str, on_done: OnDone) -> None:
         super().__init__(timeout=60)
         self.requester_id = requester_id
         self.game = game
@@ -1891,5 +1863,5 @@ class ProfileSetupView(discord.ui.View):
         await self.refresh_page(interaction)
 
 
-def setup(bot: discord.Bot):
+def setup(bot: discord.Bot) -> None:
     bot.add_cog(Profile(bot))

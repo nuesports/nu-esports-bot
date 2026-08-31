@@ -10,8 +10,8 @@ GUILD_ID = config.secrets["discord"]["guild_id"]
 TYST_STICKER_ID = config.config["fun"]["stickers"]["TYST"]
 
 class Fun(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
+    def __init__(self, bot: discord.Bot) -> None:
+        self.bot: discord.Bot = bot
         # Track active mute tasks and original permissions for Hannah
         self.hannah_mute_state = {
             "text_unmute_task": None,
@@ -24,7 +24,7 @@ class Fun(commands.Cog):
         description="Mutes Hannah for 3 minutes in text and voice",
         guild_ids=[GUILD_ID],
     )
-    async def mutehannah(self, ctx):
+    async def mutehannah(self, ctx: discord.ApplicationContext) -> None:
         # Check if the user has the required role
         required_role_id = config.config["fun"]["hannah-haters"]
         if not ctx.author.get_role(required_role_id):
@@ -81,7 +81,7 @@ class Fun(commands.Cog):
                 pass  # Skip channels where we don't have permission
 
         # Schedule permission restore after 3 minutes
-        async def restore_text_permissions():
+        async def restore_text_permissions() -> None:
             try:
                 await asyncio.sleep(180)
                 for channel in text_channels:
@@ -129,7 +129,7 @@ class Fun(commands.Cog):
                 voice_muted = True
 
                 # Schedule unmute after 3 minutes
-                async def unmute_after_delay():
+                async def unmute_after_delay() -> None:
                     try:
                         await asyncio.sleep(180)
                         try:
@@ -174,7 +174,7 @@ class Fun(commands.Cog):
         description="Immediately unmutes Hannah (removes all restrictions)",
         guild_ids=[GUILD_ID],
     )
-    async def unmutehannah(self, ctx):
+    async def unmutehannah(self, ctx: discord.ApplicationContext) -> None:
         # Check if the user has the required role
         required_role_id = config.config["fun"]["hannah-haters"]
         if not ctx.author.get_role(required_role_id):
@@ -266,7 +266,7 @@ class Fun(commands.Cog):
             await ctx.respond("Hannah was not muted or I don't have permissions!")
 
     @commands.Cog.listener()
-    async def on_message(self, message):
+    async def on_message(self, message: discord.Message) -> None:
         if message.author == self.bot.user:
             return
 
@@ -287,7 +287,7 @@ class Fun(commands.Cog):
                 await message.add_reaction(emoji)
 
 
-def chess(cog, message):
+def chess(cog: Fun, message: discord.Message) -> str | None:
     """Reacts with a random chess-piece emoji when the bot is @mentioned.
 
     Plain function, not a cog method -- takes `cog` explicitly just to reach
@@ -301,7 +301,7 @@ def chess(cog, message):
         output = f"<:{emoji}:{id}>"
         return output
 
-async def ty_stan(message):
+async def ty_stan(message: discord.Message) -> str | bool | None:
     """Returns a string for on_message to reply with, or None/False if there's
     nothing more to do -- including when a sticker was found, since that branch
     already sends its own reply and shouldn't also get echoed by the caller."""
@@ -317,7 +317,7 @@ async def ty_stan(message):
         return "THANK YOU SHANNON TAN"
     return False
 
-def i_love_osu(message):
+def i_love_osu(message: discord.Message) -> str | None:
     lower_content = message.content.lower()
     if "i love osu" in lower_content:
         output = "Osu 😻"
@@ -325,7 +325,7 @@ def i_love_osu(message):
     return None
 
 
-def oh_lord(message):
+def oh_lord(message: discord.Message) -> str | None:
     lower_content = message.content.lower()
     if random.randint(1, 100) <= 10 and "oh lord" in lower_content:
         output = "https://www.youtube.com/watch?v=YsoP6bjADic"
@@ -333,7 +333,7 @@ def oh_lord(message):
     return None
 
 
-def special_interactions(message):
+def special_interactions(message: discord.Message) -> list[str] | None:
     special_users = config.config["fun"]["special_users"]
     if (
         special_users
@@ -345,5 +345,5 @@ def special_interactions(message):
     return None
 
 
-def setup(bot):
+def setup(bot: discord.Bot) -> None:
     bot.add_cog(Fun(bot))
