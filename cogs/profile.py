@@ -407,7 +407,10 @@ class Profile(commands.Cog):
     async def bio(
         self,
         ctx: discord.ApplicationContext,
-        bio: discord.Option(str, name="bio", description="About you!"),
+        bio: str = discord.Option(
+            name="bio",
+            description="About you!"
+        )
     ) -> None:
         """Set (or overwrite) your profile bio."""
         await ctx.defer(ephemeral=True)
@@ -433,14 +436,12 @@ class Profile(commands.Cog):
     async def picture(
         self,
         ctx: discord.ApplicationContext,
-        picture: discord.Option(
-            str,
+        picture: str = discord.Option(
             name="url",
             description="URL to picture to set on your profile",
             default=None,
         ),
-        option: discord.Option(
-            str,
+        option: str = discord.Option(
             name="position",
             description="Main or thumbnail",
             autocomplete=picture_autocomplete,
@@ -501,12 +502,14 @@ class Profile(commands.Cog):
 
     @set_grp.command(name="account", guild_ids=[GUILD_ID])
     async def account(
-        self,
-        ctx: discord.ApplicationContext,
-        game: discord.Option(str, choices=GAME_CHOICES),
-        identifier: discord.Option(
-            str, description="Riot ID/BattleTag/Steam ID or vanity"
-        ),
+        self, 
+        ctx: discord.ApplicationContext, 
+        game: str = discord.Option(
+            choices=GAME_CHOICES
+          ),
+        identifier: str = discord.Option(
+            description="Riot ID/BattleTag/Steam ID or vanity"
+        )
     ) -> None:
         """Sets your account for a game"""
         await ctx.defer(ephemeral=True)
@@ -546,21 +549,18 @@ class Profile(commands.Cog):
     async def rank(
         self,
         ctx: discord.ApplicationContext,
-        game: discord.Option(
-            str,
+        game: str = discord.Option(
             name="game",
             description="Game to change something about",
             choices=GAME_CHOICES,
         ),
-        tier: discord.Option(
-            str,
+        tier: str = discord.Option(
             name="tier",
             description="Your rank tier (for per-role-ranks games, skips straight to picking which role it's for)",
             autocomplete=tier_autocomplete,
             default=None,
         ),
-        division: discord.Option(
-            str,
+        division: str = discord.Option(
             name="division",
             description="Your division (if applicable)",
             autocomplete=division_autocomplete,
@@ -628,8 +628,7 @@ class Profile(commands.Cog):
     async def role(
         self,
         ctx: discord.ApplicationContext,
-        game: discord.Option(
-            str,
+        game: str = discord.Option(
             name="game",
             description="Game to change something about",
             choices=GAME_CHOICES,
@@ -660,8 +659,7 @@ class Profile(commands.Cog):
     async def main(
         self,
         ctx: discord.ApplicationContext,
-        game: discord.Option(
-            str,
+        game: str = discord.Option(
             name="game",
             description="Game to change something about",
             choices=GAME_CHOICES,
@@ -683,14 +681,12 @@ class Profile(commands.Cog):
     async def primary(
         self,
         ctx: discord.ApplicationContext,
-        game: discord.Option(
-            str,
+        game: str = discord.Option(
             name="game",
             description="Game to change something about",
             choices=GAME_CHOICES,
         ),
-        primary: discord.Option(
-            str,
+        primary: str = discord.Option(
             name="primary",
             description="Used for the little picture on your profile",
             autocomplete=primary_autocomplete,
@@ -748,8 +744,7 @@ class Profile(commands.Cog):
     async def tag(
         self,
         ctx: discord.ApplicationContext,
-        tag: discord.Option(
-            str,
+        tag: str = discord.Option(
             name="tag",
             description="Emoji tag to identify yourself by!",
             default=None,
@@ -786,11 +781,11 @@ class Profile(commands.Cog):
     async def view(
         self,
         ctx: discord.ApplicationContext,
-        user: discord.Option(
-            discord.Member, description="Defaults to you", default=None
+        user: discord.Member = discord.Option(
+            description="Defaults to you",
+            default=None
         ),
-        game: discord.Option(
-            str,
+        game: str = discord.Option(
             name="game",
             description="Game to change something about",
             choices=GAME_CHOICES,
@@ -888,9 +883,10 @@ class Profile(commands.Cog):
     async def elo_view(
         self,
         ctx: discord.ApplicationContext,
-        user: discord.Option(
-            discord.Member, description="Player to check elo for", default=None
-        ),
+        user: discord.Member = discord.Option(
+            description="Player to check elo for",
+            default=None
+        )
     ) -> None:
         """Show a player's elo for every game they've played. Game heads only."""
         await ctx.defer(ephemeral=True)
