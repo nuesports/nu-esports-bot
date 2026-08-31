@@ -37,3 +37,8 @@ python_version = "3.10"
 files = ["cogs", "utils"]
 ignore_missing_imports = true
 explicit_package_bases = true
+
+[tool.ruff.lint.flake8-bugbear]
+# discord.Option() in an argument default is py-cord's declarative option syntax,
+# read once at command registration -- not a mutable default shared between calls.
+extend-immutable-calls = ["discord.Option"]
