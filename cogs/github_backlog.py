@@ -1,5 +1,9 @@
-"""GitHub webhook receiver: posts PR/issue notifications and pins/unpins 
-them through a small aiohttp server from setup() via bot.loop.create_task()"""
+"""
+GitHub webhook receiver;
+
+Posts PR/issue notifications and pins/unpins them through 
+a small aiohttp server from setup() via bot.loop.create_task()
+"""
 
 import hashlib
 import hmac
