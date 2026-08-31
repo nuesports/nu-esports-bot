@@ -1,5 +1,8 @@
-"""Catches common scam messages via a holistic scoring system (i.e common keywords, 
-account age, included attachments). Flagged messages are sent to staff for review while
+"""
+Scam message filter;
+
+Catches common scam messages via a holistic scoring system. 
+Flagged messages are sent to staff for review while
 the suspected account is timed out.
 """
 
