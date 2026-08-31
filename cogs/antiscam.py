@@ -30,12 +30,7 @@ SWEEP_LIMIT = 200
 BULK_DELETE_MAX = 100
 
 class SweepResult(NamedTuple):
-    """What the post-flag cleanup removed, for the staff embed to report.
-
-    `forwarded` says whether the newest photo made it out ahead of the delete. The rest of
-    what the sweep takes down is reported as a count and nothing more -- staff get the case,
-    one photo, and the numbers, rather than the scammer's whole album re-posted at them."""
-
+    """What the post-flag cleanup removed, for the staff embed to report."""
     deleted: int
     channels: list[str]
     with_files: int
@@ -43,17 +38,13 @@ class SweepResult(NamedTuple):
 
 
 def account_age_days(created_at: datetime.datetime, now: datetime.datetime) -> float:
-    """Age of the Discord account itself, not of their membership here.
-
-    `now` is passed in rather than read from the clock so the scoring stays testable."""
+    """Age of the Discord account"""
     return (now - created_at).total_seconds() / 86400
 
 
 def effective_age_days(member_id: int, created_at: datetime.datetime,
                        now: datetime.datetime, overrides: dict) -> float:
-    """Account age, unless a local-testing override pins it to something else.
-
-    For production caution, cog prints a warning at load if overrides are set."""
+    """Account age, unless a local-testing override pins it to something else"""
     if member_id in overrides:
         return overrides[member_id]
     return account_age_days(created_at, now)
@@ -68,7 +59,7 @@ def age_weight(age_days: float, bands: list[dict]) -> int:
 
 
 def recent_attachment(messages, author_id: int, cutoff, exclude_id: int) -> bool:
-    """True if the author posted a file in some *other* message since `cutoff`."""
+    """True if the author posted a file in some *other* message since `cutoff`"""
     return any(
         message.attachments
         and message.id != exclude_id
@@ -84,7 +75,7 @@ def _plural(count: int, word: str) -> str:
 
 
 def normalize(content: str) -> str:
-    """Lowercase, and fold the quote characters phones insert down to plain ASCII."""
+    """Lowercase, and fold the quote characters phones typcically insert down to plain ASCII"""
     return content.lower().replace("’", "'").replace("‘", "'")
 
 
@@ -97,7 +88,7 @@ def _phrase_count(lowered: str, phrases: list[str]) -> int:
 
 
 def giveaway_weight(lowered: str, phrases: list[str], weights: dict) -> int:
-    """Giveaway wording escalates with how many distinct phrases fire, capped."""
+    """Giveaway wording escalates with how many distinct phrases fire, capped"""
     count = _phrase_count(lowered, phrases)
     if not count:
         return 0
@@ -108,7 +99,7 @@ def giveaway_weight(lowered: str, phrases: list[str], weights: dict) -> int:
 def score_message(content: str, has_attachment: bool, age_days: float, rules: dict) -> tuple[int, list[str]]:
     """Total weight of every signal that fires, plus the names of the ones that did.
 
-    The reasons come back too so that staff can say *why* something was flagged."""
+    The reasons come back too so that staff can say *why* something was flagged"""
     lowered = normalize(content)
     weights = rules["weights"]
     phrases = rules["phrases"]
@@ -149,14 +140,7 @@ def score_message(content: str, has_attachment: bool, age_days: float, rules: di
 
 
 async def forward_newest_attachment(messages, alert_channel) -> bool:
-    """Forward the newest of `messages` carrying a file, so one photo outlives the sweep.
-
-    Discord builds a forward's snapshot server-side at send time, so this only works ahead
-    of the delete -- afterwards there is nothing left to point at. A forward carries exactly
-    one message, and the newest photo is the one worth the slot: a scam's later posts are
-    the ones with the goods in them, and staff are deciding one question, not archiving.
-
-    A failure is reported rather than raised. The sweep's job is getting the scam down."""
+    """Forward the newest of `messages` carrying a file, so one photo outlives the sweep."""
     if alert_channel is None:
         return False
     carrying = [message for message in messages if message.attachments]
