@@ -869,8 +869,17 @@ class Matchmaking(commands.Cog):
     async def start(
         self,
         ctx: discord.ApplicationContext,
-        game: discord.Option(
-            str, description="Game to matchmake for", choices=GAME_CHOICES
+        game: str = discord.Option(
+            description="Game to matchmake for",
+            choices=GAME_CHOICES
+        ),
+        team_a: str = discord.Option(
+            description="Team A's name",
+            default=None
+        ),
+        team_b: str = discord.Option(
+            description="Team B's name",
+            default=None
         ),
         team_a: discord.Option(str, description="Team A's name", default=None),
         team_b: discord.Option(str, description="Team B's name", default=None),
@@ -1216,14 +1225,8 @@ class BetModal(discord.ui.Modal):
 
 
 class LobbyPanelView(discord.ui.View):
-    """Base for every view reachable from a lobby's admin panel.
-
-    They're ephemeral messages that outlive the lobby. close_admin_panels deletes them
-    when the match ends, but a click already in flight still lands, and Swap's would
-    reopen betting and re-arm a close timer on a session nobody can win.
-    """
-
-    def __init__(self, session: MatchmakingSession):
+    """Base for every view reachable from a lobby's admin panel."""
+    def __init__(self, session: "MatchmakingSession"):
         super().__init__(timeout=180)
         self.session = session
 
