@@ -10,15 +10,15 @@ GUILD_ID = config.secrets["discord"]["guild_id"]
 
 
 class Game(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
+    def __init__(self, bot: discord.Bot) -> None:
+        self.bot: discord.Bot = bot
 
     game = discord.SlashCommandGroup("game", "game-related utils")
 
     @game.command(name="stack", description="any stackas", guild_ids=[GUILD_ID])
     async def stack(
         self,
-        ctx,
+        ctx: discord.ApplicationContext,
         name: str = discord.Option(
             name="name",
             description="Name of the stack",
@@ -29,7 +29,7 @@ class Game(commands.Cog):
             description="Number of stackas (default 5)",
             default=5,
         ),
-    ):
+    ) -> None:
         # We don't need 1 or less people in a stack
         size = max(size, 2)
         # We don't need more than 12 people in a stack. If we do, jump me (lilac alex)
@@ -57,20 +57,20 @@ class Game(commands.Cog):
 
 
 class GameStackView(discord.ui.View):
-    def __init__(self, embed, size):
+    def __init__(self, embed: discord.Embed, size: int) -> None:
         super().__init__(timeout=1200)
-        self.embed = embed
-        self.joined = {}
-        self.pinged = False
-        self.stack_size = size
+        self.embed: discord.Embed = embed
+        self.joined: dict[int, discord.User | discord.Member] = {}
+        self.pinged: bool = False
+        self.stack_size: int = size
         # The one live copy of the stack, tracked here rather than on discord.ui.View's
         # own .message -- pycord reassigns that to interaction.message on every click of
         # every button, so a bump sitting on an await reads whichever copy was clicked
         # last and deletes that one instead of its own.
         self.current_message: discord.Message | None = None
-        self.bump_lock = asyncio.Lock()
+        self.bump_lock: asyncio.Lock = asyncio.Lock()
 
-    def update_embed(self):
+    def update_embed(self) -> None:
         # Title:
         # - Green square: Person joined under limit
         # - Yellow square: Person joined over stack size
@@ -97,7 +97,7 @@ class GameStackView(discord.ui.View):
         self.embed.remove_field(0)
         self.embed.add_field(name=name, value=value)
 
-    async def on_timeout(self):
+    async def on_timeout(self) -> None:
         self.disable_all_items()
         # discord.ui.View's own .message is only ever set by a click, so a stack nobody
         # touched has none at all and this raised on every quiet expiry. current_message
@@ -109,7 +109,9 @@ class GameStackView(discord.ui.View):
             await self.current_message.edit(view=self)
 
     @discord.ui.button(label="Join", style=discord.ButtonStyle.green)
-    async def join_callback(self, button, interaction):
+    async def join_callback(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ) -> None:
         self.joined[interaction.user.id] = interaction.user
         self.update_embed()
         await interaction.response.edit_message(embed=self.embed)
@@ -121,14 +123,18 @@ class GameStackView(discord.ui.View):
             )
 
     @discord.ui.button(label="Leave", style=discord.ButtonStyle.red)
-    async def leave_callback(self, button, interaction):
+    async def leave_callback(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ) -> None:
         if interaction.user.id in self.joined:
             self.joined.pop(interaction.user.id)
         self.update_embed()
         await interaction.response.edit_message(embed=self.embed)
 
     @discord.ui.button(label="Bump!", style=discord.ButtonStyle.grey)
-    async def refresh_callback(self, button, interaction):
+    async def refresh_callback(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ) -> None:
         """Repost the stack at the bottom of the channel.
 
         Answers the interaction before deleting anything: a delete is a round trip on
@@ -174,5 +180,5 @@ class GameStackView(discord.ui.View):
                     await old_message.edit(view=None)
 
 
-def setup(bot):
+def setup(bot: discord.Bot) -> None:
     bot.add_cog(Game(bot))
