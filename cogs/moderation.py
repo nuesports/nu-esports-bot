@@ -7,8 +7,8 @@ from utils import config
 GUILD_ID = config.secrets["discord"]["guild_id"]
 
 class Moderation(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
+    def __init__(self, bot: discord.Bot) -> None:
+        self.bot: discord.Bot = bot
 
     @discord.slash_command(
         name="purge",
@@ -16,7 +16,7 @@ class Moderation(commands.Cog):
         guild_ids=[GUILD_ID]
     )
     @default_permissions(manage_messages=True)
-    async def purge(self, ctx: discord.ApplicationContext, amount: int):
+    async def purge(self, ctx: discord.ApplicationContext, amount: int) -> None:
         if not ctx.channel.permissions_for(ctx.author).manage_messages:
             await ctx.respond("You do not have permission to use this command.", ephemeral=True)
             return
@@ -32,7 +32,7 @@ class Moderation(commands.Cog):
         guild_ids=[GUILD_ID]
     )
     @default_permissions(manage_channels=True)
-    async def lock(self, ctx: discord.ApplicationContext, hide: bool=True):
+    async def lock(self, ctx: discord.ApplicationContext, hide: bool=True) -> None:
         if not ctx.channel.permissions_for(ctx.author).manage_channels:
             await ctx.respond("You do not have permission to use this command.", ephemeral=True)
             return
@@ -50,7 +50,7 @@ class Moderation(commands.Cog):
         guild_ids=[GUILD_ID]
     )
     @default_permissions(manage_channels=True)
-    async def unlock(self, ctx: discord.ApplicationContext, unhide: bool=True):
+    async def unlock(self, ctx: discord.ApplicationContext, unhide: bool=True) -> None:
         if not ctx.channel.permissions_for(ctx.author).manage_channels:
             await ctx.respond("You do not have permission to use this command.", ephemeral=True)
             return
@@ -68,7 +68,7 @@ class Moderation(commands.Cog):
         guild_ids=[GUILD_ID]
     )
     @default_permissions(manage_channels=True)
-    async def slowmode(self, ctx: discord.ApplicationContext, seconds: int):
+    async def slowmode(self, ctx: discord.ApplicationContext, seconds: int) -> None:
         if not ctx.channel.permissions_for(ctx.author).manage_channels:
             await ctx.respond("You do not have permission to use this command.", ephemeral=True)
             return
@@ -79,5 +79,5 @@ class Moderation(commands.Cog):
         else:
             await ctx.respond("🐛 Slowmode disabled!")
 
-def setup(bot):
+def setup(bot: discord.Bot) -> None:
     bot.add_cog(Moderation(bot))
