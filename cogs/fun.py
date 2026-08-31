@@ -10,6 +10,7 @@ from utils import config
 GUILD_ID = config.secrets["discord"]["guild_id"]
 TYST_STICKER_ID = config.config["fun"]["stickers"]["TYST"]
 
+
 class Fun(commands.Cog):
     def __init__(self, bot: discord.Bot) -> None:
         self.bot: discord.Bot = bot
@@ -18,7 +19,7 @@ class Fun(commands.Cog):
             "text_unmute_task": None,
             "voice_unmute_task": None,
             "original_text_permissions": {},  # {channel_id: send_messages_value}
-        }      
+        }
 
     @discord.slash_command(
         name="mutehannah",
@@ -306,21 +307,24 @@ def chess(cog: Fun, message: discord.Message) -> str | None:
         return output
     return None
 
+
 async def ty_stan(message: discord.Message) -> str | bool | None:
     """Returns a string for on_message to reply with, or None/False if there's
     nothing more to do -- including when a sticker was found, since that branch
     already sends its own reply and shouldn't also get echoed by the caller."""
     lower_content = message.content.lower()
-    if random.randint(1, 100) <= 10 and ("thank you shannon tan" in lower_content or "tyst" in lower_content):
+    if random.randint(1, 100) <= 10 and (
+        "thank you shannon tan" in lower_content or "tyst" in lower_content
+    ):
         sticker = discord.utils.get(message.guild.stickers, id=TYST_STICKER_ID)
         if sticker is not None:
             await message.reply(
-                "THANK YOU SHANNON TAN THANK YOU SHANNON TAN",
-                stickers=[sticker]
+                "THANK YOU SHANNON TAN THANK YOU SHANNON TAN", stickers=[sticker]
             )
             return None
         return "THANK YOU SHANNON TAN"
     return False
+
 
 def i_love_osu(message: discord.Message) -> str | None:
     lower_content = message.content.lower()

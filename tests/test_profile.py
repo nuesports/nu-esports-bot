@@ -20,6 +20,7 @@ def game_data(monkeypatch):
 
 # --- compute_rank_value / format_rank_label ---
 
+
 def test_compute_rank_value_divided_tier(game_data):
     assert profile.compute_rank_value(game_data, "Bronze", 1) == 0
     assert profile.compute_rank_value(game_data, "Silver", 2) == 4
@@ -35,6 +36,7 @@ def test_format_rank_label(game_data):
 
 
 # --- thin config.game_data passthroughs ---
+
 
 def test_get_tiers(game_data):
     assert profile.get_tiers(game_data) == ["Bronze", "Silver", "Gold"]
@@ -62,6 +64,7 @@ def test_tier_has_divisions_false_for_flat_tier(game_data):
 
 # --- validate_tier_division ---
 
+
 def test_validate_tier_division_valid(game_data):
     assert profile.validate_tier_division(game_data, "Bronze", "2") == (2, None)
 
@@ -86,6 +89,7 @@ def test_validate_tier_division_out_of_range(game_data):
 
 # --- effective_primary (no config needed at all) ---
 
+
 def test_effective_primary_uses_explicit_value():
     assert profile.effective_primary(["A", "B"], "B") == "B"
 
@@ -99,6 +103,7 @@ def test_effective_primary_no_mains_returns_none():
 
 
 # --- normalize_tag ---
+
 
 class FakeBot:
     def __init__(self, known_emoji_ids=None):

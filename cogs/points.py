@@ -223,9 +223,7 @@ class Prediction:
 
 
 class PredictionView(discord.ui.View):
-    def __init__(
-        self, option_a: str, option_b: str, embed: discord.Embed
-    ) -> None:
+    def __init__(self, option_a: str, option_b: str, embed: discord.Embed) -> None:
         super().__init__(timeout=1200)
 
         self.option_a: str = option_a
@@ -373,9 +371,7 @@ class PredictionView(discord.ui.View):
 class PredictionModal(discord.ui.Modal):
     def __init__(
         self,
-        callback: Callable[
-            [discord.User | discord.Member, int, str], Awaitable[None]
-        ],
+        callback: Callable[[discord.User | discord.Member, int, str], Awaitable[None]],
         option: str,
         user_points: int,
     ) -> None:

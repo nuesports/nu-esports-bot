@@ -57,6 +57,7 @@ def fun_config(monkeypatch):
 
 # --- i_love_osu ---
 
+
 def test_i_love_osu_matches_case_insensitive():
     assert fun.i_love_osu(FakeMessage(content="I LOVE OSU today")) == "Osu 😻"
 
@@ -66,6 +67,7 @@ def test_i_love_osu_no_match_returns_none():
 
 
 # --- oh_lord ---
+
 
 def test_oh_lord_hits_when_roll_succeeds_and_phrase_present(monkeypatch):
     monkeypatch.setattr(fun.random, "randint", lambda a, b: 1)
@@ -84,6 +86,7 @@ def test_oh_lord_misses_when_roll_fails(monkeypatch):
 
 
 # --- special_interactions ---
+
 
 def test_special_interactions_hits_for_known_user(monkeypatch, fun_config):
     monkeypatch.setattr(fun.random, "randint", lambda a, b: 1)
@@ -117,6 +120,7 @@ def test_special_interactions_none_when_special_users_empty(monkeypatch):
 
 # --- chess ---
 
+
 def test_chess_reacts_when_mentioned(monkeypatch, fun_config):
     monkeypatch.setattr(fun.random, "choice", lambda seq: seq[0])
     cog = FakeCog(mentioned=True)
@@ -134,6 +138,7 @@ def test_chess_none_when_not_mentioned(fun_config):
 
 
 # --- ty_stan ---
+
 
 @pytest.mark.asyncio
 async def test_ty_stan_replies_with_sticker_and_returns_none(monkeypatch):

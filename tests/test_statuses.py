@@ -11,9 +11,9 @@ def test_load_statuses_builds_activities_from_yaml(tmp_path, monkeypatch):
     (data_dir / "statuses.yaml").write_text(
         "statuses:\n"
         "  - type: playing\n"
-        "    name: \"chess\"\n"
+        '    name: "chess"\n'
         "  - type: watching\n"
-        "    name: \"the leaderboard\"\n"
+        '    name: "the leaderboard"\n'
     )
 
     result = statuses.load_statuses()

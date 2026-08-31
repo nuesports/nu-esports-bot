@@ -9,6 +9,7 @@ def _client_returning(monkeypatch, payload):
         if isinstance(payload, Exception):
             raise payload
         return payload
+
     monkeypatch.setattr(overwatch, "fetch_json_with_retries", fake_fetch)
     return overwatch.OverwatchClient()
 
@@ -38,4 +39,6 @@ async def test_a_well_formed_battletag_still_goes_through(monkeypatch):
     """No competitive block, so it returns before touching the database."""
     client = _client_returning(monkeypatch, {"competitive": None})
 
-    await client.fetch_and_store(123, ("overwatch", "Alex#1234", None, None, None, None))
+    await client.fetch_and_store(
+        123, ("overwatch", "Alex#1234", None, None, None, None)
+    )

@@ -1101,7 +1101,12 @@ class PCs(commands.Cog):
             date_str = today.strftime("%Y-%m-%d")
             reservations_data = await self.fetch_reservations(date_str)
             reservations = reservations_data.get("reservations", [])
-        except (TimeoutError, aiohttp.ClientError, ValueError, AttributeError) as e:
+        except (
+            aiohttp.ClientError,
+            asyncio.TimeoutError,
+            ValueError,
+            AttributeError,
+        ) as e:
             print(f"Failed to fetch reservations: {e}")
             reservations = []
 
@@ -1199,7 +1204,12 @@ class PCs(commands.Cog):
             date_str = today.strftime("%Y-%m-%d")
             reservations_data = await self.fetch_reservations(date_str)
             reservations = reservations_data.get("reservations", [])
-        except (TimeoutError, aiohttp.ClientError, ValueError, AttributeError) as e:
+        except (
+            aiohttp.ClientError,
+            asyncio.TimeoutError,
+            ValueError,
+            AttributeError,
+        ) as e:
             print(f"Failed to fetch reservations: {e}")
             reservations = []
 
@@ -1662,9 +1672,7 @@ class PCs(commands.Cog):
         for res in reservations:
             machines = res.get("machines", [])
 
-            start_time = PCs.to_central_time(
-                datetime.fromisoformat(res["start_time"])
-            )
+            start_time = PCs.to_central_time(datetime.fromisoformat(res["start_time"]))
             end_time = PCs.to_central_time(datetime.fromisoformat(res["end_time"]))
 
             # Mark time slots as reserved for each machine
@@ -2259,8 +2267,8 @@ class ReservationView(discord.ui.View):
             embeds, file = await self.build_embed_and_file()
             await interaction.message.edit(embeds=embeds, file=file, view=self)
         except (
-            TimeoutError,
             aiohttp.ClientError,
+            asyncio.TimeoutError,
             OSError,
             ValueError,
             discord.HTTPException,
@@ -2282,8 +2290,8 @@ class ReservationView(discord.ui.View):
             embeds, file = await self.build_embed_and_file()
             await interaction.message.edit(embeds=embeds, file=file, view=self)
         except (
-            TimeoutError,
             aiohttp.ClientError,
+            asyncio.TimeoutError,
             OSError,
             ValueError,
             discord.HTTPException,

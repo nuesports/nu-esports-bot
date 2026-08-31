@@ -74,7 +74,7 @@ def generate_embed(session: MatchmakingSession) -> discord.Embed:
 
 
 def generate_postgame_embed(
-    session: MatchmakingSession,
+    session: "MatchmakingSession",
     team: str,
     players: list[discord.Member],
     richest_chatter: str | None = None,
@@ -103,7 +103,7 @@ def generate_postgame_embed(
     return embed
 
 
-def generate_cancelled_embed(session: MatchmakingSession) -> discord.Embed:
+def generate_cancelled_embed(session: "MatchmakingSession") -> discord.Embed:
     """Build the "lobby cancelled" embed shown after an admin cancels a game."""
     return discord.Embed(
         title=f"{session.game.title()} Lobby — Cancelled",
@@ -112,7 +112,7 @@ def generate_cancelled_embed(session: MatchmakingSession) -> discord.Embed:
     )
 
 
-def generate_chatters_field(session: MatchmakingSession) -> str:
+def generate_chatters_field(session: "MatchmakingSession") -> str:
     """Build the "Chatters" field value: bettors sorted by stake (highest first).
 
     Each row puts the @username on the same side as the team they back.
@@ -152,7 +152,7 @@ def generate_chatters_field(session: MatchmakingSession) -> str:
     return value
 
 
-def generate_match_embed(session: MatchmakingSession) -> discord.Embed:
+def generate_match_embed(session: "MatchmakingSession") -> discord.Embed:
     """Build the embed for a lobby that's already been shuffled into teams.
 
     Players are grouped by team and ordered by role (via ROLE_REQUIREMENTS).
@@ -164,6 +164,7 @@ def generate_match_embed(session: MatchmakingSession) -> discord.Embed:
     )
     has_roles = bool(ROLE_REQUIREMENTS[session.game])
     lane_order = {lane: i for i, lane in enumerate(ROLE_REQUIREMENTS[session.game])}
+
     def team_rows(team: list[discord.Member]) -> str:
         ordered = sorted(
             team,
@@ -272,14 +273,16 @@ def balance_teams(
             selected.append((role, count))
             used += count
 
-    # Jittered elo for one lookup key, cached so repeated requests for the 
+    # Jittered elo for one lookup key, cached so repeated requests for the
     # same key reuse one random draw instead of redrawing jitter each time.
     elo_cache: dict[str, dict[int, float]] = {}
 
     def effective_elo_for(key: str) -> dict[int, float]:
         if key not in elo_cache:
             avg = sum(elo_by_role[m.id][key] for m in joined) / len(joined)
-            elo_cache[key] = {m.id: jittered_elo(elo_by_role[m.id][key], avg) for m in joined}
+            elo_cache[key] = {
+                m.id: jittered_elo(elo_by_role[m.id][key], avg) for m in joined
+            }
         return elo_cache[key]
 
     remaining = list(joined)
@@ -382,7 +385,7 @@ def must_forfeit_bet_on_declare(interaction: discord.Interaction) -> bool:
 
 
 async def edit_lobby_message(
-    session: MatchmakingSession, embed: discord.Embed, view: discord.ui.View | None
+    session: "MatchmakingSession", embed: discord.Embed, view: discord.ui.View | None
 ) -> bool:
     """Edit the public lobby message, reporting whether the edit landed.
 
@@ -397,6 +400,13 @@ async def edit_lobby_message(
     except discord.NotFound, discord.HTTPException:
         return False
     return True
+
+
+async def refresh_lobby_message(session: "MatchmakingSession") -> bool:
+    """Re-render the public lobby message in whatever state the session is in now."""
+    return await edit_lobby_message(
+        session, generate_embed(session), LobbyView(session)
+    )
 
 
 async def refresh_lobby_message(session: MatchmakingSession) -> bool:
@@ -420,7 +430,7 @@ async def refresh_admin_panels(session: MatchmakingSession) -> None:
     session.admin_panels = still_open
 
 
-async def close_admin_panels(session: MatchmakingSession) -> None:
+async def close_admin_panels(session: "MatchmakingSession") -> None:
     """Delete every open admin panel. They're ephemeral messages that outlive the lobby,
     and a stale one's Shuffle would reopen betting on a match that's already over."""
     for msg in session.admin_panels.values():
@@ -429,7 +439,7 @@ async def close_admin_panels(session: MatchmakingSession) -> None:
     session.admin_panels = {}
 
 
-async def start_betting_window(session: MatchmakingSession) -> None:
+async def start_betting_window(session: "MatchmakingSession") -> None:
     """Refund any bets from the previous shuffle and open a fresh betting window.
     Cancels a previous close-timer first so re-shuffling twice doesn't leave an
     orphaned task, and refunds rather than wipes since those points were already deducted.
@@ -447,7 +457,7 @@ async def start_betting_window(session: MatchmakingSession) -> None:
     session.betting_close_task = asyncio.create_task(close_betting_after_delay(session))
 
 
-async def close_betting_after_delay(session: MatchmakingSession) -> None:
+async def close_betting_after_delay(session: "MatchmakingSession") -> None:
     """Close betting BETTING_WINDOW_SECONDS after a shuffle and refresh the public message
     so the Bet button disables. Keeps the task reference alive through the message edit
     so a mid-edit cancel from stop_betting_window can still interrupt it.
@@ -467,7 +477,7 @@ async def close_betting_after_delay(session: MatchmakingSession) -> None:
     session.betting_close_task = None
 
 
-def stop_betting_window(session: MatchmakingSession) -> None:
+def stop_betting_window(session: "MatchmakingSession") -> None:
     """Cancel any pending betting-close timer without reopening it.
     Used when the match is ending, not just being reshuffled."""
     if session.betting_close_task is not None:
@@ -476,7 +486,7 @@ def stop_betting_window(session: MatchmakingSession) -> None:
     session.betting_open = False
 
 
-async def refund_bets(session: MatchmakingSession) -> None:
+async def refund_bets(session: "MatchmakingSession") -> None:
     """Refund every outstanding bet's stake and void any bet still in flight.
 
     Called from every point the lineup stops matching what people backed: join, leave,
@@ -495,7 +505,7 @@ async def refund_bets(session: MatchmakingSession) -> None:
     await wallet.credit_many(refunds)
 
 
-async def reset_to_lobby(session: MatchmakingSession) -> None:
+async def reset_to_lobby(session: "MatchmakingSession") -> None:
     """Drop the shuffled teams and put the lobby back in its waiting-room state.
 
     Anyone who'd bet was backing a matchup that no longer exists, so their stakes go
@@ -508,7 +518,7 @@ async def reset_to_lobby(session: MatchmakingSession) -> None:
     await refund_bets(session)
 
 
-def swap_slots(session: MatchmakingSession, id_a: int, id_b: int) -> bool:
+def swap_slots(session: "MatchmakingSession", id_a: int, id_b: int) -> bool:
     """Swap two players' team+lane slots.
 
     If they're on different teams, both their team assignment and lane swap.
@@ -535,7 +545,7 @@ def swap_slots(session: MatchmakingSession, id_a: int, id_b: int) -> bool:
             session.team_a.remove(member_b)
             session.team_a.append(member_a)
             session.team_b.append(member_b)
-    
+
     # Only swap lanes when both players actually have one -- writing a None into
     # role_assignments would render as "None" instead of the "?" fallback.
     lane_a = session.role_assignments.get(member_a.id)
@@ -567,7 +577,7 @@ def jittered_elo(
 
 
 async def update_record(
-    session: MatchmakingSession,
+    session: "MatchmakingSession",
     winners: list[discord.Member],
     losers: list[discord.Member],
 ) -> None:
@@ -715,7 +725,7 @@ async def get_unranked(
     return [m for m in members if m.id not in ranked]
 
 
-async def apply_elo_changes(session: MatchmakingSession, team_a_won: bool) -> None:
+async def apply_elo_changes(session: "MatchmakingSession", team_a_won: bool) -> None:
     """Update profile_elo (or profile_role_elo, for per_role_ranks games) for every
     player in the match based on the declared winner."""
     if config.is_per_role_ranks(session.game):
@@ -760,7 +770,7 @@ async def apply_elo_changes(session: MatchmakingSession, team_a_won: bool) -> No
     )
 
 
-async def settle_bets(session: MatchmakingSession, team_a_won: bool) -> dict | None:
+async def settle_bets(session: "MatchmakingSession", team_a_won: bool) -> dict | None:
     """Pay out or refund every bet, based on which team won. Winners split the losing
     pot proportionally to their stake, same formula as cogs/points.py's Prediction.
     Refunds everyone if only one side bet. Clears session.bets before returning either way.
@@ -881,19 +891,10 @@ class Matchmaking(commands.Cog):
         self,
         ctx: discord.ApplicationContext,
         game: str = discord.Option(
-            description="Game to matchmake for",
-            choices=GAME_CHOICES
+            description="Game to matchmake for", choices=GAME_CHOICES
         ),
-        team_a: str = discord.Option(
-            description="Team A's name",
-            default=None
-        ),
-        team_b: str = discord.Option(
-            description="Team B's name",
-            default=None
-        ),
-        team_a: discord.Option(str, description="Team A's name", default=None),
-        team_b: discord.Option(str, description="Team B's name", default=None),
+        team_a: str = discord.Option(description="Team A's name", default=None),
+        team_b: str = discord.Option(description="Team B's name", default=None),
     ) -> None:
         """Start a new matchmaking lobby, or bump an existing one in this channel/game.
 
@@ -969,8 +970,12 @@ class LobbyView(discord.ui.View):
         # doesn't cover any more than shuffle's or swap's does.
         await interaction.response.defer()
 
-        row = await db.fetch_one("SELECT tag FROM profiles WHERE discordid = %s;", (interaction.user.id,))
-        self.session.tags[interaction.user.id] = row[0] if row and row[0] else DEFAULT_TAG["Lobby"]
+        row = await db.fetch_one(
+            "SELECT tag FROM profiles WHERE discordid = %s;", (interaction.user.id,)
+        )
+        self.session.tags[interaction.user.id] = (
+            row[0] if row and row[0] else DEFAULT_TAG["Lobby"]
+        )
 
         self.session.joined.append(interaction.user)
         await reset_to_lobby(self.session)
@@ -1064,7 +1069,10 @@ class LobbyView(discord.ui.View):
             ephemeral=True,
         )
 
-def bet_rejection_reason(session: "MatchmakingSession", user_id: int, team: str) -> str | None:
+
+def bet_rejection_reason(
+    session: "MatchmakingSession", user_id: int, team: str
+) -> str | None:
     """Why this user can't back this team, or None if they can."""
     on_team_a = any(m.id == user_id for m in session.team_a)
     on_team_b = any(m.id == user_id for m in session.team_b)
@@ -1081,6 +1089,7 @@ class BetTeamSelectView(discord.ui.View):
     """Ephemeral team picker shown after clicking Bet. Players on a team can only
     bet on themselves, and once a bet is placed the opposing team's button disables too.
     """
+
     def __init__(self, session: "MatchmakingSession", user: discord.Member) -> None:
         super().__init__(timeout=BETTING_WINDOW_SECONDS)
         self.session = session
@@ -1127,7 +1136,15 @@ class BetModal(discord.ui.Modal):
     team rules and the epoch under a per-user lock, and deducts with an atomic conditional
     UPDATE so the balance can't go negative even across lobbies.
     """
-    def __init__(self, session: "MatchmakingSession", user: discord.Member, team: str, current_bet: int, balance: int) -> None:
+
+    def __init__(
+        self,
+        session: "MatchmakingSession",
+        user: discord.Member,
+        team: str,
+        current_bet: int,
+        balance: int,
+    ) -> None:
         super().__init__(title="Place your bet")
         self.session = session
         self.user = user
@@ -1226,6 +1243,7 @@ class BetModal(discord.ui.Modal):
 
 class LobbyPanelView(discord.ui.View):
     """Base for every view reachable from a lobby's admin panel."""
+
     def __init__(self, session: "MatchmakingSession") -> None:
         super().__init__(timeout=180)
         self.session = session
@@ -1307,7 +1325,7 @@ class SwapSelectView(LobbyPanelView):
 
 
 async def declare_winner(
-    session: MatchmakingSession, interaction: discord.Interaction, team_a_won: bool
+    session: "MatchmakingSession", interaction: discord.Interaction, team_a_won: bool
 ) -> None:
     """Shared implementation for declaring a winner: record the result, settle bets,
     post the postgame embed, end the session. Defers immediately after the privilege
@@ -1418,6 +1436,7 @@ class WinnerSelectView(LobbyPanelView):
     """Ephemeral team picker for declaring a winner.
 
     Uses manually-constructed buttons so their labels can show the session's actual team names instead of static text."""
+
     def __init__(self, session: "MatchmakingSession") -> None:
         super().__init__(session)
 
@@ -1464,6 +1483,7 @@ class SelfBetForfeitWarningView(LobbyPanelView):
     presses Winner. Requires confirmation first since declaring forfeits the bet outright.
     Uses buttons instead of a dropdown, since Select option text can get cut off on Discord's client.
     """
+
     def __init__(self, session: "MatchmakingSession", stake: int) -> None:
         super().__init__(session)
 
@@ -1508,6 +1528,7 @@ class SelfBetForfeitWarningView(LobbyPanelView):
 
 class PostgameView(discord.ui.View):
     """Post-game view that allows for rematching."""
+
     def __init__(self, session: "MatchmakingSession") -> None:
         super().__init__(timeout=180)
         self.session = session
@@ -1669,6 +1690,7 @@ class CancelConfirmView(LobbyPanelView):
 
     Uses a dropdown rather than buttons, so a misclick doesn't instantly end the game.
     """
+
     def __init__(self, session: "MatchmakingSession") -> None:
         super().__init__(session)
 

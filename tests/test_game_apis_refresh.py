@@ -35,16 +35,22 @@ class FakeClient:
 def _always_stale(monkeypatch):
     async def _stale(discordid, game):
         return True
+
     monkeypatch.setattr(refresh, "_is_stale", _stale)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("exc", [
-    GameAPIError("provider fell over"),
-    LinkError("API key not configured"),
-    psycopg.OperationalError("database is gone"),
-])
-async def test_fetch_with_lock_swallows_what_fetch_and_store_can_fail_at(monkeypatch, capsys, exc):
+@pytest.mark.parametrize(
+    "exc",
+    [
+        GameAPIError("provider fell over"),
+        LinkError("API key not configured"),
+        psycopg.OperationalError("database is gone"),
+    ],
+)
+async def test_fetch_with_lock_swallows_what_fetch_and_store_can_fail_at(
+    monkeypatch, capsys, exc
+):
     """The three things that legitimately go wrong on a refresh: the provider, the
     API key, and the write. Any of them skips one player rather than reaching
     /profile view, which calls this through asyncio.gather with no handler of its own."""
@@ -115,7 +121,9 @@ async def test_fetch_with_lock_force_skips_staleness_check(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_fetch_with_lock_returns_silently_for_unknown_game():
-    await refresh._fetch_with_lock(123, "not-a-real-game", (), force=False)  # must not raise
+    await refresh._fetch_with_lock(
+        123, "not-a-real-game", (), force=False
+    )  # must not raise
 
 
 @pytest.mark.asyncio
@@ -128,17 +136,23 @@ async def test_fetch_with_lock_third_caller_waits_after_lock_entry_popped(monkey
     monkeypatch.setitem(refresh.CLIENTS, "fakegame", client)
     _always_stale(monkeypatch)
 
-    first = asyncio.create_task(refresh._fetch_with_lock(123, "fakegame", (), force=False))
-    await client.entered.wait()      # first is mid-fetch, holds the lock
-    second = asyncio.create_task(refresh._fetch_with_lock(123, "fakegame", (), force=False))
+    first = asyncio.create_task(
+        refresh._fetch_with_lock(123, "fakegame", (), force=False)
+    )
+    await client.entered.wait()  # first is mid-fetch, holds the lock
+    second = asyncio.create_task(
+        refresh._fetch_with_lock(123, "fakegame", (), force=False)
+    )
 
-    client.entered.clear()           # clear before first finishes so we can catch second's signal
-    gates[0].set()                   # let first finish; its finally pops the lock entry
+    client.entered.clear()  # clear before first finishes so we can catch second's signal
+    gates[0].set()  # let first finish; its finally pops the lock entry
     await first
-    await client.entered.wait()      # second is now mid-fetch, holds the lock
+    await client.entered.wait()  # second is now mid-fetch, holds the lock
 
-    third = asyncio.create_task(refresh._fetch_with_lock(123, "fakegame", (), force=False))
-    await asyncio.sleep(0.01)        # give third a chance to run if it can
+    third = asyncio.create_task(
+        refresh._fetch_with_lock(123, "fakegame", (), force=False)
+    )
+    await asyncio.sleep(0.01)  # give third a chance to run if it can
     assert client.max_concurrent == 1  # third must wait, not run alongside second
 
     gates[1].set()

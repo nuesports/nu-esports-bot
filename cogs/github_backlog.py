@@ -1,7 +1,7 @@
 """
 GitHub webhook receiver;
 
-Posts PR/issue notifications and pins/unpins them through 
+Posts PR/issue notifications and pins/unpins them through
 a small aiohttp server from setup() via bot.loop.create_task()
 """
 
@@ -57,8 +57,15 @@ def first_body_line(body: str | None) -> str:
 
 
 def build_notification_embed(
-    kind: str, number: int, repo: str, title: str, body: str | None, url: str,
-    footer_verb: str, username: str, color: discord.Color,
+    kind: str,
+    number: int,
+    repo: str,
+    title: str,
+    body: str | None,
+    url: str,
+    footer_verb: str,
+    username: str,
+    color: discord.Color,
 ) -> discord.Embed:
     type_word = "PR" if kind == "pr" else "Issue"
     embed = discord.Embed(
@@ -81,9 +88,13 @@ class GithubBacklog(commands.Cog):
         self.pr_channel_id: int = cfg["pr_channel"]
         self.issue_channel_id: int = cfg["issue_channel"]
 
-    async def post_and_pin(self, channel_id: int, repo: str, number: int, kind: str, embed: discord.Embed) -> None:
+    async def post_and_pin(
+        self, channel_id: int, repo: str, number: int, kind: str, embed: discord.Embed
+    ) -> None:
         channel = await self.bot.fetch_channel(channel_id)
-        message = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        message = await channel.send(
+            embed=embed, allowed_mentions=discord.AllowedMentions.none()
+        )
         try:
             await message.pin()
         except discord.HTTPException as e:
@@ -128,8 +139,15 @@ class GithubBacklog(commands.Cog):
         if action == "opened":
             author = pr["user"]
             embed = build_notification_embed(
-                "pr", number, repo, pr["title"], pr.get("body"), pr["html_url"],
-                footer_verb="Authored by", username=author["login"], color=COLOR_OPEN_PR,
+                "pr",
+                number,
+                repo,
+                pr["title"],
+                pr.get("body"),
+                pr["html_url"],
+                footer_verb="Authored by",
+                username=author["login"],
+                color=COLOR_OPEN_PR,
             )
             await self.post_and_pin(self.pr_channel_id, repo, number, "pr", embed)
         elif action == "closed" and pr.get("merged"):
@@ -137,8 +155,15 @@ class GithubBacklog(commands.Cog):
             merged_by = pr.get("merged_by")
             username = merged_by["login"] if merged_by else "unknown"
             embed = build_notification_embed(
-                "pr", number, repo, pr["title"], pr.get("body"), pr["html_url"],
-                footer_verb="Merged by", username=username, color=COLOR_DONE,
+                "pr",
+                number,
+                repo,
+                pr["title"],
+                pr.get("body"),
+                pr["html_url"],
+                footer_verb="Merged by",
+                username=username,
+                color=COLOR_DONE,
             )
             await self.send_embed(self.pr_channel_id, embed)
 
@@ -151,16 +176,30 @@ class GithubBacklog(commands.Cog):
         if action == "opened":
             author = issue["user"]
             embed = build_notification_embed(
-                "issue", number, repo, issue["title"], issue.get("body"), issue["html_url"],
-                footer_verb="Authored by", username=author["login"], color=COLOR_OPEN_ISSUE,
+                "issue",
+                number,
+                repo,
+                issue["title"],
+                issue.get("body"),
+                issue["html_url"],
+                footer_verb="Authored by",
+                username=author["login"],
+                color=COLOR_OPEN_ISSUE,
             )
             await self.post_and_pin(self.issue_channel_id, repo, number, "issue", embed)
         elif action == "closed":
             await self.unpin(repo, number, "issue")
             closer = payload.get("sender") or issue["user"]
             embed = build_notification_embed(
-                "issue", number, repo, issue["title"], issue.get("body"), issue["html_url"],
-                footer_verb="Closed by", username=closer["login"], color=COLOR_DONE,
+                "issue",
+                number,
+                repo,
+                issue["title"],
+                issue.get("body"),
+                issue["html_url"],
+                footer_verb="Closed by",
+                username=closer["login"],
+                color=COLOR_DONE,
             )
             await self.send_embed(self.issue_channel_id, embed)
 
@@ -170,7 +209,9 @@ def create_app(backlog: GithubBacklog) -> web.Application:
 
     async def webhook_handler(request: web.Request) -> web.Response:
         body = await request.read()
-        if not verify_signature(secret, body, request.headers.get("X-Hub-Signature-256")):
+        if not verify_signature(
+            secret, body, request.headers.get("X-Hub-Signature-256")
+        ):
             return web.Response(status=401, text="bad signature")
 
         event = request.headers.get("X-GitHub-Event")

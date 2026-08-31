@@ -51,7 +51,10 @@ async def _is_stale(discordid: int, game: str) -> bool:
             (discordid, game),
         )
     last_updated = row[0] if row else None
-    return last_updated is None or (datetime.now(UTC) - last_updated) > RANK_STALE_AFTER
+    return (
+        last_updated is None
+        or (datetime.now(timezone.utc) - last_updated) > RANK_STALE_AFTER
+    )
 
 
 async def _fetch_with_lock(

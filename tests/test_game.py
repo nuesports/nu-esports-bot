@@ -19,6 +19,7 @@ class FakeUser:
 
 class FakeHTTPResponse:
     """The two attributes discord.HTTPException reads off a response to build its message."""
+
     def __init__(self, status, reason):
         self.status = status
         self.reason = reason
@@ -35,6 +36,7 @@ def server_error():
 class FakeStackMessage:
     """One posted copy of the stack. The error hooks let a test make a delete or an edit
     fail the way an already-deleted or ratelimited message would."""
+
     def __init__(self, id, channel):
         self.id = id
         self.channel = channel
@@ -59,6 +61,7 @@ class FakeChannel:
     """Stands in for the text channel, and doubles as the message store the view re-fetches
     through -- plus a shared event log, since the order of the send and the delete is the
     whole point of the bump fix."""
+
     def __init__(self, id=1):
         self.id = id
         self.messages = {}
@@ -78,6 +81,7 @@ class FakeChannel:
 class RecordingResponse(FakeInteractionResponse):
     """Logs its sends into the channel's event list so a test can pin down that the bump
     answered Discord before it went off to delete anything."""
+
     def __init__(self, channel):
         super().__init__()
         self.channel = channel
@@ -90,6 +94,7 @@ class RecordingResponse(FakeInteractionResponse):
 class GatedResponse(RecordingResponse):
     """Parks the send until the test opens the gate, so a second click really does land
     while the first bump is still in flight -- pycord runs every click as its own task."""
+
     def __init__(self, channel, gate):
         super().__init__(channel)
         self.gate = gate
@@ -102,6 +107,7 @@ class GatedResponse(RecordingResponse):
 class FakeStackInteraction(FakeInteraction):
     """FakeInteraction plus what the bump path reaches for: the copy the button was clicked
     on, the channel to re-fetch through, and the message the response just posted."""
+
     def __init__(self, user, message, channel, response=None):
         super().__init__(user)
         self.message = message
@@ -118,6 +124,7 @@ class FakeStackInteraction(FakeInteraction):
 class FakeStackContext(FakeApplicationContext):
     """FakeApplicationContext plus the interaction handle the stack command needs to find
     the message it just posted."""
+
     def __init__(self, author, channel):
         super().__init__(author, channel)
         self.interaction = FakeStackInteraction(author, None, channel)
@@ -134,6 +141,7 @@ def stack_view(channel=None, size=5):
 
 
 # --- GameStackView.refresh_callback ---
+
 
 @pytest.mark.asyncio
 async def test_bump_answers_the_interaction_before_it_deletes_the_old_copy():
@@ -159,7 +167,9 @@ async def test_second_bump_is_turned_away_while_the_first_is_in_flight():
     live = view.current_message
 
     gate = asyncio.Event()
-    first = FakeStackInteraction(FakeUser(1), live, channel, GatedResponse(channel, gate))
+    first = FakeStackInteraction(
+        FakeUser(1), live, channel, GatedResponse(channel, gate)
+    )
     second = FakeStackInteraction(FakeUser(2), live, channel)
 
     in_flight = asyncio.create_task(view.refresh_callback.callback(first))
@@ -226,6 +236,7 @@ async def test_bump_strips_the_buttons_off_a_copy_it_couldnt_delete():
 
 # --- GameStackView.on_timeout ---
 
+
 @pytest.mark.asyncio
 async def test_timeout_on_an_untouched_stack_doesnt_raise():
     view = stack_view()
@@ -247,6 +258,7 @@ async def test_timeout_ignores_a_stack_that_was_already_deleted():
 
 
 # --- /game stack ---
+
 
 @pytest.mark.asyncio
 async def test_stack_command_points_the_view_at_a_channel_fetched_message():

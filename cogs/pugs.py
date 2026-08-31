@@ -5,7 +5,8 @@ import discord
 from discord.ext import commands
 
 from utils import config
-#from utils import db
+
+# from utils import db
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
 
@@ -96,12 +97,9 @@ class PUGs(commands.Cog):
         )
 
     @pugs_group.command(
-            name = "finish", description="Mark PUGs session as done", guild_ids=[GUILD_ID]
+        name="finish", description="Mark PUGs session as done", guild_ids=[GUILD_ID]
     )
-    async def finish(
-        self,
-        ctx: discord.ApplicationContext
-    ) -> None:
+    async def finish(self, ctx: discord.ApplicationContext) -> None:
         """
         @brief End the PUGs lobby in this current channel.
         """
@@ -113,20 +111,15 @@ class PUGs(commands.Cog):
         else:
             await ctx.send_followup("You are not in a voice channel!", ephemeral=True)
             return
-        
+
         if (
             lobby_channel.id in self.active_sessions
             and self.active_sessions[lobby_channel.id].active
         ):
             self.active_sessions[lobby_channel.id].active = False
-            await ctx.send_followup(
-                "PUGs lobby ended!"
-            )
+            await ctx.send_followup("PUGs lobby ended!")
         else:
-            await ctx.send_followup(
-                "No active lobby in this channel!", ephemeral=True
-            )
-
+            await ctx.send_followup("No active lobby in this channel!", ephemeral=True)
 
     async def _generate_match_logic(self, session: PUGSession) -> None:
         players = session.lobby_channel.members

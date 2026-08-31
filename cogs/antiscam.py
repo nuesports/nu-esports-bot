@@ -1,7 +1,7 @@
 """
 Scam message filter;
 
-Catches common scam messages via a holistic scoring system. 
+Catches common scam messages via a holistic scoring system.
 Flagged messages are sent to staff for review while
 the suspected account is timed out.
 """
@@ -29,8 +29,10 @@ MAX_BAN_DELETE_DAYS = 7
 SWEEP_LIMIT = 200
 BULK_DELETE_MAX = 100
 
+
 class SweepResult(NamedTuple):
     """What the post-flag cleanup removed, for the staff embed to report."""
+
     deleted: int
     channels: list[str]
     with_files: int
@@ -42,8 +44,12 @@ def account_age_days(created_at: datetime.datetime, now: datetime.datetime) -> f
     return (now - created_at).total_seconds() / 86400
 
 
-def effective_age_days(member_id: int, created_at: datetime.datetime,
-                       now: datetime.datetime, overrides: dict) -> float:
+def effective_age_days(
+    member_id: int,
+    created_at: datetime.datetime,
+    now: datetime.datetime,
+    overrides: dict,
+) -> float:
     """Account age, unless a local-testing override pins it to something else"""
     if member_id in overrides:
         return overrides[member_id]
@@ -97,11 +103,15 @@ def giveaway_weight(lowered: str, phrases: list[str], weights: dict) -> int:
     count = _phrase_count(lowered, phrases)
     if not count:
         return 0
-    escalated = weights["giveaway_phrase"] + (count - 1) * weights["giveaway_phrase_each_extra"]
+    escalated = (
+        weights["giveaway_phrase"] + (count - 1) * weights["giveaway_phrase_each_extra"]
+    )
     return min(escalated, weights["giveaway_phrase_max"])
 
 
-def score_message(content: str, has_attachment: bool, age_days: float, rules: dict) -> tuple[int, list[str]]:
+def score_message(
+    content: str, has_attachment: bool, age_days: float, rules: dict
+) -> tuple[int, list[str]]:
     """Total weight of every signal that fires, plus the names of the ones that did.
 
     The reasons come back too so that staff can say *why* something was flagged"""
@@ -165,12 +175,15 @@ async def forward_newest_attachment(
     return True
 
 
-def build_alert_embed(member: discord.Member,
-                      channel: discord.TextChannel | discord.Thread,
-                      score: int, reasons: list[str],
-                      sweep: SweepResult | None = None,
-                      problems: list[str] | None = None,
-                      content: str | None = None) -> discord.Embed:
+def build_alert_embed(
+    member: discord.Member,
+    channel: discord.TextChannel | discord.Thread,
+    score: int,
+    reasons: list[str],
+    sweep: SweepResult | None = None,
+    problems: list[str] | None = None,
+    content: str | None = None,
+) -> discord.Embed:
     """The member-info embed that carries the Allow/Ban buttons."""
     created = int(member.created_at.timestamp())
     embed = discord.Embed(
@@ -179,8 +192,12 @@ def build_alert_embed(member: discord.Member,
         color=discord.Color.from_rgb(78, 42, 132),
     )
     embed.set_thumbnail(url=member.display_avatar.url)
-    embed.add_field(name="Member", value=f"{member.mention}\n`{member.id}`", inline=True)
-    embed.add_field(name="Account age", value=f"<t:{created}:R>\n<t:{created}:D>", inline=True)
+    embed.add_field(
+        name="Member", value=f"{member.mention}\n`{member.id}`", inline=True
+    )
+    embed.add_field(
+        name="Account age", value=f"<t:{created}:R>\n<t:{created}:D>", inline=True
+    )
     embed.add_field(name="Posted in", value=channel.mention, inline=True)
     if content:
         excerpt = content if len(content) <= 1000 else content[:997] + "..."
@@ -191,7 +208,9 @@ def build_alert_embed(member: discord.Member,
         lines = []
         if sweep.deleted:
             where = ", ".join(f"#{name}" for name in sweep.channels)
-            files = f" ({sweep.with_files} with attachments)" if sweep.with_files else ""
+            files = (
+                f" ({sweep.with_files} with attachments)" if sweep.with_files else ""
+            )
             lines.append(f"{_plural(sweep.deleted, 'more message')} in {where}{files}")
         if sweep.forwarded:
             lines.append("Newest attachment forwarded below.")
@@ -216,7 +235,10 @@ class ScamReviewView(discord.ui.View):
         self.on_resolved = on_resolved
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if not (config.has_leadership(interaction.user) or config.is_bot_dev(interaction.user)):
+        if not (
+            config.has_leadership(interaction.user)
+            or config.is_bot_dev(interaction.user)
+        ):
             await interaction.response.send_message(
                 "Only leadership can clear or ban a held member.", ephemeral=True
             )
@@ -230,7 +252,9 @@ class ScamReviewView(discord.ui.View):
         if self.on_resolved:
             self.on_resolved()
 
-    async def _may(self, interaction: discord.Interaction, permission: str, label: str) -> bool:
+    async def _may(
+        self, interaction: discord.Interaction, permission: str, label: str
+    ) -> bool:
         """Checks if the clicker has the implied prerequisite permissions"""
         if getattr(interaction.user.guild_permissions, permission, False):
             return True
@@ -239,7 +263,9 @@ class ScamReviewView(discord.ui.View):
         )
         return False
 
-    async def _report_failure(self, interaction: discord.Interaction, what: str) -> None:
+    async def _report_failure(
+        self, interaction: discord.Interaction, what: str
+    ) -> None:
         """Say what went wrong instead of leaving a bare "interaction failed"."""
         await interaction.response.send_message(
             f"Could not {what} — they may have left, or the bot may sit below them in the "
@@ -248,12 +274,16 @@ class ScamReviewView(discord.ui.View):
         )
 
     @discord.ui.button(label="Allow", style=discord.ButtonStyle.success)
-    async def allow(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+    async def allow(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ) -> None:
         """Clear the timeout and let them talk again."""
         if not await self._may(interaction, "moderate_members", "Moderate Members"):
             return
         try:
-            await self.member.timeout(None, reason=f"Scam hold cleared by {interaction.user}")
+            await self.member.timeout(
+                None, reason=f"Scam hold cleared by {interaction.user}"
+            )
         except discord.HTTPException as exc:
             traceback.print_exception(exc)
             await self._report_failure(interaction, "clear the timeout")
@@ -261,22 +291,27 @@ class ScamReviewView(discord.ui.View):
 
         self._finish()
         await interaction.response.edit_message(
-            content=f"✅ Allowed by {interaction.user.mention} — timeout cleared.", view=self
+            content=f"✅ Allowed by {interaction.user.mention} — timeout cleared.",
+            view=self,
         )
 
     @discord.ui.button(label="Ban", style=discord.ButtonStyle.danger)
-    async def ban(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+    async def ban(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ) -> None:
         """Ban and purge recent history"""
         if not await self._may(interaction, "ban_members", "Ban Members"):
             return
-        
+
         try:
-            await self.member.timeout(None, reason=f"Timeout cleared before ban by {interaction.user}")
+            await self.member.timeout(
+                None, reason=f"Timeout cleared before ban by {interaction.user}"
+            )
         except discord.HTTPException as exc:
             traceback.print_exception(exc)
             await self._report_failure(interaction, "clear the timeout")
             return
-        
+
         try:
             await self.member.guild.ban(
                 self.member,
@@ -309,7 +344,9 @@ class AntiScam(commands.Cog):
         # Local testing only, and .get() so it can be absent everywhere else.
         self.test_ages = cfg.get("test_account_ages") or {}
         if self.test_ages:
-            print(f"[antiscam] TESTING: {len(self.test_ages)} account(s) have a faked age")
+            print(
+                f"[antiscam] TESTING: {len(self.test_ages)} account(s) have a faked age"
+            )
         # Members with a case already open.
         self._held: set[int] = set()
 
@@ -319,7 +356,7 @@ class AntiScam(commands.Cog):
             return
         if message.author.id in self._held:
             return
-        
+
         if self.exempt_staff and (
             config.has_leadership(message.author) or config.is_bot_dev(message.author)
         ):
@@ -331,7 +368,9 @@ class AntiScam(commands.Cog):
             message.author.id, message.author.created_at, now, self.test_ages
         )
 
-        score, reasons = score_message(message.content, bool(message.attachments), age, rules)
+        score, reasons = score_message(
+            message.content, bool(message.attachments), age, rules
+        )
 
         # Only walk the message cache when the point a separately-posted photo would add is
         # the difference between flagging and not. Every message in the server comes through
@@ -377,7 +416,9 @@ class AntiScam(commands.Cog):
         try:
             alert = await channel.send(
                 content=f"{ping} held a possible scam from {message.author.display_name}",
-                embed=build_alert_embed(message.author, message.channel, score, reasons),
+                embed=build_alert_embed(
+                    message.author, message.channel, score, reasons
+                ),
                 view=ScamReviewView(
                     message.author,
                     self.ban_delete_days,
@@ -395,7 +436,9 @@ class AntiScam(commands.Cog):
 
         try:
             await channel.send(
-                reference=message.to_reference(type=discord.MessageReferenceType.forward)
+                reference=message.to_reference(
+                    type=discord.MessageReferenceType.forward
+                )
             )
         except discord.HTTPException as exc:
             traceback.print_exception(exc)
@@ -414,8 +457,10 @@ class AntiScam(commands.Cog):
             )
         except discord.HTTPException as exc:
             traceback.print_exception(exc)
-            problems.append("**Could not time them out** — they can still post. Check the "
-                            "bot's role position, and note admins cannot be timed out.")
+            problems.append(
+                "**Could not time them out** — they can still post. Check the "
+                "bot's role position, and note admins cannot be timed out."
+            )
 
         cutoff = now - datetime.timedelta(minutes=self.purge_window_minutes)
         sweep = await self.sweep_recent(message.guild, message.author, cutoff, channel)
@@ -423,9 +468,17 @@ class AntiScam(commands.Cog):
         # Only quote the text when the forward that was meant to carry it did not go out.
         fallback = message.content if any("forward" in p for p in problems) else None
         try:
-            await alert.edit(embed=build_alert_embed(
-                message.author, message.channel, score, reasons, sweep, problems, fallback
-            ))
+            await alert.edit(
+                embed=build_alert_embed(
+                    message.author,
+                    message.channel,
+                    score,
+                    reasons,
+                    sweep,
+                    problems,
+                    fallback,
+                )
+            )
         except discord.HTTPException as exc:
             traceback.print_exception(exc)
 
@@ -469,7 +522,7 @@ class AntiScam(commands.Cog):
             removed = []
             try:
                 for start in range(0, len(stale), BULK_DELETE_MAX):
-                    batch = stale[start:start + BULK_DELETE_MAX]
+                    batch = stale[start : start + BULK_DELETE_MAX]
                     await channel.delete_messages(batch)
                     removed.extend(batch)
             except discord.HTTPException:

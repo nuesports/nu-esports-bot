@@ -191,7 +191,9 @@ async def fetch_profile_data(discordid: int) -> dict:
     }
 
 
-async def link_account(discordid: int, game: str, result: game_apis.LinkResult) -> None:
+async def link_account(
+    discordid: int, game: str, result: "game_apis.LinkResult"
+) -> None:
     """Upserts a linked game account and immediately force-refreshes it, so the player
     doesn't have to wait out the staleness TTL to see a rank right after linking.
     Shared by /profile set account and the setup-flow AccountModal so the two never drift."""
@@ -306,7 +308,7 @@ def build_game_embed(
     setup: bool,
     role_ranks: dict[str, str] | None = None,
     account_name: str | None = None,
-) -> tuple[discord.Embed, Path | None]:
+) -> tuple[discord.Embed, "Path | None"]:
     """Build one per-game profile page: rank, roles, mains, wins/losses, and a champion thumbnail if one exists.
 
     For per-role-ranks games, pass `role_ranks` (role -> rank_label) to render one
@@ -363,6 +365,7 @@ def build_game_embed(
 
 class Profile(commands.Cog):
     """Cog housing the /profile command group:"""
+
     def __init__(self, bot: discord.Bot) -> None:
         self.bot: discord.Bot = bot
 
@@ -410,10 +413,7 @@ class Profile(commands.Cog):
     async def bio(
         self,
         ctx: discord.ApplicationContext,
-        bio: str = discord.Option(
-            name="bio",
-            description="About you!"
-        )
+        bio: str = discord.Option(name="bio", description="About you!"),
     ) -> None:
         """Set (or overwrite) your profile bio."""
         await ctx.defer(ephemeral=True)
@@ -505,14 +505,12 @@ class Profile(commands.Cog):
 
     @set_grp.command(name="account", guild_ids=[GUILD_ID])
     async def account(
-        self, 
-        ctx: discord.ApplicationContext, 
-        game: str = discord.Option(
-            choices=GAME_CHOICES
-          ),
+        self,
+        ctx: discord.ApplicationContext,
+        game: str = discord.Option(choices=GAME_CHOICES),
         identifier: str = discord.Option(
             description="Riot ID/BattleTag/Steam ID or vanity"
-        )
+        ),
     ) -> None:
         """Sets your account for a game"""
         await ctx.defer(ephemeral=True)
@@ -748,9 +746,7 @@ class Profile(commands.Cog):
         self,
         ctx: discord.ApplicationContext,
         tag: str = discord.Option(
-            name="tag",
-            description="Emoji tag to identify yourself by!",
-            default=None,
+            name="tag", description="Emoji tag to identify yourself by!", default=None
         ),
     ) -> None:
         """Set the emoji shown next to your name on your profile and in lobbies, or clear it if ommitted."""
@@ -785,8 +781,7 @@ class Profile(commands.Cog):
         self,
         ctx: discord.ApplicationContext,
         user: discord.Member = discord.Option(
-            description="Defaults to you",
-            default=None
+            description="Defaults to you", default=None
         ),
         game: str = discord.Option(
             name="game",
@@ -831,7 +826,17 @@ class Profile(commands.Cog):
 
         total_pages = len(pages_games) + 1
         pages: list[tuple[discord.Embed, Path | None]] = [
-            (build_home_embed(target, profile_row, total_pages, total_wins, total_losses, setup=False), None)
+            (
+                build_home_embed(
+                    target,
+                    profile_row,
+                    total_pages,
+                    total_wins,
+                    total_losses,
+                    setup=False,
+                ),
+                None,
+            )
         ]
         for i, g in enumerate(pages_games, start=2):
             row = stats_by_game.get(g)
@@ -877,9 +882,8 @@ class Profile(commands.Cog):
         self,
         ctx: discord.ApplicationContext,
         user: discord.Member = discord.Option(
-            description="Player to check elo for",
-            default=None
-        )
+            description="Player to check elo for", default=None
+        ),
     ) -> None:
         """Show a player's elo for every game they've played. Game heads only."""
         await ctx.defer(ephemeral=True)
@@ -910,7 +914,9 @@ class Profile(commands.Cog):
             title=f"{tag} {target.display_name}'s Elo",
             color=discord.Color.from_rgb(78, 42, 132),
         )
-        elo_by_game = {game: (value, games_played) for game, value, games_played in rows}
+        elo_by_game = {
+            game: (value, games_played) for game, value, games_played in rows
+        }
         role_elo_by_game: dict[str, dict[str, tuple[float, int]]] = {}
         for game, role, value, games_played in role_rows:
             role_elo_by_game.setdefault(game, {})[role] = (value, games_played)
@@ -964,6 +970,7 @@ class Profile(commands.Cog):
 
 class ProfilePaginator(discord.ui.View):
     """Left/right paginator over a list of embeds, restricted to whoever ran the command."""
+
     def __init__(
         self, requester_id: int, pages: list[discord.Embed], start_index: int = 0
     ) -> None:
@@ -1021,7 +1028,14 @@ class RoleSelectView(discord.ui.View):
     On submit, this replaces the player's full role list for that game (delete then insert)
     rather than diffing against what was there before.
     """
-    def __init__(self, requester_id: int, game: str, current_roles: list[str], on_done: OnDone | None = None) -> None:
+
+    def __init__(
+        self,
+        requester_id: int,
+        game: str,
+        current_roles: list[str],
+        on_done: OnDone | None = None,
+    ) -> None:
         super().__init__(timeout=120)
         self.requester_id = requester_id
         self.game = game
@@ -1043,7 +1057,7 @@ class RoleSelectView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         """Checks if the interactor is the original requester"""
         return interaction.user.id == self.requester_id
-    
+
     async def on_select(self, interaction: discord.Interaction) -> None:
         """Overwrite the player's roles for this game with whatever's currently selected."""
         chosen = self.select.values
@@ -1075,7 +1089,14 @@ class MainsModal(discord.ui.Modal):
     On success, this replaces the player's full mains list for that game,
     same delete-then-insert pattern as RoleSelectView.
     """
-    def __init__(self, requester_id: int, game: str, current_mains: list[str], on_done: OnDone | None = None) -> None:
+
+    def __init__(
+        self,
+        requester_id: int,
+        game: str,
+        current_mains: list[str],
+        on_done: OnDone | None = None,
+    ) -> None:
         super().__init__(title=f"Set your {game.title()} mains")
         self.requester_id = requester_id
         self.game = game
@@ -1160,6 +1181,7 @@ class RankSelectView(discord.ui.View):
     Starts with a tier dropdown. If the chosen tier has divisions, swaps to a division
     dropdown in the same message; otherwise saves immediately with division=1.
     """
+
     def __init__(self, requester_id: int, game: str, on_done: OnDone) -> None:
         super().__init__(timeout=120)
         self.requester_id = requester_id
@@ -1233,7 +1255,15 @@ class RoleRankSelectView(discord.ui.View):
     Saves exactly one role per submission, same as RankSelectView saves one rank per
     submission; setting a second role means invoking this view again.
     """
-    def __init__(self, requester_id: int, game: str, on_done: OnDone | None = None, tier: str | None = None, division: int | None = None) -> None:
+
+    def __init__(
+        self,
+        requester_id: int,
+        game: str,
+        on_done: OnDone | None = None,
+        tier: str | None = None,
+        division: int | None = None,
+    ) -> None:
         super().__init__(timeout=120)
         self.requester_id = requester_id
         self.game = game
@@ -1325,7 +1355,15 @@ class RoleRankSelectView(discord.ui.View):
 
 class PrimarySelectView(discord.ui.View):
     """Single-select dropdown for choosing a primary main from a player's own mains for one game."""
-    def __init__(self, requester_id: int, game: str, mains: list[str], current_primary: str | None, on_done: OnDone) -> None:
+
+    def __init__(
+        self,
+        requester_id: int,
+        game: str,
+        mains: list[str],
+        current_primary: str | None,
+        on_done: OnDone,
+    ) -> None:
         super().__init__(timeout=120)
         self.requester_id = requester_id
         self.game = game
@@ -1360,7 +1398,10 @@ class PrimarySelectView(discord.ui.View):
 
 class TagModal(discord.ui.Modal):
     """Single-field modal for setting a player's emoji tag."""
-    def __init__(self, requester_id: int, current_tag: str | None, on_done: OnDone) -> None:
+
+    def __init__(
+        self, requester_id: int, current_tag: str | None, on_done: OnDone
+    ) -> None:
         super().__init__(title="Set your tag")
         self.requester_id = requester_id
         self.on_done = on_done
@@ -1398,7 +1439,10 @@ class TagModal(discord.ui.Modal):
 
 class BioModal(discord.ui.Modal):
     """Single-field modal for setting a player's bio."""
-    def __init__(self, requester_id: int, current_bio: str | None, on_done: OnDone) -> None:
+
+    def __init__(
+        self, requester_id: int, current_bio: str | None, on_done: OnDone
+    ) -> None:
         super().__init__(title="Set your bio")
         self.requester_id = requester_id
         self.on_done = on_done
@@ -1430,7 +1474,10 @@ class BioModal(discord.ui.Modal):
 
 class PictureModal(discord.ui.Modal):
     """Single-field modal for setting a player's main picture or thumbnail URL, for one fixed position."""
-    def __init__(self, requester_id: int, position: str, current_url: str | None, on_done: OnDone) -> None:
+
+    def __init__(
+        self, requester_id: int, position: str, current_url: str | None, on_done: OnDone
+    ) -> None:
         super().__init__(title=f"Set your {position} picture")
         self.requester_id = requester_id
         self.position = position
@@ -1482,7 +1529,14 @@ class PictureModal(discord.ui.Modal):
 
 class AccountModal(discord.ui.Modal):
     """Single-field modal for linking an external game account, via /profile setup."""
-    def __init__(self, requester_id: int, game: str, current_identifier: str | None, on_done: OnDone) -> None:
+
+    def __init__(
+        self,
+        requester_id: int,
+        game: str,
+        current_identifier: str | None,
+        on_done: OnDone,
+    ) -> None:
         super().__init__(title=f"Link your {game.title()} account")
         self.requester_id = requester_id
         self.game = game
@@ -1537,6 +1591,7 @@ class AccountModal(discord.ui.Modal):
 
 class ResetConfirmView(discord.ui.View):
     """Confirm/cancel guard in front of the destructive per-game reset button."""
+
     def __init__(self, requester_id: int, game: str, on_done: OnDone) -> None:
         super().__init__(timeout=60)
         self.requester_id = requester_id

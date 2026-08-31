@@ -35,6 +35,7 @@ def readable_payload(game: str):
     except (KeyError, IndexError, TypeError, ValueError, AttributeError) as e:
         raise GameAPIError(f"{game} sent a response we couldn't read: {e!r}") from e
 
+
 @dataclass
 class LinkResult:
     external_id: str
@@ -43,10 +44,13 @@ class LinkResult:
     provider_account_id: str | None = None
     provider_secondary_id: str | None = None
 
+
 class GameAPIClient(Protocol):
     game: str
+
     async def link(self, raw_identifier: str) -> LinkResult: ...
     async def fetch_and_store(self, discordid: int, account_row: tuple) -> None: ...
+
 
 async def has_profile_mains(discordid: int, game: str) -> bool:
     """True if the player already has any mains on file for this game."""
@@ -55,6 +59,7 @@ async def has_profile_mains(discordid: int, game: str) -> bool:
         (discordid, game),
     )
     return existing is not None
+
 
 async def seed_mains(discordid: int, game: str, mains: list[str]) -> None:
     """Bulk-insert seeded mains; no-op if there aren't any."""
@@ -65,6 +70,7 @@ async def seed_mains(discordid: int, game: str, mains: list[str]) -> None:
         [(discordid, game, m) for m in mains],
     )
 
+
 async def has_profile_roles(discordid: int, game: str) -> bool:
     """True if the player already has any roles on file for this game."""
     existing = await db.fetch_one(
@@ -72,6 +78,7 @@ async def has_profile_roles(discordid: int, game: str) -> bool:
         (discordid, game),
     )
     return existing is not None
+
 
 async def seed_roles(discordid: int, game: str, roles) -> None:
     """Bulk-insert seeded roles; no-op if there aren't any."""

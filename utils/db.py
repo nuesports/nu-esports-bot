@@ -9,7 +9,10 @@ def get_db_conninfo():
     """Get database connection info from secrets.yaml."""
     DB_INFO = config.secrets["database"]
     return " ".join(
-        [f"{key}={DB_INFO[key]}" for key in ["host", "port", "dbname", "user", "password"]]
+        [
+            f"{key}={DB_INFO[key]}"
+            for key in ["host", "port", "dbname", "user", "password"]
+        ]
     )
 
 

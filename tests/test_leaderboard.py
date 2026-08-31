@@ -45,9 +45,9 @@ def test_format_entry_default_tag_is_star():
 
 
 def test_format_entry_shows_role_icon_when_entry_role_set(monkeypatch):
-    monkeypatch.setattr(leaderboard.config, "game_data", {
-        "overwatch": {"role_icons": {"Tank": "🛡️"}}
-    })
+    monkeypatch.setattr(
+        leaderboard.config, "game_data", {"overwatch": {"role_icons": {"Tank": "🛡️"}}}
+    )
     guild = FakeGuild({1: FakeMember("Alex")})
     line = leaderboard.format_entry(guild, 1, 1, 5, 2, "🍣", "overwatch", "Tank")
     assert "🛡️" in line
@@ -56,7 +56,10 @@ def test_format_entry_shows_role_icon_when_entry_role_set(monkeypatch):
 def test_build_leaderboard_pages_no_present_members_returns_none():
     guild = FakeGuild({})
     rows = [(1, 5, 2, None, None)]
-    assert leaderboard.build_leaderboard_pages(guild, "valorant", rows, caller_id=1) is None
+    assert (
+        leaderboard.build_leaderboard_pages(guild, "valorant", rows, caller_id=1)
+        is None
+    )
 
 
 def test_build_leaderboard_pages_splits_into_pages_of_ten():
@@ -99,6 +102,7 @@ def fake_fetch_all(monkeypatch):
     """Records the leaderboard's fetch_all calls and replays a canned result instead of
     running them. leaderboard does `from utils import db`, so patching the attribute on
     that module object covers every call site in the cog."""
+
     class Recorder:
         def __init__(self):
             self.calls = []
@@ -149,7 +153,10 @@ def test_build_leaderboard_pages_accepts_points_shaped_rows():
     guild = FakeGuild(members)
     rows = [(i, 100 - i, None) for i in range(1, 13)]
     pages = leaderboard.build_leaderboard_pages(
-        guild, "points", rows, caller_id=1,
+        guild,
+        "points",
+        rows,
+        caller_id=1,
         format_row=lambda rank, row: leaderboard.format_points_entry(guild, rank, *row),
     )
     assert len(pages) == 2
@@ -163,7 +170,10 @@ def test_build_leaderboard_pages_pins_caller_on_a_points_board():
     guild = FakeGuild(members)
     rows = [(i, 100 - i, None) for i in range(1, 12)]
     pages = leaderboard.build_leaderboard_pages(
-        guild, "points", rows, caller_id=11,
+        guild,
+        "points",
+        rows,
+        caller_id=11,
         format_row=lambda rank, row: leaderboard.format_points_entry(guild, rank, *row),
     )
     assert "..." in pages[0].description
@@ -171,11 +181,14 @@ def test_build_leaderboard_pages_pins_caller_on_a_points_board():
 
 
 def test_build_leaderboard_pages_uses_the_given_unranked_note():
-    """"You haven't played Points yet!" would be nonsense on a board everyone is on."""
+    """ "You haven't played Points yet!" would be nonsense on a board everyone is on."""
     guild = FakeGuild({1: FakeMember("Player1")})
     rows = [(1, 50, None)]
     pages = leaderboard.build_leaderboard_pages(
-        guild, "points", rows, caller_id=999,
+        guild,
+        "points",
+        rows,
+        caller_id=999,
         format_row=lambda rank, row: leaderboard.format_points_entry(guild, rank, *row),
         unranked_note="You have no points yet!",
     )
@@ -210,7 +223,9 @@ async def test_fetch_points_rows_appends_the_caller_at_zero(fake_fetch_all):
 
 
 @pytest.mark.asyncio
-async def test_fetch_points_rows_does_not_duplicate_a_caller_who_already_has_a_row(fake_fetch_all):
+async def test_fetch_points_rows_does_not_duplicate_a_caller_who_already_has_a_row(
+    fake_fetch_all,
+):
     fake_fetch_all.result = [(1, 50, "🍣"), (999, 0, None)]
 
     rows = await leaderboard.fetch_points_rows(caller_id=999)
@@ -244,7 +259,9 @@ async def test_paginator_has_no_change_role_button_on_the_points_board():
     paginator = leaderboard.LeaderboardPaginator(
         requester_id=1, pages=[discord.Embed()], guild=FakeGuild({}), game="points"
     )
-    assert not any(getattr(child, "label", None) == "Change Role" for child in paginator.children)
+    assert not any(
+        getattr(child, "label", None) == "Change Role" for child in paginator.children
+    )
 
 
 @pytest.mark.asyncio
@@ -275,6 +292,7 @@ class FakeRoleSelectResponse:
 class FakeRoleSelectInteraction:
     """interaction.original_response() is what a handler uses to recover the message it
     just edited, which conftest's FakeInteraction has no need for."""
+
     def __init__(self, user_id):
         self.user = FakeCaller(user_id)
         self.response = FakeRoleSelectResponse()
@@ -288,7 +306,9 @@ class FakeRoleSelectInteraction:
 async def test_role_select_greys_itself_out_on_timeout():
     """Its three sibling views all pass this. Without it the dropdown still renders as
     live after the timeout, but the click is no longer routed anywhere."""
-    view = leaderboard.LeaderboardRoleSelectView(requester_id=1, guild=FakeGuild({}), game="overwatch")
+    view = leaderboard.LeaderboardRoleSelectView(
+        requester_id=1, guild=FakeGuild({}), game="overwatch"
+    )
     assert view.disable_on_timeout is True
 
 
@@ -296,6 +316,7 @@ async def test_role_select_greys_itself_out_on_timeout():
 async def test_role_select_gives_its_paginator_a_message_handle(monkeypatch):
     """discord.ui.View.message is only set once someone clicks, so a paginator opened
     from here had nothing for on_timeout to edit and stayed un-greyed."""
+
     async def fake_rows(game, role=None):
         return [(1, 10, 0, None, None)]
 

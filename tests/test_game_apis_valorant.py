@@ -14,6 +14,7 @@ def _client_returning(monkeypatch, payload):
         if isinstance(payload, Exception):
             raise payload
         return payload
+
     monkeypatch.setattr(valorant, "fetch_json_with_retries", fake_fetch)
     return valorant.ValorantClient()
 
@@ -48,14 +49,16 @@ async def test_link_reports_any_other_api_failure_as_troubles(monkeypatch):
 async def test_link_turns_a_reshaped_payload_into_a_game_api_error(monkeypatch):
     """HenrikDev dropping `region` used to escape as a bare KeyError that every caller
     had to have guessed at."""
-    client = _client_returning(monkeypatch, {"data": {"puuid": "abc"}})   # no region
+    client = _client_returning(monkeypatch, {"data": {"puuid": "abc"}})  # no region
 
     with pytest.raises(GameAPIError):
         await client.link("Name#Tag")
 
 
 @pytest.mark.asyncio
-async def test_fetch_and_store_turns_a_null_rank_block_into_a_game_api_error(monkeypatch):
+async def test_fetch_and_store_turns_a_null_rank_block_into_a_game_api_error(
+    monkeypatch,
+):
     """HenrikDev sends `current: null` for some unrated players, which used to escape
     as a TypeError out of the background refresh."""
     client = _client_returning(monkeypatch, {"data": {"current": None}})
