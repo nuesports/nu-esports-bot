@@ -1,3 +1,9 @@
+"""
+In-house Leaderboard;
+
+Provides a leaderboard for users to see how they stack up against others
+"""
+
 import discord
 from discord.ext import commands
 
@@ -14,7 +20,7 @@ def is_game_board(board: str) -> bool:
     """Whether a /leaderboard choice is a configured game, as opposed to a synthetic board
     like Points that has no game_data entry, and so no roles, no elo, and no win/loss.
 
-    Every config lookup on the chosen value has to go through this first -- is_per_role_ranks
+    Every config lookup on the chosen value has to go through this first. is_per_role_ranks
     and rankable_roles subscript game_data directly, so they raise KeyError rather than
     returning False for anything that isn't a game."""
     return board in config.game_data
@@ -91,17 +97,10 @@ async def fetch_leaderboard_rows(game: str, role: str | None = None) -> list[tup
 async def fetch_points_rows(caller_id: int) -> list[tuple]:
     """Fetch every user's points balance and profile tag, richest first.
 
-    Unlike the game boards there's no "has actually played" gate -- points come from
-    chatting, so this is everyone who's ever earned any, which makes it a far longer
-    board than any game's.
-
     COALESCE rather than a bare ORDER BY points DESC because users.points is nullable:
     Postgres sorts NULLs first under DESC, so one NULL row would crown itself #1.
 
-    The caller is appended at 0 if they have no users row at all, so their pinned line
-    reads as a real balance instead of vanishing off a board everyone is already on.
-
-    Every row is (discordid, points, tag).
+    Every row is (discordid, points, tag), users are defaulted to 0 if they have no row.
     """
     rows = await db.fetch_all(
         """
@@ -147,16 +146,6 @@ def build_leaderboard_pages(guild: discord.Guild, game: str, rows: list[tuple], 
     """Build one embed per page of 10 leaderboard entries, ordered by win rate (see fetch_leaderboard_rows).
 
     Pass `role` for a per-role-ranks game's leaderboard, just to title the embed correctly.
-
-    The caller's own line is always visible: pinned at the bottom of a page while their real rank
-    is still further down the list, pinned at the top once you've paged past it, and left out of
-    the pinned spot entirely on the page their rank actually falls on (already part of that page).
-
-    `format_row` renders one row as `(rank, row) -> str`, and defaults to the win/loss game entry.
-    Taking it as an argument is what lets a board that isn't a game -- Points, whose rows are
-    (discordid, points, tag) -- reuse all of this paging and pinning. The only thing assumed
-    about a row here is that row[0] is the discord id. `unranked_note` likewise replaces the
-    "haven't played" line for a board where that sentence would make no sense.
     """
     if format_row is None:
         def format_row(rank, row):
@@ -211,11 +200,7 @@ def build_leaderboard_pages(guild: discord.Guild, game: str, rows: list[tuple], 
     return pages
 
 async def build_points_pages(guild: discord.Guild, caller_id: int) -> list[discord.Embed] | None:
-    """Fetch and page the Points board, shared by /leaderboard and the Change Game select.
-
-    The unranked note should be unreachable, since fetch_points_rows gives the caller a row
-    either way -- but guild.get_member is a cache lookup, and an uncached member gets filtered
-    out of present_rows, so it's better that the fallback reads as a balance than as a match."""
+    """Fetch and page the Points board, shared by /leaderboard and the Change Game select.."""
     rows = await fetch_points_rows(caller_id)
     return build_leaderboard_pages(
         guild, POINTS_BOARD, rows, caller_id,
@@ -429,10 +414,7 @@ class Leaderboard(commands.Cog):
             default=None,
         )
     ) -> None:
-        """Show the top 10 players for a game, ranked by elo but displayed as win/loss
-
-        Per-role-ranks games (Overwatch) rank by the given role's elo if one's given, or by
-        each player's single best role otherwise -- see fetch_leaderboard_rows."""
+        """Show the top 10 players for a game"""
         await ctx.defer()
 
         if game == POINTS_BOARD:
