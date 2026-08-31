@@ -1,3 +1,9 @@
+"""
+NYT's Connections;
+
+Recreated in discord!
+"""
+
 import asyncio
 import io
 import random
