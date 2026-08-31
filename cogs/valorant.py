@@ -23,15 +23,13 @@ class Valorant(commands.Cog):
     async def random_lobby(
         self,
         ctx,
-        map_flags: discord.Option(
-            str,
+        map_flags: str = discord.Option(
             name="maps",
             description="Map pool used for randomization (default all)",
             choices=["active", "newest", "all"],
             default="all",
         ),
-        team_flags: discord.Option(
-            str,
+        team_flags: str = discord.Option(
             name="teams",
             description="Agent selection used for randomization (default role-balanced)",
             choices=["role-balanced", "random"],
