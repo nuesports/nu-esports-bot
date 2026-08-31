@@ -402,13 +402,11 @@ class Leaderboard(commands.Cog):
     async def leaderboard(
         self,
         ctx: discord.ApplicationContext,
-        game: discord.Option (
-            str,
+        game: str = discord.Option (
             description= "Game (or Points) to show leaderboard for",
             choices=BOARD_CHOICES,
         ),
-        role: discord.Option(
-            str,
+        role: str = discord.Option(
             description="Role to rank by (per-role-rank games only; omit for a mixed best-role leaderboard)",
             autocomplete=role_autocomplete,
             default=None,
