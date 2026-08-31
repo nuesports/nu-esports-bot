@@ -1513,8 +1513,7 @@ class PCs(commands.Cog):
     async def cancel_reservation(
         self,
         ctx: discord.ApplicationContext,
-        reservation: discord.Option(
-            str,
+        reservation: str = discord.Option(
             name="reservation",
             description="Select a reservation to cancel",
             autocomplete=reservation_autocomplete,
