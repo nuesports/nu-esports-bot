@@ -113,9 +113,7 @@ def generate_cancelled_embed(session: MatchmakingSession) -> discord.Embed:
 def generate_chatters_field(session: MatchmakingSession) -> str:
     """Build the "Chatters" field value: bettors sorted by stake (highest first).
 
-    Each row puts the mention on the side of the team it backs: Team A reads
-    "@user - {points} points" (mention toward the left-hand Team A column), Team B
-    reads "{points} points - @user", so the list visually splits by side.
+    Each row puts the @username on the same side as the team they back.
     """
     if not session.bets:
         rows = ["No bets yet"]
@@ -155,7 +153,7 @@ def generate_chatters_field(session: MatchmakingSession) -> str:
 def generate_match_embed(session: MatchmakingSession) -> discord.Embed:
     """Build the embed for a lobby that's already been shuffled into teams.
 
-    Players are grouped by team and ordered by role (via ROLE_REQUIREMENTS), not join order.
+    Players are grouped by team and ordered by role (via ROLE_REQUIREMENTS).
     """
     title_suffix = session.map if session.map else "Teams"
     embed = discord.Embed(
@@ -239,7 +237,7 @@ def balance_teams(
     A small random "jitter" `RANK_JITTER` is added to each player's rank before comparing, so the lobby doesn't shuffle to the same result every time.
 
     `elo_by_id` is a single float per player for games without per-role ranks, or
-    {role: elo} per player for ones with -- see get_game_shuffle_data.
+    {role: elo} per player for ones with (aka overwatch) -- see get_game_shuffle_data.
 
     Returns (team_a, team_b, assignments), where assignments maps member id ->  lane/role.
     """
@@ -249,10 +247,9 @@ def balance_teams(
     per_role = config.is_per_role_ranks(game)
     rankable = ROLE_REQUIREMENTS[game]
 
-    # Normalize to one shape for the rest of this function: every player maps to
-    # {role_or_sentinel: elo}. Games without per-role ranks have exactly one elo
-    # per player, filed under the sentinel key, so every access below can just be
-    # elo_by_id[m.id][key] regardless of which kind of game this is.
+    # From here on both kinds of game share one shape: {player_id: {key: elo}}.
+    # Per-role games are already keyed by role name; the rest file their single
+    # elo under _GAME_WIDE_ELO, so every lookup below is elo_by_id[m.id][key].
     if not per_role:
         elo_by_id = {mid: {_GAME_WIDE_ELO: value} for mid, value in elo_by_id.items()}
 
@@ -267,9 +264,8 @@ def balance_teams(
             selected.append((role, count))
             used += count
 
-    # Jittered elo for one lookup key, cached so repeated requests for the same
-    # key -- every non-per-role lookup, or a role/leftover reusing an already-seen
-    # role -- reuse one random draw instead of redrawing jitter each time.
+    # Jittered elo for one lookup key, cached so repeated requests for the 
+    # same key reuse one random draw instead of redrawing jitter each time.
     elo_cache: dict[str, dict[int, float]] = {}
 
     def effective_elo_for(key: str) -> dict[int, float]:
@@ -286,7 +282,7 @@ def balance_teams(
     assignments = {}
 
     for role, count in selected:
-        # Non-per-role games always look up the sentinel (one elo, reused for
+        # Non-per-role games always look up _GAME_WIDE_ELO (one elo, reused for
         # every bucket); per-role games look up that bucket's own role, since a
         # player's candidacy for Tank shouldn't be decided by their Support elo.
         effective_elo = effective_elo_for(role if per_role else _GAME_WIDE_ELO)
@@ -331,11 +327,11 @@ def balance_teams(
     # Only reachable if role_requirements doesn't fill every slot -- true for any
     # non-full Overwatch lobby, since its roles only add up to exactly lobby_size/2.
     def leftover_key(m: discord.Member) -> str:
-        """Elo lookup key for a leftover player. Non-per-role games always use the
-        sentinel. Flex isn't an assignable lane in a per-role-ranks game, so a
-        Flex-only queue resolves to whichever rankable role they have the best
-        elo in instead -- Tank/Damage/Support always have an elo entry, Flex
-        never does."""
+        """Elo lookup key for a leftover player. Non-per-role games always use
+        _GAME_WIDE_ELO. Flex isn't an assignable lane in a per-role-ranks game,
+        so a Flex-only queue resolves to whichever rankable role they have the
+        best elo in instead -- Tank/Damage/Support always have an elo entry,
+        Flex never does."""
         if not per_role:
             return _GAME_WIDE_ELO
         preferred = roles_by_id[m.id][0]
@@ -1052,17 +1048,8 @@ class LobbyView(discord.ui.View):
             ephemeral=True,
         )
 
-
-def bet_rejection_reason(
-    session: MatchmakingSession, user_id: int, team: str
-) -> str | None:
-    """Why this user can't back this team, or None if they can.
-
-    One home for the rule so the two enforcement points can't drift: the picker greys out
-    the buttons with it, and BetModal re-checks it under the lock. The picker alone isn't
-    enough -- an ephemeral view opened before a swap survives the swap, and nothing can
-    reach back to disable it.
-    """
+def bet_rejection_reason(session: "MatchmakingSession", user_id: int, team: str) -> str | None:
+    """Why this user can't back this team, or None if they can."""
     on_team_a = any(m.id == user_id for m in session.team_a)
     on_team_b = any(m.id == user_id for m in session.team_b)
     if (team == "a" and on_team_b) or (team == "b" and on_team_a):
