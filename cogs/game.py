@@ -1,3 +1,8 @@
+"""
+Game stackas;
+
+Lets users keep track of a stack instead of having to repeatedly answer 'any space?'
+"""
 import asyncio
 import contextlib
 
