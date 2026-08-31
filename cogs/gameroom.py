@@ -1,3 +1,8 @@
+"""
+Gameroom information;
+
+Contains commands that fetch information about the Norris Game Room
+"""
 import datetime
 from zoneinfo import ZoneInfo
 
