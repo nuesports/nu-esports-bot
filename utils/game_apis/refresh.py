@@ -29,7 +29,7 @@ class _FetchLock:
 
     __slots__ = ("lock", "waiters")
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.lock = asyncio.Lock()
         self.waiters = 0
 

@@ -1,4 +1,5 @@
 import contextlib
+from collections.abc import Collection, Iterator
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -17,13 +18,13 @@ class GameAPIError(Exception):
     apart from everything else without reaching for aiohttp's types.
     """
 
-    def __init__(self, message: str, status: int | None = None):
+    def __init__(self, message: str, status: int | None = None) -> None:
         super().__init__(message)
         self.status = status
 
 
 @contextlib.contextmanager
-def readable_payload(game: str):
+def readable_payload(game: str) -> Iterator[None]:
     """Turn a response we can't read into a GameAPIError.
 
     Wraps parsing only. A KeyError in here means the provider changed the shape of its
@@ -80,7 +81,7 @@ async def has_profile_roles(discordid: int, game: str) -> bool:
     return existing is not None
 
 
-async def seed_roles(discordid: int, game: str, roles) -> None:
+async def seed_roles(discordid: int, game: str, roles: Collection[str]) -> None:
     """Bulk-insert seeded roles; no-op if there aren't any."""
     if not roles:
         return

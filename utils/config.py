@@ -4,7 +4,7 @@ import discord
 import yaml
 
 
-def load_config():
+def load_config() -> dict:
     """Load config from config.yaml file."""
     config_file = Path("config.yaml")
     if not config_file.exists():
@@ -13,7 +13,7 @@ def load_config():
         return yaml.safe_load(f)
 
 
-def load_secrets():
+def load_secrets() -> dict:
     """Load secrets from secrets.yaml file."""
     secrets_file = Path("secrets.yaml")
     if not secrets_file.exists():
@@ -22,7 +22,7 @@ def load_secrets():
         return yaml.safe_load(f)
 
 
-def load_game_data():
+def load_game_data() -> dict:
     """Load game data from data/games/*.yaml file."""
     game_data = {}
     for path in Path("data/games").glob("*.yaml"):
@@ -33,7 +33,7 @@ def load_game_data():
     return game_data
 
 
-def load_gameroom_data():
+def load_gameroom_data() -> dict:
     gameroom_file = Path("data/gameroom.yaml")
     if not gameroom_file.exists():
         raise FileNotFoundError("data/gameroom.yaml not found in local directory")
@@ -41,7 +41,7 @@ def load_gameroom_data():
         return yaml.safe_load(f)
 
 
-def load_matchmaking_data():
+def load_matchmaking_data() -> dict:
     matchmaking_file = Path("data/matchmaking.yaml")
     if not matchmaking_file.exists():
         raise FileNotFoundError("data/matchmaking.yaml not found in local directory")
@@ -51,7 +51,7 @@ def load_matchmaking_data():
         return data
 
 
-def load_fun_data():
+def load_fun_data() -> dict:
     fun_file = Path("data/fun.yaml")
     if not fun_file.exists():
         raise FileNotFoundError("data/fun.yaml not found in local directory")
@@ -59,7 +59,7 @@ def load_fun_data():
         return yaml.safe_load(f)
 
 
-def load_antiscam_data():
+def load_antiscam_data() -> dict:
     """Load the scam-detector scoring rules from data/antiscam.yaml."""
     antiscam_file = Path("data/antiscam.yaml")
     if not antiscam_file.exists():
@@ -77,7 +77,7 @@ fun_data = load_fun_data()
 antiscam_data = load_antiscam_data()
 
 
-def _role_ids(value) -> set[int]:
+def _role_ids(value: int | list[int] | None) -> set[int]:
     """Normalize a roles config value (int, list, or None) to a set of role IDs."""
     if value is None:
         return set()

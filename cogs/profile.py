@@ -468,7 +468,6 @@ class Profile(commands.Cog):
                 ephemeral=True,
             )
             return
-        sql = None
         option = option.lower()
         if option == "main":
             sql = """
@@ -488,6 +487,12 @@ class Profile(commands.Cog):
                 thumbnail_url = EXCLUDED.thumbnail_url,
                 updated_at = CURRENT_TIMESTAMP;
             """
+        else:
+            # position is autocompleted, not a fixed choice list, so anything can arrive.
+            await ctx.followup.send(
+                "Position must be either 'main' or 'thumbnail'.", ephemeral=True
+            )
+            return
 
         await db.perform_one(sql, (ctx.author.id, picture))
 

@@ -43,3 +43,13 @@ explicit_package_bases = true
 # discord.Option() in an argument default is py-cord's declarative option syntax,
 # read once at command registration -- not a mutable default shared between calls.
 extend-immutable-calls = ["discord.Option"]
+
+[tool.ruff.lint]
+# ANN: every function needs annotated parameters and a return type.
+extend-select = ["ANN"]
+# Parsed JSON from an external API genuinely has no static shape.
+ignore = ["ANN401"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test functions are uniformly `-> None` taking fixtures; annotating them is noise.
+"tests/*" = ["ANN"]
