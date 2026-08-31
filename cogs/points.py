@@ -31,7 +31,7 @@ class Points(commands.Cog):
         description="Get your points balance or another user's point balance",
         guild_ids=[GUILD_ID],
     )
-    async def balance(self, ctx, user: discord.Option(discord.User, default=None)):
+    async def balance(self, ctx, user: discord.User = discord.Option(default=None)):
         await ctx.defer()
 
         target_user = user if user else ctx.user
@@ -179,7 +179,10 @@ class Prediction:
             payout = self.view.odds_b
             winning_stakes = self.view.option_b_points
         await wallet.credit_many(
-            [(round(stake * payout), user_id) for user_id, stake in winning_stakes.items()]
+            [
+                (round(stake * payout), user_id)
+                for user_id, stake in winning_stakes.items()
+            ]
         )
         format = "Prediction completed -- {} points distributed to {} ({}x payout)."
         if winner == self.option_a:
@@ -300,14 +303,18 @@ class PredictionView(discord.ui.View):
         # A modal opened before the lock can still be submitted after it, and a late
         # stake would recompute the odds the payout was already announced with.
         if self.locked:
-            await self.message.reply(f"{user.mention} tried to bet on a locked prediction!")
+            await self.message.reply(
+                f"{user.mention} tried to bet on a locked prediction!"
+            )
             return
 
         # Atomic conditional UPDATE. PredictionModal's earlier balance check is a stale
         # snapshot, so this guard is what actually prevents overdrafting.
         deducted = await wallet.try_deduct(user.id, points)
         if not deducted:
-            await self.message.reply(f"{user.mention} tried to bet more points than they have!")
+            await self.message.reply(
+                f"{user.mention} tried to bet more points than they have!"
+            )
             return
 
         # Re-check after the await, the way matchmaking's BetModal re-checks its epoch:
@@ -315,7 +322,9 @@ class PredictionView(discord.ui.View):
         # dicts, so a stake booked afterwards is deducted and never seen again.
         if self.locked:
             await wallet.credit(user.id, points)
-            await self.message.reply(f"{user.mention} tried to bet on a locked prediction!")
+            await self.message.reply(
+                f"{user.mention} tried to bet on a locked prediction!"
+            )
             return
 
         if option == self.option_a:
