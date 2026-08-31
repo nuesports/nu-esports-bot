@@ -19,14 +19,12 @@ class Game(commands.Cog):
     async def stack(
         self,
         ctx,
-        name: discord.Option(
-            str,
+        name: str = discord.Option(
             name="name",
             description="Name of the stack",
             default="",
         ),
-        size: discord.Option(
-            int,
+        size: int = discord.Option(
             name="size",
             description="Number of stackas (default 5)",
             default=5,
@@ -34,8 +32,8 @@ class Game(commands.Cog):
     ):
         # We don't need 1 or less people in a stack
         size = max(size, 2)
-        # We don't need more than 10 people in a stack. If we do, jump me
-        size = min(size, 10)
+        # We don't need more than 12 people in a stack. If we do, jump me (lilac alex)
+        size = min(size, 12)
 
         if name == "":
             name = f"{ctx.author.display_name}'s stack"
