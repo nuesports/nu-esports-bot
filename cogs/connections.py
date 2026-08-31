@@ -69,8 +69,7 @@ class Connections(commands.Cog):
     async def connections(
         self,
         ctx,
-        date_str: discord.Option(
-            str,
+        date_str: str = discord.Option(
             name="date",
             description="Date in YYYY-MM-DD format (defaults to today)",
             required=False,
