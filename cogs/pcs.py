@@ -1161,8 +1161,7 @@ class PCs(commands.Cog):
     async def pc(
         self,
         ctx: discord.ApplicationContext,
-        pc_number: discord.Option(
-            str,
+        pc_number: str = discord.Option(
             name="pc_number",
             description="PC number (e.g., 1 for Desk 1, 15 for Desk 15)",
             required=True,
@@ -1286,8 +1285,7 @@ class PCs(commands.Cog):
     async def reservations(
         self,
         ctx: discord.ApplicationContext,
-        date: discord.Option(
-            str,
+        date: str = discord.Option(
             name="date",
             description="Date in YYYY-MM-DD format (default: today)",
             required=False,
@@ -1447,8 +1445,7 @@ class PCs(commands.Cog):
     async def reserve(
         self,
         ctx: discord.ApplicationContext,
-        team: discord.Option(
-            str,
+        team: str = discord.Option(
             name="team",
             description="Your team",
             choices=[
@@ -1463,16 +1460,14 @@ class PCs(commands.Cog):
             ],
             required=True,
         ),
-        num_pcs: discord.Option(
-            int,
+        num_pcs: int = discord.Option(
             name="num_pcs",
             description="Number of PCs to reserve (1-8)",
             min_value=1,
             max_value=8,
             required=True,
         ),
-        res_type: discord.Option(
-            str,
+        res_type: str = discord.Option(
             name="type",
             description="Scrim or match",
             choices=["Scrim", "Match"],
