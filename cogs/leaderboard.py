@@ -408,7 +408,7 @@ class Leaderboard(commands.Cog):
             description= "Game (or Points) to show leaderboard for",
             choices=BOARD_CHOICES,
         ),
-        role: str = discord.Option(
+        role: str | None = discord.Option(
             description="Role to rank by (per-role-rank games only; omit for a mixed best-role leaderboard)",
             autocomplete=role_autocomplete,
             default=None,

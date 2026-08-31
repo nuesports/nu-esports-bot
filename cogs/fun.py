@@ -1,5 +1,6 @@
 import asyncio
 import random
+from typing import Any
 
 import discord
 from discord.ext import commands
@@ -13,7 +14,7 @@ class Fun(commands.Cog):
     def __init__(self, bot: discord.Bot) -> None:
         self.bot: discord.Bot = bot
         # Track active mute tasks and original permissions for Hannah
-        self.hannah_mute_state = {
+        self.hannah_mute_state: dict[str, Any] = {
             "text_unmute_task": None,
             "voice_unmute_task": None,
             "original_text_permissions": {},  # {channel_id: send_messages_value}
@@ -270,20 +271,23 @@ class Fun(commands.Cog):
         if message.author == self.bot.user:
             return
 
-        if output := chess(self, message):
-            await message.add_reaction(output)
+        if chess_emoji := chess(self, message):
+            await message.add_reaction(chess_emoji)
 
-        if output := await ty_stan(message):
-            await message.reply(output)
+        # ty_stan also returns False when nothing matched, so narrow to the
+        # reply-worthy case rather than testing truthiness.
+        tyst_reply = await ty_stan(message)
+        if isinstance(tyst_reply, str):
+            await message.reply(tyst_reply)
 
-        if output := i_love_osu(message):
-            await message.reply(output)
+        if osu_reply := i_love_osu(message):
+            await message.reply(osu_reply)
 
-        if output := oh_lord(message):
-            await message.reply(output)
+        if lord_reply := oh_lord(message):
+            await message.reply(lord_reply)
 
-        if output := special_interactions(message):
-            for emoji in output:
+        if special_emojis := special_interactions(message):
+            for emoji in special_emojis:
                 await message.add_reaction(emoji)
 
 
@@ -300,6 +304,7 @@ def chess(cog: Fun, message: discord.Message) -> str | None:
         emoji, id = random.choice(list(chess_emojis.items()))
         output = f"<:{emoji}:{id}>"
         return output
+    return None
 
 async def ty_stan(message: discord.Message) -> str | bool | None:
     """Returns a string for on_message to reply with, or None/False if there's

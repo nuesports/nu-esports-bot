@@ -1,8 +1,15 @@
+from collections.abc import Sequence
+from typing import overload
+
 from utils import config
 
 ELO_K = 120  # max elo swing for a single game, per player
 ELO_D = 1000 # how much a rating gap affects win probability (bigger = flatter)
 
+@overload
+def decode_rank_value(game: str, rank_value: int) -> tuple[str, int | None]: ...
+@overload
+def decode_rank_value(game: str, rank_value: None) -> None: ...
 def decode_rank_value(game: str, rank_value: int | None) -> tuple[str, int | None] | None:
     """Reverse profile.py's compute_rank_value back into (tier, division)
 
@@ -70,7 +77,7 @@ def seed_elo(game: str, rank_value: int | None) -> float:
     tier, division = decoded
     return compute_rank_points(game, tier, division)
 
-def seed_role_elo(game: str, own_rank_value: int | None, other_rank_values: list[int | None]) -> float:
+def seed_role_elo(game: str, own_rank_value: int | None, other_rank_values: Sequence[int | None]) -> float:
     """Starting elo for one role in a per-role-ranks game. Uses the player's own
     rank for that role if set, otherwise averages whatever other roles they do
     have a rank for, falling back to the game's `default_tier` seed if none."""

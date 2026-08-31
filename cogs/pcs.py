@@ -488,12 +488,12 @@ class PCs(commands.Cog):
             time_points.add(res["start_time"])
             time_points.add(res["end_time"])
 
-        time_points = sorted(time_points)
+        ordered_points = sorted(time_points)
 
         # Check each interval
-        for i in range(len(time_points) - 1):
-            interval_start = time_points[i]
-            interval_end = time_points[i + 1]
+        for i in range(len(ordered_points) - 1):
+            interval_start = ordered_points[i]
+            interval_end = ordered_points[i + 1]
 
             # Skip intervals outside our requested range
             if interval_end <= start_time or interval_start >= end_time:
@@ -575,7 +575,7 @@ class PCs(commands.Cog):
             return []
 
         # Allocate PCs with preference for back room, then contiguous main room
-        allocated = []
+        allocated: list[int] = []
 
         # First, allocate back room PCs (14, 15, 0/streaming)
         back_room_order = [14, 15, 0]
@@ -626,6 +626,7 @@ class PCs(commands.Cog):
                 if attempt == max_attempts - 1:
                     raise
                 await asyncio.sleep(retry_delay_seconds)
+        raise AssertionError("unreachable: the final attempt always raises")
 
     @staticmethod
     def normalize_key(key: str) -> str:
@@ -691,7 +692,7 @@ class PCs(commands.Cog):
             filtered_data.items(), key=lambda kv: PCs.extract_sort_key(kv[0])
         )
 
-        upcoming_reservations = {}
+        upcoming_reservations: dict[str, int] = {}
         currently_reserved = set()
         if reservations:
             THRESHOLD_MINUTES = 30
@@ -1653,7 +1654,7 @@ class PCs(commands.Cog):
             current_time += timedelta(minutes=30)
 
         # Initialize grid: desk -> dict with 'reserved' and 'pending' sets of time slot indices
-        desk_reservations = {
+        desk_reservations: dict[str, dict[str, set[int]]] = {
             desk: {"reserved": set(), "pending": set()} for desk in all_desks
         }
 
@@ -1662,9 +1663,9 @@ class PCs(commands.Cog):
             machines = res.get("machines", [])
 
             start_time = PCs.to_central_time(
-                datetime.fromisoformat(res.get("start_time"))
+                datetime.fromisoformat(res["start_time"])
             )
-            end_time = PCs.to_central_time(datetime.fromisoformat(res.get("end_time")))
+            end_time = PCs.to_central_time(datetime.fromisoformat(res["end_time"]))
 
             # Mark time slots as reserved for each machine
             for machine in machines:
@@ -1682,8 +1683,8 @@ class PCs(commands.Cog):
         if pending_reservations:
             for res in pending_reservations:
                 pcs = res.get("pcs", [])
-                start_time = PCs.to_central_time(res.get("start_time"))
-                end_time = PCs.to_central_time(res.get("end_time"))
+                start_time = PCs.to_central_time(res["start_time"])
+                end_time = PCs.to_central_time(res["end_time"])
 
                 # Mark time slots as pending for each PC
                 for pc_num in pcs:

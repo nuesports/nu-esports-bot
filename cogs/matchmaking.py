@@ -3,6 +3,7 @@ import contextlib
 import random
 import time
 from collections.abc import Awaitable, Callable
+from typing import cast
 
 import discord
 from discord.ext import commands
@@ -202,6 +203,7 @@ async def get_game_shuffle_data(
     Returns (elo_by_id, roles_by_id), both keyed by discord member id. For per_role_ranks
     games, elo_by_id maps to {role: elo} per member instead of a single float.
     """
+    elo_by_id: dict[int, float] | dict[int, dict[str, float]]
     if config.is_per_role_ranks(game):
         elo_by_id = await get_team_role_elos(game, joined)
     else:
@@ -212,7 +214,7 @@ async def get_game_shuffle_data(
         "SELECT discordid, role FROM profile_roles WHERE discordid = ANY(%s) AND game = %s;",
         (ids, game),
     )
-    roles_by_id = {}
+    roles_by_id: dict[int, list[str]] = {}
     for discordid, role in role_rows:
         roles_by_id.setdefault(discordid, []).append(role)
 
@@ -249,9 +251,15 @@ def balance_teams(
 
     # From here on both kinds of game share one shape: {player_id: {key: elo}}.
     # Per-role games are already keyed by role name; the rest file their single
-    # elo under _GAME_WIDE_ELO, so every lookup below is elo_by_id[m.id][key].
-    if not per_role:
-        elo_by_id = {mid: {_GAME_WIDE_ELO: value} for mid, value in elo_by_id.items()}
+    # elo under _GAME_WIDE_ELO, so every lookup below is elo_by_role[m.id][key].
+    # `per_role` is what picks the arm of the parameter union, which no checker
+    # can see, hence the casts.
+    elo_by_role: dict[int, dict[str, float]]
+    if per_role:
+        elo_by_role = cast("dict[int, dict[str, float]]", elo_by_id)
+    else:
+        flat = cast("dict[int, float]", elo_by_id)
+        elo_by_role = {mid: {_GAME_WIDE_ELO: value} for mid, value in flat.items()}
 
     requirements = list(rankable.items())
     random.shuffle(requirements)
@@ -270,15 +278,15 @@ def balance_teams(
 
     def effective_elo_for(key: str) -> dict[int, float]:
         if key not in elo_cache:
-            avg = sum(elo_by_id[m.id][key] for m in joined) / len(joined)
-            elo_cache[key] = {
-                m.id: jittered_elo(elo_by_id[m.id][key], avg) for m in joined
-            }
+            avg = sum(elo_by_role[m.id][key] for m in joined) / len(joined)
+            elo_cache[key] = {m.id: jittered_elo(elo_by_role[m.id][key], avg) for m in joined}
         return elo_cache[key]
 
     remaining = list(joined)
-    team_a, team_b = [], []
-    team_a_total, team_b_total = 0, 0
+    team_a: list[discord.Member] = []
+    team_b: list[discord.Member] = []
+    team_a_total: float = 0.0
+    team_b_total: float = 0.0
     assignments = {}
 
     for role, count in selected:
@@ -337,7 +345,7 @@ def balance_teams(
         preferred = roles_by_id[m.id][0]
         if preferred in rankable:
             return preferred
-        return max(rankable, key=lambda r: elo_by_id[m.id].get(r, 0.0))
+        return max(rankable, key=lambda r: elo_by_role[m.id].get(r, 0.0))
 
     remaining_sorted = sorted(
         remaining, key=lambda m: effective_elo_for(leftover_key(m))[m.id], reverse=True
@@ -527,11 +535,14 @@ def swap_slots(session: MatchmakingSession, id_a: int, id_b: int) -> bool:
             session.team_a.remove(member_b)
             session.team_a.append(member_a)
             session.team_b.append(member_b)
-
+    
+    # Only swap lanes when both players actually have one -- writing a None into
+    # role_assignments would render as "None" instead of the "?" fallback.
     lane_a = session.role_assignments.get(member_a.id)
     lane_b = session.role_assignments.get(member_b.id)
-    session.role_assignments[member_a.id] = lane_b
-    session.role_assignments[member_b.id] = lane_a
+    if lane_a is not None and lane_b is not None:
+        session.role_assignments[member_a.id] = lane_b
+        session.role_assignments[member_b.id] = lane_a
 
     return True
 
@@ -958,12 +969,8 @@ class LobbyView(discord.ui.View):
         # doesn't cover any more than shuffle's or swap's does.
         await interaction.response.defer()
 
-        row = await db.fetch_one(
-            "SELECT tag FROM profiles WHERE discordid = %s;", (interaction.user.id,)
-        )
-        self.session.tags[interaction.user.id] = (
-            row[0] if row and row[0] else DEFAULT_TAG.get("Lobby")
-        )
+        row = await db.fetch_one("SELECT tag FROM profiles WHERE discordid = %s;", (interaction.user.id,))
+        self.session.tags[interaction.user.id] = row[0] if row and row[0] else DEFAULT_TAG["Lobby"]
 
         self.session.joined.append(interaction.user)
         await reset_to_lobby(self.session)

@@ -161,14 +161,14 @@ async def fetch_profile_data(discordid: int) -> dict:
     )
 
     stats_by_game = {row[0]: row for row in stats_rows}
-    roles_by_game = {}
+    roles_by_game: dict[str, list[str]] = {}
     for g, r in role_rows:
         roles_by_game.setdefault(g, []).append(r)
-    mains_by_game = {}
+    mains_by_game: dict[str, list[str]] = {}
     for g, m in main_rows:
         mains_by_game.setdefault(g, []).append(m)
     primary_by_game = {g: p for g, p in primary_rows}
-    role_ranks_by_game = {}
+    role_ranks_by_game: dict[str, dict[str, str]] = {}
     for g, r, label in role_rank_rows:
         role_ranks_by_game.setdefault(g, {})[r] = label
     account_by_game = {g: name for g, name, _ in account_rows}
@@ -580,7 +580,7 @@ class Profile(commands.Cog):
         if config.is_per_role_ranks(game):
             if tier is not None:
                 division_int, error = validate_tier_division(game, tier, division)
-                if error:
+                if division_int is None:
                     await ctx.followup.send(error, ephemeral=True)
                     return
                 label = format_rank_label(game, tier, division_int)
@@ -602,7 +602,7 @@ class Profile(commands.Cog):
             return
 
         division_int, error = validate_tier_division(game, tier, division)
-        if error:
+        if division_int is None:
             await ctx.followup.send(error, ephemeral=True)
             return
 
@@ -830,18 +830,8 @@ class Profile(commands.Cog):
         pages_games = [g for g in GAME_CHOICES if g in games_with_data]
 
         total_pages = len(pages_games) + 1
-        pages = [
-            (
-                build_home_embed(
-                    target,
-                    profile_row,
-                    total_pages,
-                    total_wins,
-                    total_losses,
-                    setup=False,
-                ),
-                None,
-            )
+        pages: list[tuple[discord.Embed, Path | None]] = [
+            (build_home_embed(target, profile_row, total_pages, total_wins, total_losses, setup=False), None)
         ]
         for i, g in enumerate(pages_games, start=2):
             row = stats_by_game.get(g)
@@ -920,10 +910,8 @@ class Profile(commands.Cog):
             title=f"{tag} {target.display_name}'s Elo",
             color=discord.Color.from_rgb(78, 42, 132),
         )
-        elo_by_game = {
-            game: (value, games_played) for game, value, games_played in rows
-        }
-        role_elo_by_game = {}
+        elo_by_game = {game: (value, games_played) for game, value, games_played in rows}
+        role_elo_by_game: dict[str, dict[str, tuple[float, int]]] = {}
         for game, role, value, games_played in role_rows:
             role_elo_by_game.setdefault(game, {})[role] = (value, games_played)
 
@@ -1055,8 +1043,8 @@ class RoleSelectView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         """Checks if the interactor is the original requester"""
         return interaction.user.id == self.requester_id
-
-    async def on_select(self, interaction: discord.Interaction) -> bool:
+    
+    async def on_select(self, interaction: discord.Interaction) -> None:
         """Overwrite the player's roles for this game with whatever's currently selected."""
         chosen = self.select.values
 
@@ -1112,7 +1100,8 @@ class MainsModal(discord.ui.Modal):
             for alias, canonical in config.main_aliases(self.game).items()
         }
         lookup.update({m.lower(): m for m in get_mains(self.game)})
-        resolved, invalid = [], []
+        resolved: list[str] = []
+        invalid: list[str] = []
         for c in candidates:
             match = lookup.get(c.lower())
             (resolved if match else invalid).append(match or c)
@@ -1176,7 +1165,7 @@ class RankSelectView(discord.ui.View):
         self.requester_id = requester_id
         self.game = game
         self.on_done = on_done
-        self.tier = None
+        self.tier: str | None = None
 
         options = [discord.SelectOption(label=t, value=t) for t in get_tiers(game)]
         self.select = discord.ui.Select(placeholder="Choose your tier", options=options)
@@ -1187,9 +1176,10 @@ class RankSelectView(discord.ui.View):
         return interaction.user.id == self.requester_id
 
     async def on_tier_select(self, interaction: discord.Interaction) -> None:
-        self.tier = self.select.values[0]
+        tier = self.select.values[0]
+        self.tier = tier
 
-        if not tier_has_divisions(self.game, self.tier):
+        if not tier_has_divisions(self.game, tier):
             await self.save(interaction, division=1)
             return
 
@@ -1213,6 +1203,8 @@ class RankSelectView(discord.ui.View):
         await self.save(interaction, division)
 
     async def save(self, interaction: discord.Interaction, division: int) -> None:
+        if self.tier is None:
+            return  # unreachable: a tier is always picked before save()
         rank_value = compute_rank_value(self.game, self.tier, division)
         rank_label = format_rank_label(self.game, self.tier, division)
 
@@ -1263,7 +1255,7 @@ class RoleRankSelectView(discord.ui.View):
     async def on_role_select(self, interaction: discord.Interaction) -> None:
         self.role = self.select.values[0]
 
-        if self.tier is not None:
+        if self.tier is not None and self.division is not None:
             await self.save(interaction, self.division)
             return
 
@@ -1305,6 +1297,8 @@ class RoleRankSelectView(discord.ui.View):
         await self.save(interaction, division)
 
     async def save(self, interaction: discord.Interaction, division: int) -> None:
+        if self.tier is None:
+            return  # unreachable: a tier is always picked before save()
         rank_value = compute_rank_value(self.game, self.tier, division)
         rank_label = format_rank_label(self.game, self.tier, division)
 

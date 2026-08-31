@@ -8,3 +8,13 @@ repos:
       args: [ --fix ]
     # Run the formatter.
     - id: ruff-format
+# Type check. Runs on the whole project (mypy needs the full import graph, so
+# per-file checking gives wrong answers) -- pass_filenames is off for that reason.
+- repo: local
+  hooks:
+    - id: mypy
+      name: mypy
+      entry: uvx mypy@2.3.1
+      language: system
+      types: [python]
+      pass_filenames: false

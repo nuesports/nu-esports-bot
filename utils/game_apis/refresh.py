@@ -5,7 +5,7 @@ import psycopg
 
 from utils import config, db
 
-from .base import GameAPIError, LinkError
+from .base import GameAPIClient, GameAPIError, LinkError
 from .deadlock import DeadlockClient
 from .league import LeagueClient
 from .overwatch import OverwatchClient
@@ -13,7 +13,7 @@ from .valorant import ValorantClient
 
 RANK_STALE_AFTER = timedelta(minutes=45)
 
-CLIENTS = {
+CLIENTS: dict[str, GameAPIClient] = {
     "league": LeagueClient(),
     "overwatch": OverwatchClient(),
     "deadlock": DeadlockClient(),
