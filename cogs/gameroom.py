@@ -30,22 +30,18 @@ class Gameroom(commands.Cog):
     )
     async def sethours(self, 
                        ctx: discord.ApplicationContext,
-                       start_date: discord.Option(
-                            str,
+                       start_date: str = discord.Option(
                             description="Start date in YYYY-MM-DD format"
                         ),
-                       end_date: discord.Option(
-                           str,
+                       end_date: str = discord.Option(
                            description="(optional) End date in YYYY-MM-DD format",
                            required=False
                        ),
-                       regular_text: discord.Option(
-                           str,
+                       regular_text: str = discord.Option(
                            description="Text to display, leave blank to clear override(s)",
                            required=False
                        ),
-                       weekend_text: discord.Option(
-                           str,
+                       weekend_text: str = discord.Option(
                            description="Text to display, on Fri/Sat/Sun",
                            required=False
                        )
