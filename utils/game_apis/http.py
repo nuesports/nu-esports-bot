@@ -1,14 +1,16 @@
 import asyncio
-from typing import Any
+from typing import Any, TypeAlias
 
 import aiohttp
 
 from .base import GameAPIError
 
+Json: TypeAlias = Any
+
 
 async def fetch_json_with_retries(
     url: str, headers: dict | None = None, params: dict | None = None
-) -> Any:
+) -> Json:
     """GET a url and parse json, retrying transient failures up to 4 times.
 
     a 404 (doesn't exist) or 401/403 (bad/expired api key) raises immediately without
