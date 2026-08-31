@@ -1461,6 +1461,7 @@ class PCs(commands.Cog):
             required=True,
         ),
         num_pcs: int = discord.Option(
+            int,
             name="num_pcs",
             description="Number of PCs to reserve (1-8)",
             min_value=1,
