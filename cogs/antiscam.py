@@ -6,7 +6,6 @@ Flagged messages are sent to staff for review while
 the suspected account is timed out.
 """
 
-
 import datetime
 import re
 import traceback
