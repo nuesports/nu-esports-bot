@@ -16,7 +16,7 @@ services:
       - internal
 
   db:
-    image: postgres:latest
+    image: postgres:18
     restart: always
     environment:
       POSTGRES_USER: bot
