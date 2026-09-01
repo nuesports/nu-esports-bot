@@ -12,20 +12,32 @@ GUILD_ID = config.secrets["discord"]["guild_id"]
 GAME_CHOICES = list(config.game_data.keys())
 DEFAULT_TAG = {"Lobby": "🖱️", "Winner": "🏆"}
 TEAM_NAMES = [tuple(pair) for pair in config.matchmaking_data["team_names"]]
-ROLE_REQUIREMENTS = {game: data.get("role_requirements") or {} for game, data in config.game_data.items()}
-LOBBY_SIZE = {game: data.get("lobby_size", 10) for game, data in config.game_data.items()}
+ROLE_REQUIREMENTS = {
+    game: data.get("role_requirements") or {} for game, data in config.game_data.items()
+}
+LOBBY_SIZE = {
+    game: data.get("lobby_size", 10) for game, data in config.game_data.items()
+}
 # Full map pool, not just maps_active. Games with no maps list just skip shuffling.
-MAPS = {game: data["maps"] for game, data in config.game_data.items() if data.get("maps")}
-RANK_JITTER = 200        # half-width of the jitter range for a player exactly at the lobby average
-JITTER_PULL_SCALE = 1500 # elo deviation from average that fully saturates the pull toward one side
-_GAME_WIDE_ELO = "__game__" # elo-dict key balance_teams uses for games without per-role ranks
-BETTING_WINDOW_SECONDS = 120 # how long after a shuffle betting stays open
+MAPS = {
+    game: data["maps"] for game, data in config.game_data.items() if data.get("maps")
+}
+RANK_JITTER = (
+    200  # half-width of the jitter range for a player exactly at the lobby average
+)
+JITTER_PULL_SCALE = (
+    1500  # elo deviation from average that fully saturates the pull toward one side
+)
+_GAME_WIDE_ELO = (
+    "__game__"  # elo-dict key balance_teams uses for games without per-role ranks
+)
+BETTING_WINDOW_SECONDS = 120  # how long after a shuffle betting stays open
 
 
-def generate_embed(session: "MatchmakingSession") -> discord.Embed:
+def generate_embed(session: MatchmakingSession) -> discord.Embed:
     """Builds the embed for a lobby.
-    
-    Shows the waiting-room roster (two columns of joined players) if no shuffle has happened yet, 
+
+    Shows the waiting-room roster (two columns of joined players) if no shuffle has happened yet,
     or the shuffled team layout if it has
     """
     if session.role_assignments:
@@ -37,9 +49,9 @@ def generate_embed(session: "MatchmakingSession") -> discord.Embed:
     embed = discord.Embed(
         title=f"{session.game.title()} Lobby",
         description=description,
-        color = discord.Color.from_rgb(78,42,132),
+        color=discord.Color.from_rgb(78, 42, 132),
     )
-    rows_per_column = -(-lobby_size // 2) # ceiling, so an odd lobby_size still fits
+    rows_per_column = -(-lobby_size // 2)  # ceiling, so an odd lobby_size still fits
     left_rows = ["-"] * rows_per_column
     right_rows = ["-"] * rows_per_column
     for i, member in enumerate(session.joined):
@@ -50,11 +62,21 @@ def generate_embed(session: "MatchmakingSession") -> discord.Embed:
             left_rows[row] = entry
         else:
             right_rows[row] = entry
-    embed.add_field(name=f"{session.team_names[0]}", value="\n".join(left_rows), inline=True)
-    embed.add_field(name=f"{session.team_names[1]}", value="\n".join(right_rows), inline=True)
+    embed.add_field(
+        name=f"{session.team_names[0]}", value="\n".join(left_rows), inline=True
+    )
+    embed.add_field(
+        name=f"{session.team_names[1]}", value="\n".join(right_rows), inline=True
+    )
     return embed
 
-def generate_postgame_embed(session: "MatchmakingSession", team: str, players: list[discord.Member], richest_chatter: str | None = None) -> discord.Embed:
+
+def generate_postgame_embed(
+    session: MatchmakingSession,
+    team: str,
+    players: list[discord.Member],
+    richest_chatter: str | None = None,
+) -> discord.Embed:
     """Build the "X team wins" embed after a winner is declared.
 
     team: the winning team's display name (not team_a/team_b, the actual name string).
@@ -62,8 +84,7 @@ def generate_postgame_embed(session: "MatchmakingSession", team: str, players: l
     richest_chatter: pre-built field value from build_richest_chatter_field, or None if nobody bet.
     """
     embed = discord.Embed(
-        title = f"{team} Win!",
-        color = discord.Color.from_rgb(78,42,132)
+        title=f"{team} Win!", color=discord.Color.from_rgb(78, 42, 132)
     )
     rows = []
     for i, member in enumerate(players):
@@ -79,7 +100,8 @@ def generate_postgame_embed(session: "MatchmakingSession", team: str, players: l
         embed.add_field(name="Richest Chatter", value=richest_chatter, inline=True)
     return embed
 
-def generate_cancelled_embed(session: "MatchmakingSession") -> discord.Embed:
+
+def generate_cancelled_embed(session: MatchmakingSession) -> discord.Embed:
     """Build the "lobby cancelled" embed shown after an admin cancels a game."""
     return discord.Embed(
         title=f"{session.game.title()} Lobby — Cancelled",
@@ -87,7 +109,8 @@ def generate_cancelled_embed(session: "MatchmakingSession") -> discord.Embed:
         color=discord.Color.from_rgb(78, 42, 132),
     )
 
-def generate_chatters_field(session: "MatchmakingSession") -> str:
+
+def generate_chatters_field(session: MatchmakingSession) -> str:
     """Build the "Chatters" field value: bettors sorted by stake (highest first).
 
     Each row puts the mention on the side of the team it backs: Team A reads
@@ -97,7 +120,9 @@ def generate_chatters_field(session: "MatchmakingSession") -> str:
     if not session.bets:
         rows = ["No bets yet"]
     else:
-        ordered = sorted(session.bets.items(), key=lambda item: item[1]["points"], reverse=True)
+        ordered = sorted(
+            session.bets.items(), key=lambda item: item[1]["points"], reverse=True
+        )
         rows = []
         for user_id, bet in ordered:
             if bet["team"] == "a":
@@ -109,7 +134,9 @@ def generate_chatters_field(session: "MatchmakingSession") -> str:
         # dwarf the two team columns. Keeps the highest stakes since they're sorted first.
         team_size = LOBBY_SIZE[session.game] // 2
         if len(rows) > team_size:
-            keep = max(team_size - 1, 1)   # a 1v1 game would otherwise show no rows at all
+            keep = max(
+                team_size - 1, 1
+            )  # a 1v1 game would otherwise show no rows at all
             rows = rows[:keep] + [f"...and {len(rows) - keep} more"]
 
     if session.betting_open and session.betting_closes_at:
@@ -124,7 +151,8 @@ def generate_chatters_field(session: "MatchmakingSession") -> str:
         value += f"\n\n{status}"
     return value
 
-def generate_match_embed(session: "MatchmakingSession") -> discord.Embed:
+
+def generate_match_embed(session: MatchmakingSession) -> discord.Embed:
     """Build the embed for a lobby that's already been shuffled into teams.
 
     Players are grouped by team and ordered by role (via ROLE_REQUIREMENTS), not join order.
@@ -136,6 +164,7 @@ def generate_match_embed(session: "MatchmakingSession") -> discord.Embed:
     )
     has_roles = bool(ROLE_REQUIREMENTS[session.game])
     lane_order = {lane: i for i, lane in enumerate(ROLE_REQUIREMENTS[session.game])}
+
     def team_rows(team):
         ordered = sorted(
             team,
@@ -150,16 +179,22 @@ def generate_match_embed(session: "MatchmakingSession") -> discord.Embed:
             else:
                 rows.append(f"{tag} <@{member.id}>")
         return "\n".join(rows) if rows else "-"
-    embed.add_field(name=session.team_names[0], value=team_rows(session.team_a), inline=True)
-    embed.add_field(name=session.team_names[1], value=team_rows(session.team_b), inline=True)
-    embed.add_field(name="Chatters", value=generate_chatters_field(session), inline=True)
+
+    embed.add_field(
+        name=session.team_names[0], value=team_rows(session.team_a), inline=True
+    )
+    embed.add_field(
+        name=session.team_names[1], value=team_rows(session.team_b), inline=True
+    )
+    embed.add_field(
+        name="Chatters", value=generate_chatters_field(session), inline=True
+    )
     return embed
 
 
-async def get_game_shuffle_data(joined: list[discord.Member], game: str) -> tuple[
-                                                                                dict[int, float] | dict[int, dict[str, float]],
-                                                                                dict[int, list[str]]
-                                                                                ]:
+async def get_game_shuffle_data(
+    joined: list[discord.Member], game: str
+) -> tuple[dict[int, float] | dict[int, dict[str, float]], dict[int, list[str]]]:
     """Fetch each joined player's elo and roles for a game, filling in defaults for missing data.
 
     Players missing an elo row get one seeded from their rank (see get_team_elos/
@@ -188,15 +223,13 @@ async def get_game_shuffle_data(joined: list[discord.Member], game: str) -> tupl
 
     return elo_by_id, roles_by_id
 
-def balance_teams(game: str,
-                  joined: list[discord.Member],
-                  elo_by_id: dict[int, float] | dict[int, dict[str, float]],
-                  roles_by_id: dict[int, list[str]]
-                  ) -> tuple[
-                            list[discord.Member],
-                            list[discord.Member],
-                            dict[int, str]
-                            ]:
+
+def balance_teams(
+    game: str,
+    joined: list[discord.Member],
+    elo_by_id: dict[int, float] | dict[int, dict[str, float]],
+    roles_by_id: dict[int, list[str]],
+) -> tuple[list[discord.Member], list[discord.Member], dict[int, str]]:
     """Split joined players into two balanced teams
 
     Process each required role (in random order, so repeated shuffles vary) and greedily assign the needed number of players per team,
@@ -226,7 +259,7 @@ def balance_teams(game: str,
     requirements = list(rankable.items())
     random.shuffle(requirements)
 
-    slots_per_team= len(joined) // 2
+    slots_per_team = len(joined) // 2
     selected = []
     used = 0
     for role, count in requirements:
@@ -238,10 +271,13 @@ def balance_teams(game: str,
     # key -- every non-per-role lookup, or a role/leftover reusing an already-seen
     # role -- reuse one random draw instead of redrawing jitter each time.
     elo_cache: dict[str, dict[int, float]] = {}
+
     def effective_elo_for(key: str) -> dict[int, float]:
         if key not in elo_cache:
             avg = sum(elo_by_id[m.id][key] for m in joined) / len(joined)
-            elo_cache[key] = {m.id: jittered_elo(elo_by_id[m.id][key], avg) for m in joined}
+            elo_cache[key] = {
+                m.id: jittered_elo(elo_by_id[m.id][key], avg) for m in joined
+            }
         return elo_cache[key]
 
     remaining = list(joined)
@@ -258,7 +294,11 @@ def balance_teams(game: str,
         needed_total = count * 2
         role_pool = [m for m in remaining if role in roles_by_id[m.id]]
         role_pool_ids = {m.id for m in role_pool}
-        flex_pool = [m for m in remaining if "Flex" in roles_by_id[m.id] and m.id not in role_pool_ids]
+        flex_pool = [
+            m
+            for m in remaining
+            if "Flex" in roles_by_id[m.id] and m.id not in role_pool_ids
+        ]
 
         candidates = role_pool
         if len(candidates) < needed_total:
@@ -270,10 +310,14 @@ def balance_teams(game: str,
             needed = needed_total - len(candidates)
             candidates += [m for m in remaining if m.id not in candidate_ids][:needed]
 
-        candidates = sorted(candidates, key=lambda m: effective_elo[m.id], reverse=True)[:needed_total]
+        candidates = sorted(
+            candidates, key=lambda m: effective_elo[m.id], reverse=True
+        )[:needed_total]
 
         for m in candidates:
-            if len(team_a) < len(team_b) or (len(team_a) == len(team_b) and team_a_total <= team_b_total):
+            if len(team_a) < len(team_b) or (
+                len(team_a) == len(team_b) and team_a_total <= team_b_total
+            ):
                 team_a.append(m)
                 team_a_total += effective_elo[m.id]
             else:
@@ -299,11 +343,15 @@ def balance_teams(game: str,
             return preferred
         return max(rankable, key=lambda r: elo_by_id[m.id].get(r, 0.0))
 
-    remaining_sorted = sorted(remaining, key=lambda m: effective_elo_for(leftover_key(m))[m.id], reverse=True)
+    remaining_sorted = sorted(
+        remaining, key=lambda m: effective_elo_for(leftover_key(m))[m.id], reverse=True
+    )
     for m in remaining_sorted:
         key = leftover_key(m)
         value = effective_elo_for(key)[m.id]
-        if len(team_a) < len(team_b) or (len(team_a) == len(team_b) and team_a_total <= team_b_total):
+        if len(team_a) < len(team_b) or (
+            len(team_a) == len(team_b) and team_a_total <= team_b_total
+        ):
             team_a.append(m)
             team_a_total += value
 
@@ -315,16 +363,23 @@ def balance_teams(game: str,
 
     return team_a, team_b, assignments
 
+
 def has_privilege(interaction: discord.Interaction) -> bool:
     """Check whether whoever clicked a button is allowed to use admin controls."""
     return config.is_game_head(interaction.user)
 
+
 def must_forfeit_bet_on_declare(interaction: discord.Interaction) -> bool:
     """True if this user has a gamehead role but isn't a server admin.
     Admins skip the self-officiating forfeit rule, same trust call has_privilege already makes."""
-    return not interaction.user.guild_permissions.administrator and config.is_game_head(interaction.user)
+    return not interaction.user.guild_permissions.administrator and config.is_game_head(
+        interaction.user
+    )
 
-async def edit_lobby_message(session: "MatchmakingSession", embed: discord.Embed, view: discord.ui.View | None) -> bool:
+
+async def edit_lobby_message(
+    session: MatchmakingSession, embed: discord.Embed, view: discord.ui.View | None
+) -> bool:
     """Edit the public lobby message, reporting whether the edit landed.
 
     Every write to that message goes through here. session.message is None until the
@@ -335,28 +390,33 @@ async def edit_lobby_message(session: "MatchmakingSession", embed: discord.Embed
         return False
     try:
         await session.message.edit(embed=embed, view=view)
-    except (discord.NotFound, discord.HTTPException):
+    except discord.NotFound, discord.HTTPException:
         return False
     return True
 
-async def refresh_lobby_message(session: "MatchmakingSession") -> bool:
-    """Re-render the public lobby message in whatever state the session is in now."""
-    return await edit_lobby_message(session, generate_embed(session), LobbyView(session))
 
-async def refresh_admin_panels(session: "MatchmakingSession") -> None:
+async def refresh_lobby_message(session: MatchmakingSession) -> bool:
+    """Re-render the public lobby message in whatever state the session is in now."""
+    return await edit_lobby_message(
+        session, generate_embed(session), LobbyView(session)
+    )
+
+
+async def refresh_admin_panels(session: MatchmakingSession) -> None:
     """Re-render every currently-open admin panel so they reflect the latest lobby state.
-    
+
     Panels that have been dismissed/deleted are dropped instead of retried"""
     still_open = {}
     for user_id, msg in session.admin_panels.items():
         try:
             await msg.edit(embed=generate_embed(session), view=AdminView(session))
             still_open[user_id] = msg
-        except (discord.NotFound, discord.HTTPException):
+        except discord.NotFound, discord.HTTPException:
             pass
     session.admin_panels = still_open
 
-async def close_admin_panels(session: "MatchmakingSession") -> None:
+
+async def close_admin_panels(session: MatchmakingSession) -> None:
     """Delete every open admin panel. They're ephemeral messages that outlive the lobby,
     and a stale one's Shuffle would reopen betting on a match that's already over."""
     for msg in session.admin_panels.values():
@@ -364,7 +424,8 @@ async def close_admin_panels(session: "MatchmakingSession") -> None:
             await msg.delete()
     session.admin_panels = {}
 
-async def start_betting_window(session: "MatchmakingSession") -> None:
+
+async def start_betting_window(session: MatchmakingSession) -> None:
     """Refund any bets from the previous shuffle and open a fresh betting window.
     Cancels a previous close-timer first so re-shuffling twice doesn't leave an
     orphaned task, and refunds rather than wipes since those points were already deducted.
@@ -381,7 +442,8 @@ async def start_betting_window(session: "MatchmakingSession") -> None:
     session.betting_closes_at = time.time() + BETTING_WINDOW_SECONDS
     session.betting_close_task = asyncio.create_task(close_betting_after_delay(session))
 
-async def close_betting_after_delay(session: "MatchmakingSession") -> None:
+
+async def close_betting_after_delay(session: MatchmakingSession) -> None:
     """Close betting BETTING_WINDOW_SECONDS after a shuffle and refresh the public message
     so the Bet button disables. Keeps the task reference alive through the message edit
     so a mid-edit cancel from stop_betting_window can still interrupt it.
@@ -400,7 +462,8 @@ async def close_betting_after_delay(session: "MatchmakingSession") -> None:
         return
     session.betting_close_task = None
 
-def stop_betting_window(session: "MatchmakingSession") -> None:
+
+def stop_betting_window(session: MatchmakingSession) -> None:
     """Cancel any pending betting-close timer without reopening it.
     Used when the match is ending, not just being reshuffled."""
     if session.betting_close_task is not None:
@@ -408,7 +471,8 @@ def stop_betting_window(session: "MatchmakingSession") -> None:
         session.betting_close_task = None
     session.betting_open = False
 
-async def refund_bets(session: "MatchmakingSession") -> None:
+
+async def refund_bets(session: MatchmakingSession) -> None:
     """Refund every outstanding bet's stake and void any bet still in flight.
 
     Called from every point the lineup stops matching what people backed: join, leave,
@@ -426,7 +490,8 @@ async def refund_bets(session: "MatchmakingSession") -> None:
     session.bets = {}
     await wallet.credit_many(refunds)
 
-async def reset_to_lobby(session: "MatchmakingSession") -> None:
+
+async def reset_to_lobby(session: MatchmakingSession) -> None:
     """Drop the shuffled teams and put the lobby back in its waiting-room state.
 
     Anyone who'd bet was backing a matchup that no longer exists, so their stakes go
@@ -438,7 +503,8 @@ async def reset_to_lobby(session: "MatchmakingSession") -> None:
     stop_betting_window(session)
     await refund_bets(session)
 
-def swap_slots(session: "MatchmakingSession", id_a: int, id_b: int) -> bool:
+
+def swap_slots(session: MatchmakingSession, id_a: int, id_b: int) -> bool:
     """Swap two players' team+lane slots.
 
     If they're on different teams, both their team assignment and lane swap.
@@ -450,7 +516,7 @@ def swap_slots(session: "MatchmakingSession", id_a: int, id_b: int) -> bool:
     member_b = next((m for m in session.team_a + session.team_b if m.id == id_b), None)
     if member_a is None or member_b is None:
         return False
-    
+
     a_on_team_a = member_a in session.team_a
     b_on_team_a = member_b in session.team_a
 
@@ -465,7 +531,7 @@ def swap_slots(session: "MatchmakingSession", id_a: int, id_b: int) -> bool:
             session.team_a.remove(member_b)
             session.team_a.append(member_a)
             session.team_b.append(member_b)
-    
+
     lane_a = session.role_assignments.get(member_a.id)
     lane_b = session.role_assignments.get(member_b.id)
     session.role_assignments[member_a.id] = lane_b
@@ -473,9 +539,15 @@ def swap_slots(session: "MatchmakingSession", id_a: int, id_b: int) -> bool:
 
     return True
 
-def jittered_elo(player_elo: float, avg_elo: float, half_width: float = RANK_JITTER, pull_scale: float = JITTER_PULL_SCALE) -> float:
+
+def jittered_elo(
+    player_elo: float,
+    avg_elo: float,
+    half_width: float = RANK_JITTER,
+    pull_scale: float = JITTER_PULL_SCALE,
+) -> float:
     """Add a random jitter to a player's elo, biased to pull them toward the lobby average.
-    
+
     The jitter's total width stays constant, but its center slides based on how far below/above
     average the player is: someone well below average gets a jitter that's entirely upside (never
     randomly pushed even lower), someone well above average gets one that's entirely downside, and
@@ -486,34 +558,46 @@ def jittered_elo(player_elo: float, avg_elo: float, half_width: float = RANK_JIT
     center = pull * half_width
     return player_elo + random.uniform(center - half_width, center + half_width)
 
-async def update_record(session: "MatchmakingSession", winners: list[discord.Member], losers: list[discord.Member]) -> None:
+
+async def update_record(
+    session: MatchmakingSession,
+    winners: list[discord.Member],
+    losers: list[discord.Member],
+) -> None:
     """Record a win for each player in `winners` and a loss for each player in `losers`
     in profile_stats, for the current session's game."""
 
-    sqlWin = '''
+    sqlWin = """
             INSERT INTO profile_stats (discordid, game, wins)
             VALUES (%s, %s, 1)
             ON CONFLICT (discordid, game) DO UPDATE SET wins = profile_stats.wins + 1;
-        '''
-    sqlLose = '''
+        """
+    sqlLose = """
             INSERT INTO profile_stats (discordid, game, losses)
             VALUES (%s, %s, 1)
             ON CONFLICT (discordid, game) DO UPDATE SET losses = profile_stats.losses + 1;
-    '''
-    await db.perform_many(sqlWin, [(w.id, session.game) for w in winners],)
-    await db.perform_many(sqlLose, [(m.id, session.game) for m in losers],)
+    """
+    await db.perform_many(
+        sqlWin,
+        [(w.id, session.game) for w in winners],
+    )
+    await db.perform_many(
+        sqlLose,
+        [(m.id, session.game) for m in losers],
+    )
+
 
 async def get_team_elos(game: str, members: list[discord.Member]) -> dict[int, float]:
     """Fetch each player's current elo for a game, seeding+persisting a fresh row
     from their rank if they don't have one yet."""
     ids = [m.id for m in members]
-    
+
     elo_rows = await db.fetch_all(
         "SELECT discordid, elo FROM profile_elo WHERE discordid = ANY(%s) AND game = %s;",
         (ids, game),
     )
     elo_by_id = {discordid: float(value) for discordid, value in elo_rows}
-    
+
     missing = [m.id for m in members if m.id not in elo_by_id]
     if missing:
         rank_rows = await db.fetch_all(
@@ -539,7 +623,10 @@ async def get_team_elos(game: str, members: list[discord.Member]) -> dict[int, f
 
     return elo_by_id
 
-async def get_team_role_elos(game: str, members: list[discord.Member]) -> dict[int, dict[str, float]]:
+
+async def get_team_role_elos(
+    game: str, members: list[discord.Member]
+) -> dict[int, dict[str, float]]:
     """Per-role analogue of get_team_elos, for games with per_role_ranks.
 
     Returns {member_id: {role: elo}} covering every rankable role, seeding+persisting
@@ -588,7 +675,12 @@ async def get_team_role_elos(game: str, members: list[discord.Member]) -> dict[i
 
     return elo_by_id
 
-async def get_unranked(game: str, members: list[discord.Member], role_assignments: dict[int, str] | None = None) -> list[discord.Member]:
+
+async def get_unranked(
+    game: str,
+    members: list[discord.Member],
+    role_assignments: dict[int, str] | None = None,
+) -> list[discord.Member]:
     """Members with no rank set for this game, so their elo is just the default seed.
 
     For per_role_ranks games, checks the rank of each member's *assigned* role instead
@@ -603,7 +695,9 @@ async def get_unranked(game: str, members: list[discord.Member], role_assignment
             (ids, game),
         )
         ranked_pairs = {(discordid, role) for discordid, role in rows}
-        return [m for m in members if (m.id, role_assignments.get(m.id)) not in ranked_pairs]
+        return [
+            m for m in members if (m.id, role_assignments.get(m.id)) not in ranked_pairs
+        ]
 
     rows = await db.fetch_all(
         "SELECT discordid FROM profile_stats WHERE discordid = ANY(%s) AND game = %s AND rank_value IS NOT NULL;",
@@ -613,14 +707,21 @@ async def get_unranked(game: str, members: list[discord.Member], role_assignment
 
     return [m for m in members if m.id not in ranked]
 
-async def apply_elo_changes(session: 'MatchmakingSession', team_a_won: bool) -> None:
+
+async def apply_elo_changes(session: MatchmakingSession, team_a_won: bool) -> None:
     """Update profile_elo (or profile_role_elo, for per_role_ranks games) for every
     player in the match based on the declared winner."""
     if config.is_per_role_ranks(session.game):
         team_a_role_elo = await get_team_role_elos(session.game, session.team_a)
         team_b_role_elo = await get_team_role_elos(session.game, session.team_b)
-        team_a_elo = {m.id: team_a_role_elo[m.id][session.role_assignments[m.id]] for m in session.team_a}
-        team_b_elo = {m.id: team_b_role_elo[m.id][session.role_assignments[m.id]] for m in session.team_b}
+        team_a_elo = {
+            m.id: team_a_role_elo[m.id][session.role_assignments[m.id]]
+            for m in session.team_a
+        }
+        team_b_elo = {
+            m.id: team_b_role_elo[m.id][session.role_assignments[m.id]]
+            for m in session.team_b
+        }
 
         deltas = elo.compute_elo_deltas(team_a_elo, team_b_elo, team_a_won)
 
@@ -630,7 +731,10 @@ async def apply_elo_changes(session: 'MatchmakingSession', team_a_won: bool) -> 
             SET elo = elo + %s, games_played = games_played + 1, updated_at = CURRENT_TIMESTAMP
             WHERE discordid = %s AND game = %s AND role = %s;
             """,
-            [(delta, discordid, session.game, session.role_assignments[discordid]) for discordid, delta in deltas.items()],
+            [
+                (delta, discordid, session.game, session.role_assignments[discordid])
+                for discordid, delta in deltas.items()
+            ],
         )
         return
 
@@ -648,7 +752,8 @@ async def apply_elo_changes(session: 'MatchmakingSession', team_a_won: bool) -> 
         [(delta, discordid, session.game) for discordid, delta in deltas.items()],
     )
 
-async def settle_bets(session: "MatchmakingSession", team_a_won: bool) -> dict | None:
+
+async def settle_bets(session: MatchmakingSession, team_a_won: bool) -> dict | None:
     """Pay out or refund every bet, based on which team won. Winners split the losing
     pot proportionally to their stake, same formula as cogs/points.py's Prediction.
     Refunds everyone if only one side bet. Clears session.bets before returning either way.
@@ -656,12 +761,18 @@ async def settle_bets(session: "MatchmakingSession", team_a_won: bool) -> dict |
     if not session.bets:
         return None
 
-    team_a_bets = {uid: bet["points"] for uid, bet in session.bets.items() if bet["team"] == "a"}
-    team_b_bets = {uid: bet["points"] for uid, bet in session.bets.items() if bet["team"] == "b"}
+    team_a_bets = {
+        uid: bet["points"] for uid, bet in session.bets.items() if bet["team"] == "a"
+    }
+    team_b_bets = {
+        uid: bet["points"] for uid, bet in session.bets.items() if bet["team"] == "b"
+    }
     # Everything below reads the two local dicts, so clear the book before the first await
     # rather than after it -- a bet booked mid-credit would otherwise be silently dropped.
     session.bets = {}
-    winning_bets, losing_bets = (team_a_bets, team_b_bets) if team_a_won else (team_b_bets, team_a_bets)
+    winning_bets, losing_bets = (
+        (team_a_bets, team_b_bets) if team_a_won else (team_b_bets, team_a_bets)
+    )
     winning_pot = sum(winning_bets.values())
     losing_pot = sum(losing_bets.values())
 
@@ -687,6 +798,7 @@ async def settle_bets(session: "MatchmakingSession", team_a_won: bool) -> dict |
     }
     return summary
 
+
 async def build_richest_chatter_field(summary: dict | None) -> str | None:
     """Build the "Richest Chatter" embed field value. Returns None if nobody bet,
     or a short refund line if nobody backed the losing side.
@@ -694,12 +806,16 @@ async def build_richest_chatter_field(summary: dict | None) -> str | None:
     if summary is None:
         return None
     if summary["refunded"]:
-        return f"Nobody backed the losing side!\nAll {summary['total']} points refunded."
+        return (
+            f"Nobody backed the losing side!\nAll {summary['total']} points refunded."
+        )
 
     richest_id = summary["richest_bettor_id"]
     profit = summary["richest_bettor_payout"] - summary["richest_bettor_stake"]
 
-    tag_row = await db.fetch_one("SELECT tag FROM profiles WHERE discordid = %s;", (richest_id,))
+    tag_row = await db.fetch_one(
+        "SELECT tag FROM profiles WHERE discordid = %s;", (richest_id,)
+    )
     tag = tag_row[0] if tag_row and tag_row[0] else DEFAULT_TAG.get("Winner")
 
     winners_word = "big winner" if summary["num_winners"] == 1 else "big winners"
@@ -712,29 +828,37 @@ async def build_richest_chatter_field(summary: dict | None) -> str | None:
         f"{summary['num_winners']} {winners_word} - {summary['num_losers']} {losers_word}"
     )
 
+
 class MatchmakingSession:
     """Tracks the state of one matchmaking lobby for one (channel, game) pair."""
 
     def __init__(self, game):
         self.game: str = game
         self.joined: list[discord.Member] = []
-        self.tags: dict[int, str] = {} #member.id to tag
+        self.tags: dict[int, str] = {}  # member.id to tag
         self.team_a: list[discord.Member] = []
         self.team_b: list[discord.Member] = []
         self.team_names: tuple[(str, str)] = random.choice(TEAM_NAMES)
-        self.role_assignments: dict[int, str] = {} #member.id to role
+        self.role_assignments: dict[int, str] = {}  # member.id to role
         self.map: str | None = None
         self.message: discord.Message | None = None
         self.admin_panels: dict[int, discord.InteractionMessage] = {}
         self.owner: discord.Member | None = None
         self.key: tuple[int, str] | None = None
-        self.bets: dict[int, dict] = {} # member.id to {"team": "a"|"b", "points": int}
+        self.bets: dict[int, dict] = {}  # member.id to {"team": "a"|"b", "points": int}
         self.betting_open: bool = False
         self.betting_closes_at: float | None = None
         self.betting_close_task: asyncio.Task | None = None
-        self.bet_locks: dict[int, asyncio.Lock] = {} # member.id to a lock serializing that user's bet submissions
-        self.betting_epoch: int = 0 # bumped whenever the lineup changes, to void bets still in flight
-        self.ended: bool = False # set once a winner's declared or the lobby's cancelled
+        self.bet_locks: dict[
+            int, asyncio.Lock
+        ] = {}  # member.id to a lock serializing that user's bet submissions
+        self.betting_epoch: int = (
+            0  # bumped whenever the lineup changes, to void bets still in flight
+        )
+        self.ended: bool = (
+            False  # set once a winner's declared or the lobby's cancelled
+        )
+
 
 class Matchmaking(commands.Cog):
     """Cog housing the /matchmaking command group and the active lobby state for all channels."""
@@ -750,28 +874,20 @@ class Matchmaking(commands.Cog):
         self,
         ctx: discord.ApplicationContext,
         game: discord.Option(
-            str,
-            description="Game to matchmake for",
-            choices=GAME_CHOICES
+            str, description="Game to matchmake for", choices=GAME_CHOICES
         ),
-        team_a: discord.Option(
-            str,
-            description="Team A's name",
-            default=None
-        ),
-        team_b: discord.Option(
-            str,
-            description="Team B's name",
-            default=None
-        ),
+        team_a: discord.Option(str, description="Team A's name", default=None),
+        team_b: discord.Option(str, description="Team B's name", default=None),
     ) -> None:
         """Start a new matchmaking lobby, or bump an existing one in this channel/game.
-        
+
         Bumping doesn't reset the lobby, just moves it to the bottom of the channel.
         """
 
         if not has_privilege(ctx.interaction):
-            await ctx.respond("You're not a game head! Feel free to apply though...", ephemeral=True)
+            await ctx.respond(
+                "You're not a game head! Feel free to apply though...", ephemeral=True
+            )
             return
 
         await ctx.defer()
@@ -802,9 +918,10 @@ class Matchmaking(commands.Cog):
         # re-fetch as a normal message so later edits use the bot's token, not the interaction webhook, which expires after 15 min
         session.message = await ctx.channel.fetch_message(message.id)
         if session.owner is None:
-            session.owner = ctx.author 
+            session.owner = ctx.author
 
         await message.edit(embed=embed, view=view)
+
 
 class LobbyView(discord.ui.View):
     """Shared, persistent view on the public lobby message: Join / Leave / Settings."""
@@ -816,77 +933,110 @@ class LobbyView(discord.ui.View):
         self.bet.disabled = not (session.role_assignments and session.betting_open)
 
     @discord.ui.button(label="Join", style=discord.ButtonStyle.success)
-    async def join(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+    async def join(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ) -> None:
         """Add whoever clicked to the lobby, unless they've already joined or it's full."""
         if any(m.id == interaction.user.id for m in self.session.joined):
-            await interaction.response.send_message("You've already joined!", ephemeral=True)
+            await interaction.response.send_message(
+                "You've already joined!", ephemeral=True
+            )
             return
         if len(self.session.joined) >= LOBBY_SIZE[self.session.game]:
-            await interaction.response.send_message("Lobby already full... :/", ephemeral=True)
+            await interaction.response.send_message(
+                "Lobby already full... :/", ephemeral=True
+            )
             return
-        
+
         # Defer before the tag lookup and the refund: reset_to_lobby is a DB round trip
         # whenever anyone had money on the old lineup, which the 3 second reply deadline
         # doesn't cover any more than shuffle's or swap's does.
         await interaction.response.defer()
 
-        row = await db.fetch_one("SELECT tag FROM profiles WHERE discordid = %s;", (interaction.user.id,))
-        self.session.tags[interaction.user.id] = row[0] if row and row[0] else DEFAULT_TAG.get("Lobby")
+        row = await db.fetch_one(
+            "SELECT tag FROM profiles WHERE discordid = %s;", (interaction.user.id,)
+        )
+        self.session.tags[interaction.user.id] = (
+            row[0] if row and row[0] else DEFAULT_TAG.get("Lobby")
+        )
 
         self.session.joined.append(interaction.user)
         await reset_to_lobby(self.session)
         # A fresh view, not self: both button states are frozen at construction, and this
         # just closed betting and may have filled the lobby.
-        await interaction.edit_original_response(embed=generate_embed(self.session), view=LobbyView(self.session))
+        await interaction.edit_original_response(
+            embed=generate_embed(self.session), view=LobbyView(self.session)
+        )
         await refresh_admin_panels(self.session)
 
-
     @discord.ui.button(label="Leave", style=discord.ButtonStyle.danger)
-    async def leave(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+    async def leave(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ) -> None:
         """Remove whoever clicked from the lobby, if they were in it."""
         if not any(m.id == interaction.user.id for m in self.session.joined):
-            await interaction.response.send_message("You haven't joined this lobby!", ephemeral=True)
+            await interaction.response.send_message(
+                "You haven't joined this lobby!", ephemeral=True
+            )
             return
 
         await interaction.response.defer()
 
-        self.session.joined = [m for m in self.session.joined if m.id != interaction.user.id]
+        self.session.joined = [
+            m for m in self.session.joined if m.id != interaction.user.id
+        ]
         self.session.tags.pop(interaction.user.id, None)
         await reset_to_lobby(self.session)
-        await interaction.edit_original_response(embed=generate_embed(self.session), view=LobbyView(self.session))
+        await interaction.edit_original_response(
+            embed=generate_embed(self.session), view=LobbyView(self.session)
+        )
         await refresh_admin_panels(self.session)
 
     @discord.ui.button(label="Settings", style=discord.ButtonStyle.primary)
-    async def settings(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+    async def settings(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ) -> None:
         """Open a private admin panel for gameheads/the lobby owner.
-        
+
         Deletes the user's previous panels first, so repeated clicks don't make multiple stale ephemeral messages."""
         if not has_privilege(interaction):
-            await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
+            await interaction.response.send_message(
+                "You're not a game head! Feel free to apply though...", ephemeral=True
+            )
             return
-        
+
         old_panel = self.session.admin_panels.get(interaction.user.id)
         if old_panel is not None:
             try:
                 await old_panel.delete()
-            except (discord.NotFound, discord.HTTPException):
+            except discord.NotFound, discord.HTTPException:
                 pass
 
-        await interaction.response.send_message(embed=generate_embed(self.session), view=AdminView(self.session), ephemeral=True)
+        await interaction.response.send_message(
+            embed=generate_embed(self.session),
+            view=AdminView(self.session),
+            ephemeral=True,
+        )
         panel_message = await interaction.original_response()
         self.session.admin_panels[interaction.user.id] = panel_message
 
     @discord.ui.button(label="Bet", style=discord.ButtonStyle.secondary)
-    async def bet(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+    async def bet(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ) -> None:
         """Open the team-choice view for placing or raising a bet.
         Non-admin game heads get a warning: declaring the winner themselves later
         forfeits this bet. Admins are exempt from both the warning and the forfeit.
         """
         if not self.session.role_assignments:
-            await interaction.response.send_message("Betting opens once the lobby's been shuffled!", ephemeral=True)
+            await interaction.response.send_message(
+                "Betting opens once the lobby's been shuffled!", ephemeral=True
+            )
             return
         if not self.session.betting_open:
-            await interaction.response.send_message("Betting's closed for this match.", ephemeral=True)
+            await interaction.response.send_message(
+                "Betting's closed for this match.", ephemeral=True
+            )
             return
 
         prompt = f"Bet on **{self.session.team_names[0]}** or **{self.session.team_names[1]}**?"
@@ -902,7 +1052,10 @@ class LobbyView(discord.ui.View):
             ephemeral=True,
         )
 
-def bet_rejection_reason(session: "MatchmakingSession", user_id: int, team: str) -> str | None:
+
+def bet_rejection_reason(
+    session: MatchmakingSession, user_id: int, team: str
+) -> str | None:
     """Why this user can't back this team, or None if they can.
 
     One home for the rule so the two enforcement points can't drift: the picker greys out
@@ -920,20 +1073,26 @@ def bet_rejection_reason(session: "MatchmakingSession", user_id: int, team: str)
         return "You've already bet on the other team -- you can't switch sides!"
     return None
 
+
 class BetTeamSelectView(discord.ui.View):
     """Ephemeral team picker shown after clicking Bet. Players on a team can only
     bet on themselves, and once a bet is placed the opposing team's button disables too.
     """
-    def __init__(self, session: "MatchmakingSession", user: discord.Member):
+
+    def __init__(self, session: MatchmakingSession, user: discord.Member):
         super().__init__(timeout=BETTING_WINDOW_SECONDS)
         self.session = session
 
-        team_a_button = discord.ui.Button(label=session.team_names[0], style=discord.ButtonStyle.primary)
+        team_a_button = discord.ui.Button(
+            label=session.team_names[0], style=discord.ButtonStyle.primary
+        )
         team_a_button.disabled = bet_rejection_reason(session, user.id, "a") is not None
         team_a_button.callback = self.make_callback("a")
         self.add_item(team_a_button)
 
-        team_b_button = discord.ui.Button(label=session.team_names[1], style=discord.ButtonStyle.primary)
+        team_b_button = discord.ui.Button(
+            label=session.team_names[1], style=discord.ButtonStyle.primary
+        )
         team_b_button.disabled = bet_rejection_reason(session, user.id, "b") is not None
         team_b_button.callback = self.make_callback("b")
         self.add_item(team_b_button)
@@ -945,11 +1104,18 @@ class BetTeamSelectView(discord.ui.View):
 
             # COALESCE because points is nullable, and the `if row else 0` below only
             # guards a missing row, not a row holding a NULL.
-            row = await db.fetch_one("SELECT COALESCE(points, 0) FROM users WHERE discordid = %s;", (interaction.user.id,))
+            row = await db.fetch_one(
+                "SELECT COALESCE(points, 0) FROM users WHERE discordid = %s;",
+                (interaction.user.id,),
+            )
             balance = row[0] if row else 0
 
-            await interaction.response.send_modal(BetModal(self.session, interaction.user, team, current_bet, balance))
+            await interaction.response.send_modal(
+                BetModal(self.session, interaction.user, team, current_bet, balance)
+            )
+
         return callback
+
 
 class BetModal(discord.ui.Modal):
     """Ephemeral wager-amount prompt. The field is the new total stake, not an amount
@@ -957,7 +1123,15 @@ class BetModal(discord.ui.Modal):
     team rules and the epoch under a per-user lock, and deducts with an atomic conditional
     UPDATE so the balance can't go negative even across lobbies.
     """
-    def __init__(self, session: "MatchmakingSession", user: discord.Member, team: str, current_bet: int, balance: int):
+
+    def __init__(
+        self,
+        session: MatchmakingSession,
+        user: discord.Member,
+        team: str,
+        current_bet: int,
+        balance: int,
+    ):
         super().__init__(title="Place your bet")
         self.session = session
         self.user = user
@@ -971,19 +1145,23 @@ class BetModal(discord.ui.Modal):
             label = "How many points?"
             placeholder = f"{balance} available"
 
-        self.add_item(discord.ui.InputText(
-            label=label,
-            required=True,
-            min_length=1,
-            placeholder=placeholder,
-        ))
+        self.add_item(
+            discord.ui.InputText(
+                label=label,
+                required=True,
+                min_length=1,
+                placeholder=placeholder,
+            )
+        )
 
     async def callback(self, interaction: discord.Interaction) -> None:
         value = self.children[0].value
         try:
             new_total = int(value)
         except ValueError:
-            await interaction.response.send_message("You must wager a whole number of points!", ephemeral=True)
+            await interaction.response.send_message(
+                "You must wager a whole number of points!", ephemeral=True
+            )
             return
 
         lock = self.session.bet_locks.setdefault(self.user.id, asyncio.Lock())
@@ -1000,19 +1178,27 @@ class BetModal(discord.ui.Modal):
                 return
 
             if new_total <= current_bet:
-                message = "You can only raise your bet, not lower it!" if current_bet else "You must wager more than 0 points!"
+                message = (
+                    "You can only raise your bet, not lower it!"
+                    if current_bet
+                    else "You must wager more than 0 points!"
+                )
                 await interaction.response.send_message(message, ephemeral=True)
                 return
 
             delta = new_total - current_bet
 
             if not self.session.betting_open:
-                await interaction.response.send_message("Betting closed while you were typing -- too slow!", ephemeral=True)
+                await interaction.response.send_message(
+                    "Betting closed while you were typing -- too slow!", ephemeral=True
+                )
                 return
 
             deducted = await wallet.try_deduct(self.user.id, delta)
             if not deducted:
-                await interaction.response.send_message("You don't have enough points for that!", ephemeral=True)
+                await interaction.response.send_message(
+                    "You don't have enough points for that!", ephemeral=True
+                )
                 return
 
             # A re-shuffle mid-UPDATE refunds the book and reopens betting, so betting_open
@@ -1022,17 +1208,25 @@ class BetModal(discord.ui.Modal):
                 await wallet.credit(self.user.id, delta)
                 message = (
                     "The teams changed while you were typing -- bet again on the new lineup."
-                    if stale else "Betting closed while you were typing -- too slow!"
+                    if stale
+                    else "Betting closed while you were typing -- too slow!"
                 )
                 await interaction.response.send_message(message, ephemeral=True)
                 return
             self.session.bets[self.user.id] = {"team": self.team, "points": new_total}
 
-        team_name = self.session.team_names[0] if self.team == "a" else self.session.team_names[1]
-        await interaction.response.send_message(f"Bet placed: {new_total} points on **{team_name}**.", ephemeral=True)
+        team_name = (
+            self.session.team_names[0]
+            if self.team == "a"
+            else self.session.team_names[1]
+        )
+        await interaction.response.send_message(
+            f"Bet placed: {new_total} points on **{team_name}**.", ephemeral=True
+        )
 
         await refresh_lobby_message(self.session)
         await refresh_admin_panels(self.session)
+
 
 class LobbyPanelView(discord.ui.View):
     """Base for every view reachable from a lobby's admin panel.
@@ -1041,15 +1235,19 @@ class LobbyPanelView(discord.ui.View):
     when the match ends, but a click already in flight still lands, and Swap's would
     reopen betting and re-arm a close timer on a session nobody can win.
     """
-    def __init__(self, session: "MatchmakingSession"):
+
+    def __init__(self, session: MatchmakingSession):
         super().__init__(timeout=180)
         self.session = session
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if self.session.ended:
-            await interaction.response.send_message("This lobby's already over!", ephemeral=True)
+            await interaction.response.send_message(
+                "This lobby's already over!", ephemeral=True
+            )
             return False
         return True
+
 
 class SwapSelectView(LobbyPanelView):
     def __init__(self, session):
@@ -1058,10 +1256,25 @@ class SwapSelectView(LobbyPanelView):
         options = []
         for member in session.team_a + session.team_b:
             lane = session.role_assignments.get(member.id, "?")
-            team = session.team_names[0] if member in session.team_a else session.team_names[1]
-            options.append(discord.SelectOption(label=f"{member.display_name} ({lane})", description=team, value=str(member.id)))
+            team = (
+                session.team_names[0]
+                if member in session.team_a
+                else session.team_names[1]
+            )
+            options.append(
+                discord.SelectOption(
+                    label=f"{member.display_name} ({lane})",
+                    description=team,
+                    value=str(member.id),
+                )
+            )
 
-        self.select = discord.ui.Select(placeholder="Pick two players to swap.", min_values=2, max_values=2, options=options)
+        self.select = discord.ui.Select(
+            placeholder="Pick two players to swap.",
+            min_values=2,
+            max_values=2,
+            options=options,
+        )
         self.select.callback = self.on_select
         self.add_item(self.select)
 
@@ -1072,7 +1285,9 @@ class SwapSelectView(LobbyPanelView):
     async def on_select(self, interaction: discord.Interaction):
         """Swap the two selected players' team+lane slots and refresh every open view of this lobby."""
         if not has_privilege(interaction):
-            await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
+            await interaction.response.send_message(
+                "You're not a game head! Feel free to apply though...", ephemeral=True
+            )
             return
         # Restarting the window can await a close-timer that's mid-edit, and the refund is a
         # DB round trip -- more than Discord's 3 second reply deadline allows for.
@@ -1084,34 +1299,51 @@ class SwapSelectView(LobbyPanelView):
         await start_betting_window(self.session)
 
         await refresh_lobby_message(self.session)
-        await interaction.edit_original_response(embed=generate_embed(self.session), view=AdminView(self.session))
+        await interaction.edit_original_response(
+            embed=generate_embed(self.session), view=AdminView(self.session)
+        )
         await refresh_admin_panels(self.session)
 
     async def back(self, interaction: discord.Interaction):
         """Return to the admin panel without swapping anyone."""
         if not has_privilege(interaction):
-            await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
+            await interaction.response.send_message(
+                "You're not a game head! Feel free to apply though...", ephemeral=True
+            )
             return
-        await interaction.response.edit_message(embed=generate_embed(self.session), view=AdminView(self.session))
+        await interaction.response.edit_message(
+            embed=generate_embed(self.session), view=AdminView(self.session)
+        )
 
-async def declare_winner(session: "MatchmakingSession", interaction: discord.Interaction, team_a_won: bool) -> None:
+
+async def declare_winner(
+    session: MatchmakingSession, interaction: discord.Interaction, team_a_won: bool
+) -> None:
     """Shared implementation for declaring a winner: record the result, settle bets,
     post the postgame embed, end the session. Defers immediately after the privilege
     check, before any DB work, to stay under Discord's interaction-response deadline.
     """
     if not has_privilege(interaction):
-        await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
+        await interaction.response.send_message(
+            "You're not a game head! Feel free to apply though...", ephemeral=True
+        )
         return
     # Two game heads can hold open pickers at once, and a second declare would re-record
     # the result and re-apply the elo. Claim the session before the first await.
     if session.ended:
-        await interaction.response.send_message("This match is already over!", ephemeral=True)
+        await interaction.response.send_message(
+            "This match is already over!", ephemeral=True
+        )
         return
     session.ended = True
 
     await interaction.response.defer()
 
-    winners, losers = (session.team_a, session.team_b) if team_a_won else (session.team_b, session.team_a)
+    winners, losers = (
+        (session.team_a, session.team_b)
+        if team_a_won
+        else (session.team_b, session.team_a)
+    )
     winning_team_name = session.team_names[0] if team_a_won else session.team_names[1]
 
     await update_record(session, winners, losers)
@@ -1131,22 +1363,32 @@ async def declare_winner(session: "MatchmakingSession", interaction: discord.Int
         PostgameView(session),
     )
     if not rendered:
-        await interaction.followup.send("Result recorded, but I couldn't update the lobby embed.", ephemeral=True)
+        await interaction.followup.send(
+            "Result recorded, but I couldn't update the lobby embed.", ephemeral=True
+        )
 
     cog = interaction.client.get_cog("Matchmaking")
     cog.active_sessions.pop(session.key, None)
     await interaction.delete_original_response()
     await close_admin_panels(session)
 
+
 class MapSelectView(LobbyPanelView):
     def __init__(self, session):
         super().__init__(session)
 
-        options = [discord.SelectOption(label=m, default=(m == session.map)) for m in MAPS[session.game]]
+        options = [
+            discord.SelectOption(label=m, default=(m == session.map))
+            for m in MAPS[session.game]
+        ]
         # a Select caps out at 25 options (Overwatch has 32 maps), so split across as many selects as needed
-        chunks = [options[i:i + 25] for i in range(0, len(options), 25)]
+        chunks = [options[i : i + 25] for i in range(0, len(options), 25)]
         for i, chunk in enumerate(chunks):
-            placeholder = "Pick a map." if len(chunks) == 1 else f"Pick a map ({i + 1}/{len(chunks)})."
+            placeholder = (
+                "Pick a map."
+                if len(chunks) == 1
+                else f"Pick a map ({i + 1}/{len(chunks)})."
+            )
             select = discord.ui.Select(placeholder=placeholder, options=chunk)
             select.callback = self.on_select
             self.add_item(select)
@@ -1158,33 +1400,47 @@ class MapSelectView(LobbyPanelView):
     async def on_select(self, interaction: discord.Interaction):
         """Set the session's map and refresh every open view of this lobby."""
         if not has_privilege(interaction):
-            await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
+            await interaction.response.send_message(
+                "You're not a game head! Feel free to apply though...", ephemeral=True
+            )
             return
         self.session.map = interaction.data["values"][0]
 
         await refresh_lobby_message(self.session)
-        await interaction.response.edit_message(embed=generate_embed(self.session), view=AdminView(self.session))
+        await interaction.response.edit_message(
+            embed=generate_embed(self.session), view=AdminView(self.session)
+        )
         await refresh_admin_panels(self.session)
 
     async def back(self, interaction: discord.Interaction):
         """Return to the admin panel without changing the map."""
         if not has_privilege(interaction):
-            await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
+            await interaction.response.send_message(
+                "You're not a game head! Feel free to apply though...", ephemeral=True
+            )
             return
-        await interaction.response.edit_message(embed=generate_embed(self.session), view=AdminView(self.session))
+        await interaction.response.edit_message(
+            embed=generate_embed(self.session), view=AdminView(self.session)
+        )
+
 
 class WinnerSelectView(LobbyPanelView):
     """Ephemeral team picker for declaring a winner.
-    
+
     Uses manually-constructed buttons so their labels can show the session's actual team names instead of static text."""
+
     def __init__(self, session):
         super().__init__(session)
 
-        team_a_button = discord.ui.Button(label=session.team_names[0], style=discord.ButtonStyle.primary)
+        team_a_button = discord.ui.Button(
+            label=session.team_names[0], style=discord.ButtonStyle.primary
+        )
         team_a_button.callback = self.team_a
         self.add_item(team_a_button)
 
-        team_b_button = discord.ui.Button(label=session.team_names[1], style=discord.ButtonStyle.primary)
+        team_b_button = discord.ui.Button(
+            label=session.team_names[1], style=discord.ButtonStyle.primary
+        )
         team_b_button.callback = self.team_b
         self.add_item(team_b_button)
 
@@ -1203,69 +1459,109 @@ class WinnerSelectView(LobbyPanelView):
     async def back(self, interaction: discord.Interaction) -> None:
         """Return to the admin panel without declaring a winner."""
         if not has_privilege(interaction):
-            await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
+            await interaction.response.send_message(
+                "You're not a game head! Feel free to apply though...", ephemeral=True
+            )
             return
-        await interaction.response.edit_message(content=None, embed=generate_embed(self.session), view=AdminView(self.session))
+        await interaction.response.edit_message(
+            content=None,
+            embed=generate_embed(self.session),
+            view=AdminView(self.session),
+        )
+
 
 class SelfBetForfeitWarningView(LobbyPanelView):
     """Shown instead of WinnerSelectView when a non-admin game head with an active bet
     presses Winner. Requires confirmation first since declaring forfeits the bet outright.
     Uses buttons instead of a dropdown, since Select option text can get cut off on Discord's client.
     """
-    def __init__(self, session: "MatchmakingSession", stake: int):
+
+    def __init__(self, session: MatchmakingSession, stake: int):
         super().__init__(session)
 
-        continue_button = discord.ui.Button(label=f"Continue (forfeit my {stake}-point bet)", style=discord.ButtonStyle.danger)
+        continue_button = discord.ui.Button(
+            label=f"Continue (forfeit my {stake}-point bet)",
+            style=discord.ButtonStyle.danger,
+        )
         continue_button.callback = self.confirm
         self.add_item(continue_button)
 
-        cancel_button = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.secondary)
+        cancel_button = discord.ui.Button(
+            label="Cancel", style=discord.ButtonStyle.secondary
+        )
         cancel_button.callback = self.cancel
         self.add_item(cancel_button)
 
     async def confirm(self, interaction: discord.Interaction) -> None:
         if not has_privilege(interaction):
-            await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
+            await interaction.response.send_message(
+                "You're not a game head! Feel free to apply though...", ephemeral=True
+            )
             return
         # Only opens the picker -- declare_winner does the forfeiting, so backing out is free.
-        await interaction.response.edit_message(content=None, embed=generate_embed(self.session), view=WinnerSelectView(self.session))
+        await interaction.response.edit_message(
+            content=None,
+            embed=generate_embed(self.session),
+            view=WinnerSelectView(self.session),
+        )
 
     async def cancel(self, interaction: discord.Interaction) -> None:
         if not has_privilege(interaction):
-            await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
+            await interaction.response.send_message(
+                "You're not a game head! Feel free to apply though...", ephemeral=True
+            )
             return
-        await interaction.response.edit_message(content=None, embed=generate_embed(self.session), view=AdminView(self.session))
+        await interaction.response.edit_message(
+            content=None,
+            embed=generate_embed(self.session),
+            view=AdminView(self.session),
+        )
+
 
 class PostgameView(discord.ui.View):
     """Post-game view that allows for rematching."""
+
     def __init__(self, session):
         super().__init__(timeout=180)
         self.session = session
+
 
 class AdminView(LobbyPanelView):
     """Ephemeral admin panel: Shuffle / Swap / Map / Winner / Delete. Gated to game heads."""
 
     @discord.ui.button(label="Shuffle", style=discord.ButtonStyle.primary)
-    async def shuffle(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+    async def shuffle(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ) -> None:
         """Fetch each player's rank/role data and re-balance the lobby into two teams."""
         if not has_privilege(interaction):
-            await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
+            await interaction.response.send_message(
+                "You're not a game head! Feel free to apply though...", ephemeral=True
+            )
             return
 
         if not self.session.joined:
-            await interaction.response.send_message("Nobody's in the lobby yet!", ephemeral=True)
+            await interaction.response.send_message(
+                "Nobody's in the lobby yet!", ephemeral=True
+            )
             return
 
         if (len(self.session.joined) % 2) != 0:
-            await interaction.response.send_message("You need an even amount of players to shuffle!", ephemeral=True)
+            await interaction.response.send_message(
+                "You need an even amount of players to shuffle!", ephemeral=True
+            )
             return
 
         # Same as declare_winner: defer before any DB or API work. The shuffle query, the
         # refund and two message edits all stack up well past the 3 second deadline.
         await interaction.response.defer()
 
-        elo_by_id, roles_by_id = await get_game_shuffle_data(self.session.joined, self.session.game)
-        team_a, team_b, assignments = balance_teams(self.session.game, self.session.joined, elo_by_id, roles_by_id)
+        elo_by_id, roles_by_id = await get_game_shuffle_data(
+            self.session.joined, self.session.game
+        )
+        team_a, team_b, assignments = balance_teams(
+            self.session.game, self.session.joined, elo_by_id, roles_by_id
+        )
         self.session.team_a = team_a
         self.session.team_b = team_b
         self.session.role_assignments = assignments
@@ -1274,10 +1570,14 @@ class AdminView(LobbyPanelView):
         await start_betting_window(self.session)
 
         await refresh_lobby_message(self.session)
-        await interaction.edit_original_response(embed=generate_embed(self.session), view=self)
+        await interaction.edit_original_response(
+            embed=generate_embed(self.session), view=self
+        )
         await refresh_admin_panels(self.session)
 
-        unranked = await get_unranked(self.session.game, self.session.joined, self.session.role_assignments)
+        unranked = await get_unranked(
+            self.session.game, self.session.joined, self.session.role_assignments
+        )
         if unranked:
             names = ", ".join(f"<@{m.id}>" for m in unranked)
             await interaction.followup.send(
@@ -1287,39 +1587,62 @@ class AdminView(LobbyPanelView):
             )
 
     @discord.ui.button(label="Swap", style=discord.ButtonStyle.secondary)
-    async def swap(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+    async def swap(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ) -> None:
         """Open the two-player swap select menu. Requires a shuffle to have happened first."""
         if not has_privilege(interaction):
-            await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
+            await interaction.response.send_message(
+                "You're not a game head! Feel free to apply though...", ephemeral=True
+            )
             return
         if not self.session.role_assignments:
-            await interaction.response.send_message("Shuffle first before trying to swap!", ephemeral=True)
+            await interaction.response.send_message(
+                "Shuffle first before trying to swap!", ephemeral=True
+            )
             return
-        
-        await interaction.response.edit_message(embed=generate_embed(self.session), view=SwapSelectView(self.session))
+
+        await interaction.response.edit_message(
+            embed=generate_embed(self.session), view=SwapSelectView(self.session)
+        )
 
     @discord.ui.button(label="Map", style=discord.ButtonStyle.secondary)
-    async def map(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+    async def map(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ) -> None:
         """Open the map picker. Only for games with a maps list configured."""
         if not has_privilege(interaction):
-            await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
+            await interaction.response.send_message(
+                "You're not a game head! Feel free to apply though...", ephemeral=True
+            )
             return
         if not MAPS.get(self.session.game):
-            await interaction.response.send_message(f"{self.session.game.title()} doesn't have maps configured!", ephemeral=True)
+            await interaction.response.send_message(
+                f"{self.session.game.title()} doesn't have maps configured!",
+                ephemeral=True,
+            )
             return
 
-        await interaction.response.edit_message(embed=generate_embed(self.session), view=MapSelectView(self.session))
+        await interaction.response.edit_message(
+            embed=generate_embed(self.session), view=MapSelectView(self.session)
+        )
 
     @discord.ui.button(label="Winner", style=discord.ButtonStyle.success)
-    async def winner(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+    async def winner(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ) -> None:
         """Open the team picker to declare a winner. Requires a shuffle to have happened first.
         If the clicker is a non-admin game head with an active bet, shows a confirm
         warning first instead of opening the team picker."""
         if not has_privilege(interaction):
-            await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
+            await interaction.response.send_message(
+                "You're not a game head! Feel free to apply though...", ephemeral=True
+            )
             return
         if not self.session.role_assignments:
-            await interaction.response.send_message("Shuffle first before deciding a winner!", ephemeral=True)
+            await interaction.response.send_message(
+                "Shuffle first before deciding a winner!", ephemeral=True
+            )
             return
 
         bet = self.session.bets.get(interaction.user.id)
@@ -1334,41 +1657,59 @@ class AdminView(LobbyPanelView):
             )
             return
 
-        await interaction.response.edit_message(embed=generate_embed(self.session), view=WinnerSelectView(self.session))
+        await interaction.response.edit_message(
+            embed=generate_embed(self.session), view=WinnerSelectView(self.session)
+        )
 
     @discord.ui.button(label="Delete", style=discord.ButtonStyle.danger)
-    async def delete(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+    async def delete(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ) -> None:
         """Cancel a game."""
         if not has_privilege(interaction):
-            await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
+            await interaction.response.send_message(
+                "You're not a game head! Feel free to apply though...", ephemeral=True
+            )
             return
-        
-        await interaction.response.edit_message(embed=generate_embed(self.session), view=CancelConfirmView(self.session))
+
+        await interaction.response.edit_message(
+            embed=generate_embed(self.session), view=CancelConfirmView(self.session)
+        )
+
 
 class CancelConfirmView(LobbyPanelView):
     """Ephemeral confirmation step before actually cancelling a lobby.
 
     Uses a dropdown rather than buttons, so a misclick doesn't instantly end the game.
     """
+
     def __init__(self, session):
         super().__init__(session)
 
         options = [
-            discord.SelectOption(label="Yes, cancel this game", value="confirm", emoji="🗑️"),
+            discord.SelectOption(
+                label="Yes, cancel this game", value="confirm", emoji="🗑️"
+            ),
             discord.SelectOption(label="No, go back", value="back", emoji="↩️"),
         ]
-        self.select = discord.ui.Select(placeholder="Are you sure you want to cancel this game?", options=options)
+        self.select = discord.ui.Select(
+            placeholder="Are you sure you want to cancel this game?", options=options
+        )
         self.select.callback = self.on_select
         self.add_item(self.select)
 
     async def on_select(self, interaction: discord.Interaction) -> None:
         """Cancel the lobby if confirmed, otherwise return to the admin panel."""
         if not has_privilege(interaction):
-            await interaction.response.send_message("You're not a game head! Feel free to apply though...", ephemeral=True)
+            await interaction.response.send_message(
+                "You're not a game head! Feel free to apply though...", ephemeral=True
+            )
             return
 
         if self.select.values[0] == "back":
-            await interaction.response.edit_message(embed=generate_embed(self.session), view=AdminView(self.session))
+            await interaction.response.edit_message(
+                embed=generate_embed(self.session), view=AdminView(self.session)
+            )
             return
 
         # Claim the lobby before the first await, then defer: same as shuffle and
@@ -1378,13 +1719,16 @@ class CancelConfirmView(LobbyPanelView):
 
         stop_betting_window(self.session)
         await refund_bets(self.session)
-        await edit_lobby_message(self.session, generate_cancelled_embed(self.session), None)
+        await edit_lobby_message(
+            self.session, generate_cancelled_embed(self.session), None
+        )
 
         cog = interaction.client.get_cog("Matchmaking")
         cog.active_sessions.pop(self.session.key, None)
 
         await interaction.delete_original_response()
         await close_admin_panels(self.session)
+
 
 def setup(bot: discord.Bot) -> None:
     bot.add_cog(Matchmaking(bot))

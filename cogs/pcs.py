@@ -1,7 +1,7 @@
 import asyncio
 import io
 import os
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import aiohttp
@@ -164,7 +164,7 @@ class PCs(commands.Cog):
     def to_central_time(dt: datetime) -> datetime:
         """Convert a datetime to Central Time for display/comparison"""
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt.astimezone(CENTRAL_TZ)
 
     def get_gameroom_hours_for_date(
@@ -313,7 +313,7 @@ class PCs(commands.Cog):
             embed = discord.Embed(
                 title="Reservation Cancelled",
                 color=discord.Color.red(),
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
             )
             embed.add_field(name="Team", value=team, inline=False)
             embed.add_field(name="Cancelled By", value=cancelled_by, inline=False)
@@ -370,13 +370,17 @@ class PCs(commands.Cog):
             year, month, day = map(int, date_part.split("-"))
 
             # Parse start time
-            start_time = datetime.strptime(start_time_str.strip(), "%I:%M%p").replace(tzinfo=CENTRAL_TZ)
+            start_time = datetime.strptime(start_time_str.strip(), "%I:%M%p").replace(
+                tzinfo=CENTRAL_TZ
+            )
             start_dt = datetime(
                 year, month, day, start_time.hour, start_time.minute, tzinfo=CENTRAL_TZ
             )
 
             # Parse end time
-            end_time = datetime.strptime(end_time_str.strip(), "%I:%M%p").replace(tzinfo=CENTRAL_TZ)
+            end_time = datetime.strptime(end_time_str.strip(), "%I:%M%p").replace(
+                tzinfo=CENTRAL_TZ
+            )
             end_dt = datetime(
                 year, month, day, end_time.hour, end_time.minute, tzinfo=CENTRAL_TZ
             )
@@ -606,10 +610,13 @@ class PCs(commands.Cog):
 
         for attempt in range(max_attempts):
             try:
-                async with aiohttp.ClientSession(timeout=timeout) as session, session.get(url) as resp:
+                async with (
+                    aiohttp.ClientSession(timeout=timeout) as session,
+                    session.get(url) as resp,
+                ):
                     resp.raise_for_status()
                     return await resp.json()
-            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+            except TimeoutError, aiohttp.ClientError, ValueError:
                 if attempt == max_attempts - 1:
                     raise
                 await asyncio.sleep(retry_delay_seconds)
@@ -882,7 +889,7 @@ class PCs(commands.Cog):
                     )
                 icon_cache[key] = icon
                 return icon
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 return None
 
         def draw_text(entry: dict, left_anchor_x: int, y: int, align_right: bool):
@@ -1069,7 +1076,7 @@ class PCs(commands.Cog):
             return
         try:
             data = await self.fetch_pcs()
-        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
+        except (TimeoutError, aiohttp.ClientError, ValueError) as e:
             print(e)
             # Reset cooldown so user can retry
             self.pcs.reset_cooldown(ctx)
@@ -1085,7 +1092,7 @@ class PCs(commands.Cog):
             date_str = today.strftime("%Y-%m-%d")
             reservations_data = await self.fetch_reservations(date_str)
             reservations = reservations_data.get("reservations", [])
-        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, AttributeError) as e:
+        except (TimeoutError, aiohttp.ClientError, ValueError, AttributeError) as e:
             print(f"Failed to fetch reservations: {e}")
             reservations = []
 
@@ -1156,7 +1163,7 @@ class PCs(commands.Cog):
         await ctx.defer()
         try:
             data = await self.fetch_pcs()
-        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+        except TimeoutError, aiohttp.ClientError, ValueError:
             await ctx.followup.send(
                 "Failed to fetch PC data. Please try again later.", ephemeral=True
             )
@@ -1184,7 +1191,7 @@ class PCs(commands.Cog):
             date_str = today.strftime("%Y-%m-%d")
             reservations_data = await self.fetch_reservations(date_str)
             reservations = reservations_data.get("reservations", [])
-        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, AttributeError) as e:
+        except (TimeoutError, aiohttp.ClientError, ValueError, AttributeError) as e:
             print(f"Failed to fetch reservations: {e}")
             reservations = []
 
@@ -1283,7 +1290,9 @@ class PCs(commands.Cog):
         # Parse or default to today (in Central Time)
         if date:
             try:
-                target_date = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=CENTRAL_TZ)
+                target_date = datetime.strptime(date, "%Y-%m-%d").replace(
+                    tzinfo=CENTRAL_TZ
+                )
             except ValueError:
                 await ctx.followup.send(
                     "Invalid date format. Please use YYYY-MM-DD (e.g., 2025-09-30)",
@@ -1298,7 +1307,7 @@ class PCs(commands.Cog):
         # Fetch GGLeap reservations
         try:
             data = await self.fetch_reservations(date_str)
-        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
+        except (TimeoutError, aiohttp.ClientError, ValueError) as e:
             print(e)
             await ctx.followup.send(
                 "Failed to fetch reservations. Please try again later.", ephemeral=True
@@ -1683,7 +1692,11 @@ class PCs(commands.Cog):
                     for slot_idx, slot_time in enumerate(time_slots):
                         slot_end = slot_time + timedelta(minutes=30)
                         # Check if this slot overlaps with the reservation
-                        if start_time < slot_end and end_time > slot_time and slot_idx not in desk_reservations[desk_name]["reserved"]:
+                        if (
+                            start_time < slot_end
+                            and end_time > slot_time
+                            and slot_idx not in desk_reservations[desk_name]["reserved"]
+                        ):
                             # Only mark as pending if not already reserved (purple takes precedence)
                             desk_reservations[desk_name]["pending"].add(slot_idx)
 
@@ -1770,7 +1783,7 @@ class PCs(commands.Cog):
 class ReservationTimeModal(discord.ui.Modal):
     def __init__(
         self,
-        cog: "PCs",
+        cog: PCs,
         team: str,
         num_pcs: int,
         res_type: str,
@@ -1955,7 +1968,7 @@ class ReservationTimeModal(discord.ui.Modal):
                 embed = discord.Embed(
                     title="🎮 New PC Reservation",
                     color=discord.Color.from_rgb(78, 42, 132),
-                    timestamp=datetime.now(timezone.utc),
+                    timestamp=datetime.now(UTC),
                 )
                 embed.add_field(name="Team", value=self.team, inline=False)
                 embed.add_field(name="Res Type", value=self.res_type, inline=False)
@@ -2015,7 +2028,7 @@ class ReservationTimeModal(discord.ui.Modal):
 
 
 class ExternalReservationTimeModal(discord.ui.Modal):
-    def __init__(self, cog: "PCs"):
+    def __init__(self, cog: PCs):
         super().__init__(title="External Reservation - Set Time")
         self.cog = cog
 
@@ -2129,7 +2142,7 @@ class ReservationView(discord.ui.View):
         self,
         reservations: list[dict],
         target_date: datetime,
-        cog: "PCs",
+        cog: PCs,
         pending_reservations: list[dict] | None = None,
     ):
         super().__init__(timeout=600)
@@ -2241,7 +2254,13 @@ class ReservationView(discord.ui.View):
             await self._fetch_and_update(new_date)
             embeds, file = await self.build_embed_and_file()
             await interaction.message.edit(embeds=embeds, file=file, view=self)
-        except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError, discord.HTTPException) as e:
+        except (
+            TimeoutError,
+            aiohttp.ClientError,
+            OSError,
+            ValueError,
+            discord.HTTPException,
+        ) as e:
             print(e)
             await interaction.followup.send(
                 "Failed to fetch reservations for that date.", ephemeral=True
@@ -2258,7 +2277,13 @@ class ReservationView(discord.ui.View):
             await self._fetch_and_update(new_date)
             embeds, file = await self.build_embed_and_file()
             await interaction.message.edit(embeds=embeds, file=file, view=self)
-        except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError, discord.HTTPException) as e:
+        except (
+            TimeoutError,
+            aiohttp.ClientError,
+            OSError,
+            ValueError,
+            discord.HTTPException,
+        ) as e:
             print(e)
             await interaction.followup.send(
                 "Failed to fetch reservations for that date.", ephemeral=True

@@ -17,18 +17,23 @@ class FakeMember:
     def __init__(self, id, display_name):
         self.id = id
         self.display_name = display_name
-        self.joined_at = datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)
+        self.joined_at = datetime.datetime(2024, 1, 1, tzinfo=datetime.UTC)
         self.display_avatar = FakeAvatar()
 
 
 async def _clear_profile_rows(db):
-    await db.perform_one("DELETE FROM profile_stats WHERE discordid = %s;", (TEST_DISCORDID,))
-    await db.perform_one("DELETE FROM profiles WHERE discordid = %s;", (TEST_DISCORDID,))
+    await db.perform_one(
+        "DELETE FROM profile_stats WHERE discordid = %s;", (TEST_DISCORDID,)
+    )
+    await db.perform_one(
+        "DELETE FROM profiles WHERE discordid = %s;", (TEST_DISCORDID,)
+    )
 
 
 @pytest.mark.asyncio
 async def test_view_shows_home_page_when_no_game_requested(migrated_db):
     from utils import db
+
     await _clear_profile_rows(db)
     try:
         await db.perform_one(
@@ -54,6 +59,7 @@ async def test_view_shows_home_page_when_no_game_requested(migrated_db):
 @pytest.mark.asyncio
 async def test_view_jumps_directly_to_requested_game(migrated_db):
     from utils import db
+
     await _clear_profile_rows(db)
     try:
         await db.perform_one(
@@ -75,6 +81,7 @@ async def test_view_jumps_directly_to_requested_game(migrated_db):
 @pytest.mark.asyncio
 async def test_view_targets_another_user_when_given(migrated_db):
     from utils import db
+
     await _clear_profile_rows(db)
     try:
         requester = FakeMember(1, "requester")
