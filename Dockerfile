@@ -1,4 +1,4 @@
-FROM ghcr.io/astral-sh/uv:python3.10-alpine
+FROM ghcr.io/astral-sh/uv:python3.14-alpine
 WORKDIR /bot
 
 # Deps first, from just the lockfiles, so this layer is cached and skipped
