@@ -79,7 +79,9 @@ class Connections(commands.Cog):
             )
             return
 
-        requested_date = requested_date or datetime.now(tz=CENTRAL_TZ).date().isoformat()
+        requested_date = (
+            requested_date or datetime.now(tz=CENTRAL_TZ).date().isoformat()
+        )
         await ctx.defer(ephemeral=True)
 
         try:
@@ -89,7 +91,7 @@ class Connections(commands.Cog):
                 f"Could not load Connections puzzle: {e!s}", ephemeral=True
             )
             return
-        except (aiohttp.ClientError, asyncio.TimeoutError):
+        except TimeoutError, aiohttp.ClientError:
             await ctx.followup.send(
                 "Could not load Connections puzzle due to an unexpected error.",
                 ephemeral=True,
@@ -130,7 +132,12 @@ class Connections(commands.Cog):
         if not raw_date:
             return None
         try:
-            return datetime.strptime(raw_date, "%Y-%m-%d").replace(tzinfo=CENTRAL_TZ).date().isoformat()
+            return (
+                datetime.strptime(raw_date, "%Y-%m-%d")
+                .replace(tzinfo=CENTRAL_TZ)
+                .date()
+                .isoformat()
+            )
         except ValueError:
             return None
 
@@ -164,12 +171,15 @@ class Connections(commands.Cog):
                 )
 
                 timeout = aiohttp.ClientTimeout(total=12)
-                async with aiohttp.ClientSession(timeout=timeout) as session, session.get(url) as response:
-                        if response.status != 200:
-                            raise ValueError(
-                                f"Apify returned status {response.status} for {requested_date}."
-                            )
-                        payload = await response.json()
+                async with (
+                    aiohttp.ClientSession(timeout=timeout) as session,
+                    session.get(url) as response,
+                ):
+                    if response.status != 200:
+                        raise ValueError(
+                            f"Apify returned status {response.status} for {requested_date}."
+                        )
+                    payload = await response.json()
 
                 puzzle = self._normalize_payload(payload, requested_date)
                 self.puzzle_cache[requested_date] = puzzle
@@ -336,7 +346,7 @@ class Connections(commands.Cog):
         )
         try:
             return ImageFont.truetype(str(font_file), size=size)
-        except (OSError, TypeError):
+        except OSError, TypeError:
             try:
                 return ImageFont.load_default(size=size)
             except TypeError:
@@ -608,7 +618,7 @@ class Connections(commands.Cog):
 
 
 class GuessWordSelect(discord.ui.Select):
-    def __init__(self, view: "ConnectionsView", slot_index: int):
+    def __init__(self, view: ConnectionsView, slot_index: int):
         self.parent_view = view
         self.slot_index = slot_index
         placeholder = f"Select Word {slot_index + 1}"

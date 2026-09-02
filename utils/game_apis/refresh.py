@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import psycopg
 
@@ -20,11 +20,13 @@ CLIENTS = {
     "valorant": ValorantClient(),
 }
 
+
 class _FetchLock:
     """Per-(discordid, game) lock plus a waiter count. The dict entry is only removed
     once the last waiter finishes: removing it while a blocked caller still holds the
     lock would let a concurrent setdefault() create a fresh, already-unlocked lock and
     run fetch_and_store in parallel -- defeating the dedup this lock exists for."""
+
     __slots__ = ("lock", "waiters")
 
     def __init__(self):
@@ -36,21 +38,25 @@ _fetch_locks: dict[tuple[int, str], _FetchLock] = {}
 
 ACCOUNT_COLUMNS = "game, external_id, display_name, region, provider_account_id, provider_secondary_id"
 
-async def _is_stale(discordid: int, game:str) -> bool:
+
+async def _is_stale(discordid: int, game: str) -> bool:
     if config.is_per_role_ranks(game):
         row = await db.fetch_one(
             "SELECT MIN(updated_at) FROM profile_role_ranks WHERE discordid = %s AND game = %s;",
-            (discordid, game)
+            (discordid, game),
         )
     else:
         row = await db.fetch_one(
             "SELECT updated_at FROM profile_stats WHERE discordid = %s AND game = %s;",
-            (discordid, game)
+            (discordid, game),
         )
     last_updated = row[0] if row else None
-    return last_updated is None or (datetime.now(timezone.utc) - last_updated) > RANK_STALE_AFTER
+    return last_updated is None or (datetime.now(UTC) - last_updated) > RANK_STALE_AFTER
 
-async def _fetch_with_lock(discordid: int, game: str, account_row: tuple, force: bool) -> None:
+
+async def _fetch_with_lock(
+    discordid: int, game: str, account_row: tuple, force: bool
+) -> None:
     client = CLIENTS.get(game)
     if not client:
         return
@@ -60,7 +66,7 @@ async def _fetch_with_lock(discordid: int, game: str, account_row: tuple, force:
         async with entry.lock:
             try:
                 if not force and not await _is_stale(discordid, game):
-                    return # someone else refreshed
+                    return  # someone else refreshed
                 await client.fetch_and_store(discordid, account_row)
             except (GameAPIError, LinkError, psycopg.Error) as e:
                 # The three things fetch_and_store can fail at: the provider, a missing
@@ -71,6 +77,7 @@ async def _fetch_with_lock(discordid: int, game: str, account_row: tuple, force:
         entry.waiters -= 1
         if entry.waiters == 0:
             _fetch_locks.pop((discordid, game), None)
+
 
 async def refresh_stale_ranks(discordid: int) -> None:
     """Called by `/profile view` before rendering. Refreshes all stale links,
@@ -92,7 +99,13 @@ async def refresh_stale_ranks(discordid: int) -> None:
             to_refresh.append((game, row))
 
     if to_refresh:
-        await asyncio.gather(*(_fetch_with_lock(discordid, game, row, force=False) for game, row in to_refresh))
+        await asyncio.gather(
+            *(
+                _fetch_with_lock(discordid, game, row, force=False)
+                for game, row in to_refresh
+            )
+        )
+
 
 async def force_refresh(discordid: int, game: str) -> None:
     """Fetch regardless of staleness; called after linking"""

@@ -10,5 +10,10 @@ jobs:
   ruff:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/ruff-action@v3
+      - uses: actions/checkout@v7
+      - uses: astral-sh/ruff-action@v4.1.0
+        with:
+          # Keep in step with .pre-commit-config.yaml. Left unpinned, this action
+          # takes whatever ruff is newest, so a release that adds a rule turns CI
+          # red on a commit that passed the identical check locally.
+          version: "0.16.5"

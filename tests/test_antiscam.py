@@ -7,7 +7,7 @@ import pytest
 
 from cogs import antiscam
 
-NOW = datetime.datetime(2026, 8, 24, tzinfo=datetime.timezone.utc)
+NOW = datetime.datetime(2026, 8, 24, tzinfo=datetime.UTC)
 
 RULES = {
     "threshold": 6,
@@ -82,7 +82,9 @@ def test_account_age_days_measures_the_account_not_the_membership():
 
 def test_camera_scam_from_a_fresh_account_clears_the_threshold():
     score, reasons = antiscam.score_message(CAMERA_SCAM, True, age(3), RULES)
-    assert score == 14  # age 4 + giveaway 3 + offplatform 3 + dm 1 + mass mention 2 + attachment 1
+    assert (
+        score == 14
+    )  # age 4 + giveaway 3 + offplatform 3 + dm 1 + mass mention 2 + attachment 1
     assert score >= RULES["threshold"]
     assert "off-platform contact" in reasons
     assert "mass mention" in reasons
@@ -91,7 +93,9 @@ def test_camera_scam_from_a_fresh_account_clears_the_threshold():
 def test_ps5_scam_from_a_fresh_account_clears_the_threshold():
     """No WhatsApp or phone number in this one -- it clears on age, wording and the image."""
     score, reasons = antiscam.score_message(PS5_SCAM, True, age(3), RULES)
-    assert score == 11  # age 4 + giveaway 3+2 for the extra phrases + dm 1 + attachment 1
+    assert (
+        score == 11
+    )  # age 4 + giveaway 3+2 for the extra phrases + dm 1 + attachment 1
     assert score >= RULES["threshold"]
     assert "off-platform contact" not in reasons
 
@@ -127,19 +131,25 @@ def test_dm_solicitation_alone_cannot_carry_a_message_over():
 
 
 def test_phone_number_counts_as_offplatform_contact():
-    score, reasons = antiscam.score_message("call +1 249 546 1998", False, age(400), RULES)
+    score, reasons = antiscam.score_message(
+        "call +1 249 546 1998", False, age(400), RULES
+    )
     assert "off-platform contact" in reasons
     assert score == RULES["weights"]["offplatform_contact"]
 
 
 def test_email_counts_as_offplatform_contact():
-    _, reasons = antiscam.score_message("Sophiaheart85@gmail.com", False, age(400), RULES)
+    _, reasons = antiscam.score_message(
+        "Sophiaheart85@gmail.com", False, age(400), RULES
+    )
     assert "off-platform contact" in reasons
 
 
 def test_a_bare_number_is_not_a_phone_number():
     """Prices and years shouldn't look like an off-platform handoff."""
-    _, reasons = antiscam.score_message("selling for 150 in 2026", False, age(400), RULES)
+    _, reasons = antiscam.score_message(
+        "selling for 150 in 2026", False, age(400), RULES
+    )
     assert reasons == []
 
 
@@ -149,7 +159,9 @@ def test_mass_mention_text_counts_even_though_they_cannot_really_ping():
 
 
 def test_an_old_account_posting_nothing_suspicious_scores_zero():
-    score, reasons = antiscam.score_message("hey does anyone want to queue", False, age(400), RULES)
+    score, reasons = antiscam.score_message(
+        "hey does anyone want to queue", False, age(400), RULES
+    )
     assert (score, reasons) == (0, [])
 
 
@@ -165,9 +177,15 @@ class FakeMember:
         self.display_avatar = SimpleNamespace(url="https://cdn.example/avatar.png")
 
 
-def build_embed(member=None, channel=None, score=9, reasons=("giveaway wording",), **kwargs):
+def build_embed(
+    member=None, channel=None, score=9, reasons=("giveaway wording",), **kwargs
+):
     return antiscam.build_alert_embed(
-        member or FakeMember(), channel or FakeSourceChannel(), score, list(reasons), **kwargs
+        member or FakeMember(),
+        channel or FakeSourceChannel(),
+        score,
+        list(reasons),
+        **kwargs,
     )
 
 
@@ -227,7 +245,9 @@ class FakeRole:
         self.id = id
         self.mention = f"<@&{id}>"
 
+
 DEFAULT_ROLE = FakeRole()
+
 
 class FakeGuild:
     def __init__(self, role=None, text_channels=(), threads=()):
@@ -333,8 +353,15 @@ def build_cog(monkeypatch, events, role=DEFAULT_ROLE, guild=None):
     monkeypatch.setattr(
         antiscam.config,
         "config",
-        {"antiscam": {"alert_channel": 5, "staff_role": 99, "timeout_days": 28,
-                      "ban_delete_message_days": 7, "purge_window_minutes": 60}},
+        {
+            "antiscam": {
+                "alert_channel": 5,
+                "staff_role": 99,
+                "timeout_days": 28,
+                "ban_delete_message_days": 7,
+                "purge_window_minutes": 60,
+            }
+        },
     )
     monkeypatch.setattr(antiscam.config, "has_leadership", lambda member: False)
     monkeypatch.setattr(antiscam.config, "is_bot_dev", lambda member: False)
@@ -686,19 +713,27 @@ def test_recent_attachment_ignores_the_message_being_scored():
 
 
 def test_recent_attachment_ignores_someone_elses_upload():
-    assert not antiscam.recent_attachment([cached(2, author_id=8)], 7, CUTOFF, exclude_id=1)
+    assert not antiscam.recent_attachment(
+        [cached(2, author_id=8)], 7, CUTOFF, exclude_id=1
+    )
 
 
 def test_recent_attachment_ignores_anything_older_than_the_window():
-    assert not antiscam.recent_attachment([cached(2, minutes_ago=90)], 7, CUTOFF, exclude_id=1)
+    assert not antiscam.recent_attachment(
+        [cached(2, minutes_ago=90)], 7, CUTOFF, exclude_id=1
+    )
 
 
 def test_recent_attachment_ignores_dms():
-    assert not antiscam.recent_attachment([cached(2, guild=None)], 7, CUTOFF, exclude_id=1)
+    assert not antiscam.recent_attachment(
+        [cached(2, guild=None)], 7, CUTOFF, exclude_id=1
+    )
 
 
 def test_recent_attachment_ignores_messages_carrying_no_file():
-    assert not antiscam.recent_attachment([cached(2, attachments=0)], 7, CUTOFF, exclude_id=1)
+    assert not antiscam.recent_attachment(
+        [cached(2, attachments=0)], 7, CUTOFF, exclude_id=1
+    )
 
 
 def test_the_split_post_costs_the_scammer_the_attachment_weight():
@@ -715,7 +750,9 @@ def test_the_split_post_costs_the_scammer_the_attachment_weight():
 def http_error():
     """py-cord's HTTPException only needs a response carrying .status and .reason.
     Forbidden subclasses it, which is why sweep_recent catches the base."""
-    return discord.HTTPException(SimpleNamespace(status=403, reason="Forbidden"), "nope")
+    return discord.HTTPException(
+        SimpleNamespace(status=403, reason="Forbidden"), "nope"
+    )
 
 
 class FakePerms:
@@ -726,7 +763,9 @@ class FakePerms:
 
 def posted(id, author_id=7, attachments=0):
     return SimpleNamespace(
-        id=id, author=SimpleNamespace(id=author_id), attachments=[object()] * attachments
+        id=id,
+        author=SimpleNamespace(id=author_id),
+        attachments=[object()] * attachments,
     )
 
 
@@ -771,7 +810,9 @@ def sweep_cog(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_sweep_deletes_only_that_authors_messages(monkeypatch):
-    channel = FakeSweepChannel("general", [posted(2), posted(3, author_id=8), posted(4)])
+    channel = FakeSweepChannel(
+        "general", [posted(2), posted(3, author_id=8), posted(4)]
+    )
 
     result = await sweep_cog(monkeypatch).sweep_recent(
         FakeGuild(text_channels=[channel]), AUTHOR, CUTOFF
@@ -782,7 +823,9 @@ async def test_sweep_deletes_only_that_authors_messages(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_sweep_hands_the_cutoff_to_discord_rather_than_filtering_by_hand(monkeypatch):
+async def test_sweep_hands_the_cutoff_to_discord_rather_than_filtering_by_hand(
+    monkeypatch,
+):
     channel = FakeSweepChannel("general", [posted(2)])
 
     await sweep_cog(monkeypatch).sweep_recent(
@@ -796,7 +839,9 @@ async def test_sweep_hands_the_cutoff_to_discord_rather_than_filtering_by_hand(m
 async def test_sweep_never_reads_a_channel_it_could_not_clean(monkeypatch):
     """The permission check is local, so a channel the bot can't purge costs no request."""
     unreadable = FakeSweepChannel("secret", [posted(2)], perms=FakePerms(read=False))
-    unmanageable = FakeSweepChannel("locked", [posted(3)], perms=FakePerms(manage=False))
+    unmanageable = FakeSweepChannel(
+        "locked", [posted(3)], perms=FakePerms(manage=False)
+    )
 
     result = await sweep_cog(monkeypatch).sweep_recent(
         FakeGuild(text_channels=[unreadable, unmanageable]), AUTHOR, CUTOFF
@@ -878,7 +923,10 @@ def test_alert_embed_reports_what_else_the_sweep_removed():
     sweep = antiscam.SweepResult(2, ["general", "memes"], 1)
 
     fields = {f.name: f.value for f in build_embed(sweep=sweep).fields}
-    assert fields["Also removed"] == "2 more messages in #general, #memes (1 with attachments)"
+    assert (
+        fields["Also removed"]
+        == "2 more messages in #general, #memes (1 with attachments)"
+    )
 
 
 def test_alert_embed_omits_the_sweep_line_when_there_was_nothing_else():
@@ -972,7 +1020,9 @@ async def test_allowing_a_member_lets_them_be_flagged_again(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_on_message_credits_a_photo_the_author_posted_in_another_message(monkeypatch):
+async def test_on_message_credits_a_photo_the_author_posted_in_another_message(
+    monkeypatch,
+):
     """The pitch and the photos arrive separately, so the photo has to count for the message
     that scored. Only matters for a message sitting one point below the line, which is why
     this one is deliberately thin -- anything blatant is over the threshold on wording alone
@@ -1043,8 +1093,12 @@ def test_neither_report_needs_an_image_to_flag():
 
 def test_a_curly_apostrophe_still_matches_the_phrase_list():
     """Typed on a phone this arrives as U+2019, which matched nothing before normalise()."""
-    curly, _ = antiscam.score_message("to anyone who’s interested", False, 3, REAL_RULES)
-    straight, _ = antiscam.score_message("to anyone who's interested", False, 3, REAL_RULES)
+    curly, _ = antiscam.score_message(
+        "to anyone who’s interested", False, 3, REAL_RULES
+    )
+    straight, _ = antiscam.score_message(
+        "to anyone who's interested", False, 3, REAL_RULES
+    )
     assert curly == straight
     assert curly > antiscam.age_weight(3, REAL_RULES["account_age_bands"])
 
@@ -1057,7 +1111,9 @@ def test_giveaway_wording_escalates_with_each_extra_phrase():
     weights, phrases = RULES["weights"], RULES["phrases"]["giveaway_phrase"]
     assert antiscam.giveaway_weight("nothing of interest here", phrases, weights) == 0
     assert antiscam.giveaway_weight("giving away my desk", phrases, weights) == 3
-    assert antiscam.giveaway_weight("giving away, upgrading my rig", phrases, weights) == 4
+    assert (
+        antiscam.giveaway_weight("giving away, upgrading my rig", phrases, weights) == 4
+    )
 
 
 def test_giveaway_wording_is_capped():
