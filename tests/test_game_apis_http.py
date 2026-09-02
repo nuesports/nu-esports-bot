@@ -15,7 +15,9 @@ class FakeResponse:
     def raise_for_status(self):
         if self.status >= 400:
             raise aiohttp.ClientResponseError(
-                request_info=SimpleNamespace(real_url=""), history=(), status=self.status,
+                request_info=SimpleNamespace(real_url=""),
+                history=(),
+                status=self.status,
             )
 
     async def json(self):
@@ -79,7 +81,9 @@ async def test_404_raises_immediately_without_retry(fake_sessions):
     fake_sessions.append(FakeResponse(404))
     with pytest.raises(GameAPIError) as exc_info:
         await http.fetch_json_with_retries("https://example.com")
-    assert exc_info.value.status == 404   # clients key their "not found" message off this
+    assert (
+        exc_info.value.status == 404
+    )  # clients key their "not found" message off this
 
 
 @pytest.mark.asyncio
@@ -104,4 +108,4 @@ async def test_exhausts_all_attempts_then_raises(fake_sessions):
         fake_sessions.append(TimeoutError())
     with pytest.raises(GameAPIError) as exc_info:
         await http.fetch_json_with_retries("https://example.com")
-    assert exc_info.value.status is None   # never got far enough to have one
+    assert exc_info.value.status is None  # never got far enough to have one

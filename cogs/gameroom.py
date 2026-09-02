@@ -1,3 +1,9 @@
+"""
+Gameroom information;
+
+Contains commands that fetch information about the Norris Game Room
+"""
+
 import datetime
 from zoneinfo import ZoneInfo
 
@@ -11,11 +17,15 @@ CENTRAL_TZ = ZoneInfo("America/Chicago")
 
 
 class Gameroom(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
+    def __init__(self, bot: discord.Bot) -> None:
+        self.bot: discord.Bot = bot
 
     @staticmethod
-    def _get_hours_for_day(adjusted_hours: dict, day: datetime.date, default: str):
+    def _get_hours_for_day(
+        adjusted_hours: dict[datetime.date | str, str],
+        day: datetime.date,
+        default: str,
+    ) -> str:
         value = adjusted_hours.get(day)
         if value is None:
             value = adjusted_hours.get(day.strftime("%Y-%m-%d"))
@@ -26,43 +36,48 @@ class Gameroom(commands.Cog):
     )
 
     @gameroom.command(
-            name="sethours", description="Set or clear an hours override for a date", guild_ids=[GUILD_ID]
+        name="sethours",
+        description="Set or clear an hours override for a date",
+        guild_ids=[GUILD_ID],
     )
-    async def sethours(self, 
-                       ctx: discord.ApplicationContext,
-                       start_date: discord.Option(
-                            str,
-                            description="Start date in YYYY-MM-DD format"
-                        ),
-                       end_date: discord.Option(
-                           str,
-                           description="(optional) End date in YYYY-MM-DD format",
-                           required=False
-                       ),
-                       regular_text: discord.Option(
-                           str,
-                           description="Text to display, leave blank to clear override(s)",
-                           required=False
-                       ),
-                       weekend_text: discord.Option(
-                           str,
-                           description="Text to display, on Fri/Sat/Sun",
-                           required=False
-                       )
-                    ):
+    async def sethours(
+        self,
+        ctx: discord.ApplicationContext,
+        start_date: str = discord.Option(description="Start date in YYYY-MM-DD format"),
+        end_date: str = discord.Option(
+            description="(optional) End date in YYYY-MM-DD format", required=False
+        ),
+        regular_text: str = discord.Option(
+            description="Text to display, leave blank to clear override(s)",
+            required=False,
+        ),
+        weekend_text: str = discord.Option(
+            description="Text to display, on Fri/Sat/Sun", required=False
+        ),
+    ) -> None:
         if not config.is_gameroom_staff(ctx.author):
-            await ctx.respond("You do not have permission to use this command.", ephemeral=True)
+            await ctx.respond(
+                "You do not have permission to use this command.", ephemeral=True
+            )
             return
 
         try:
-            start = datetime.datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=CENTRAL_TZ).date()
+            start = (
+                datetime.datetime.strptime(start_date, "%Y-%m-%d")
+                .replace(tzinfo=CENTRAL_TZ)
+                .date()
+            )
         except ValueError:
             await ctx.respond("Invalid start date. Use YYYY-MM-DD.", ephemeral=True)
             return
 
         if end_date:
             try:
-                end = datetime.datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=CENTRAL_TZ).date()
+                end = (
+                    datetime.datetime.strptime(end_date, "%Y-%m-%d")
+                    .replace(tzinfo=CENTRAL_TZ)
+                    .date()
+                )
             except ValueError:
                 await ctx.respond("Invalid end date. Use YYYY-MM-DD.", ephemeral=True)
                 return
@@ -75,24 +90,28 @@ class Gameroom(commands.Cog):
 
         span_days = (end - start).days + 1
         if span_days > 90:
-            await ctx.respond("Range too large (max 90 days) double check your range", ephemeral=True)
+            await ctx.respond(
+                "Range too large (max 90 days) double check your range", ephemeral=True
+            )
             return
 
         await ctx.defer()
 
-        #wipe past-due rows table-wide (not just this range) -- piggybacks on every sethours call
-        #instead of a separate cleanup job, using Central time's "today" rather than the DB server's own timezone
+        # wipe past-due rows table-wide (not just this range) -- piggybacks on every sethours call
+        # instead of a separate cleanup job, using Central time's "today" rather than the DB server's own timezone
         today_central = datetime.datetime.now(CENTRAL_TZ).date()
         await db.perform_one(
             "DELETE FROM gameroom_hours_overrides WHERE date < %s", (today_central,)
         )
 
         dates = [start + datetime.timedelta(days=i) for i in range(span_days)]
-        weekday_dates = [d for d in dates if d.weekday() not in (4, 5, 6)]  # Fri, Sat, Sun
+        weekday_dates = [
+            d for d in dates if d.weekday() not in (4, 5, 6)
+        ]  # Fri, Sat, Sun
         weekend_dates = [d for d in dates if d.weekday() in (4, 5, 6)]
 
-        to_set = []
-        to_clear = []
+        to_set: list[tuple[datetime.date, str]] = []
+        to_clear: list[datetime.date] = []
 
         if regular_text:
             to_set += [(d, regular_text) for d in weekday_dates]
@@ -118,10 +137,8 @@ class Gameroom(commands.Cog):
             )
         if to_clear:
             await db.perform_one(
-                "DELETE FROM gameroom_hours_overrides WHERE date = any(%s)",
-                (to_clear,)
+                "DELETE FROM gameroom_hours_overrides WHERE date = any(%s)", (to_clear,)
             )
-
 
         date_range = (
             start.strftime("%-m/%-d/%Y")
@@ -130,20 +147,26 @@ class Gameroom(commands.Cog):
         )
         day_word = "day" if span_days == 1 else "days"
         if not regular_text and not weekend_text:
-            await ctx.respond(f"Cleared overrides for {date_range} ({span_days} {day_word})")
+            await ctx.respond(
+                f"Cleared overrides for {date_range} ({span_days} {day_word})"
+            )
         elif weekend_text and not regular_text:
-            await ctx.respond(f"Set Fri-Sun hours for {date_range} ({span_days} {day_word}) to: {weekend_text} (weekdays left unchanged)")
+            await ctx.respond(
+                f"Set Fri-Sun hours for {date_range} ({span_days} {day_word}) to: {weekend_text} (weekdays left unchanged)"
+            )
         elif regular_text and not weekend_text:
-            await ctx.respond(f"Set hours for {date_range} ({span_days} {day_word}) to: {regular_text}")
+            await ctx.respond(
+                f"Set hours for {date_range} ({span_days} {day_word}) to: {regular_text}"
+            )
         else:
-            await ctx.respond(f"Updated hours for {date_range} ({span_days} {day_word}) -- weekdays: {regular_text}, Fri-Sun: {weekend_text}")
-        
-
+            await ctx.respond(
+                f"Updated hours for {date_range} ({span_days} {day_word}) -- weekdays: {regular_text}, Fri-Sun: {weekend_text}"
+            )
 
     @gameroom.command(
         name="hours", description="Lists current game room hours", guild_ids=[GUILD_ID]
     )
-    async def hours(self, ctx):
+    async def hours(self, ctx: discord.ApplicationContext) -> None:
         default_hours = config.gameroom_data["default_hours"]
 
         today = datetime.datetime.now(tz=CENTRAL_TZ).date()
@@ -151,7 +174,6 @@ class Gameroom(commands.Cog):
         end = start + datetime.timedelta(days=6)
         week = [start + datetime.timedelta(days=i) for i in range(7)]
 
-        
         rows = await db.fetch_all(
             "SELECT date, hours FROM gameroom_hours_overrides WHERE date BETWEEN %s AND %s",
             (start, end),
@@ -183,7 +205,7 @@ class Gameroom(commands.Cog):
         description="Lists games available on game room consoles",
         guild_ids=[GUILD_ID],
     )
-    async def games(self, ctx):
+    async def games(self, ctx: discord.ApplicationContext) -> None:
         games = config.gameroom_data["games"]
 
         embed = discord.Embed(
@@ -203,5 +225,5 @@ class Gameroom(commands.Cog):
         await ctx.respond("", embed=embed)
 
 
-def setup(bot):
+def setup(bot: discord.Bot) -> None:
     bot.add_cog(Gameroom(bot))

@@ -35,9 +35,11 @@ def test_multiplier_matches_the_inline_formula_it_replaced():
 
 # --- credit / try_deduct ---
 
+
 class Recorder:
     """Captures the statements wallet would have run, and dictates what rowcount
     perform_one reports back."""
+
     def __init__(self):
         self.calls = []
         self.rowcount = 1
@@ -91,7 +93,7 @@ async def test_try_deduct_reports_success_when_the_balance_covered_it(fake_db):
     assert await wallet.try_deduct(7, 100) is True
 
     sql, params = fake_db.calls[0]
-    assert "points >= %s" in sql        # the guard lives in the statement
+    assert "points >= %s" in sql  # the guard lives in the statement
     assert params == (100, 7, 100)
 
 
@@ -102,6 +104,7 @@ async def test_try_deduct_reports_failure_when_the_guard_rejected_it(fake_db):
 
 
 # --- distribute_payouts ---
+
 
 def test_payouts_always_add_up_to_the_whole_pot():
     """Rounding each share on its own paid out 399 of this 400-point pot."""
@@ -129,7 +132,7 @@ def test_the_leftover_goes_to_the_largest_fractional_share_first():
     payouts = wallet.distribute_payouts({1: 200, 2: 100}, 100)
 
     assert sum(payouts.values()) == 400
-    assert payouts[1] > payouts[2] * 2   # 267 vs 133, not 266 vs 134
+    assert payouts[1] > payouts[2] * 2  # 267 vs 133, not 266 vs 134
 
 
 def test_payouts_are_break_even_when_nobody_opposed():

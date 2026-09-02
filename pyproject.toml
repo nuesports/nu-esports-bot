@@ -15,6 +15,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pre-commit==4.6.2",
+    "ruff==0.16.5",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.0.0",
 ]
@@ -31,3 +32,28 @@ asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 
+
+[tool.mypy]
+# Must track requires-python. ruff format emits 3.14 syntax (PEP 758's
+# unparenthesized `except A, B:`, PEP 695's `type` statement), which mypy can
+# only parse when it is *running* on 3.14 -- hence `uvx --python 3.14` in both
+# the pre-commit hook and mypy.yml. This setting alone is not enough.
+python_version = "3.14"
+files = ["cogs", "utils"]
+ignore_missing_imports = true
+explicit_package_bases = true
+
+[tool.ruff.lint.flake8-bugbear]
+# discord.Option() in an argument default is py-cord's declarative option syntax,
+# read once at command registration -- not a mutable default shared between calls.
+extend-immutable-calls = ["discord.Option"]
+
+[tool.ruff.lint]
+# ANN: every function needs annotated parameters and a return type.
+extend-select = ["ANN"]
+# Parsed JSON from an external API genuinely has no static shape.
+ignore = ["ANN401"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test functions are uniformly `-> None` taking fixtures; annotating them is noise.
+"tests/*" = ["ANN"]

@@ -16,6 +16,7 @@ class FakeUser:
 @pytest.mark.asyncio
 async def test_balance_reads_own_points(migrated_db):
     from utils import db
+
     await db.perform_one("DELETE FROM users WHERE discordid = %s;", (TEST_DISCORDID,))
     try:
         await db.perform_one(
@@ -33,12 +34,15 @@ async def test_balance_reads_own_points(migrated_db):
         assert embed.title == "caviar's points"
         assert embed.description == "42 points"
     finally:
-        await db.perform_one("DELETE FROM users WHERE discordid = %s;", (TEST_DISCORDID,))
+        await db.perform_one(
+            "DELETE FROM users WHERE discordid = %s;", (TEST_DISCORDID,)
+        )
 
 
 @pytest.mark.asyncio
 async def test_balance_defaults_to_zero_when_no_row(migrated_db):
     from utils import db
+
     await db.perform_one("DELETE FROM users WHERE discordid = %s;", (TEST_DISCORDID,))
 
     user = FakeUser(TEST_DISCORDID, "caviar")
@@ -53,6 +57,7 @@ async def test_balance_defaults_to_zero_when_no_row(migrated_db):
 @pytest.mark.asyncio
 async def test_balance_targets_other_user_when_given(migrated_db):
     from utils import db
+
     other_id = TEST_DISCORDID + 1
     await db.perform_one("DELETE FROM users WHERE discordid = %s;", (other_id,))
     try:
@@ -74,6 +79,7 @@ async def test_balance_targets_other_user_when_given(migrated_db):
 
 
 # --- PredictionView ---
+
 
 class FakeBettor:
     def __init__(self, id):
@@ -152,7 +158,7 @@ async def test_prediction_odds_come_from_the_shared_payout_formula(prediction):
 
     prediction.update_embed()
 
-    assert prediction.odds_a == 4.0            # 1 + 300/100
+    assert prediction.odds_a == 4.0  # 1 + 300/100
     assert prediction.odds_b == 1 + 100 / 300
 
 
@@ -180,7 +186,7 @@ async def test_prediction_refuses_a_stake_submitted_after_the_lock(prediction):
     await prediction.modal_callback(FakeBettor(9), 5000, "Purple")
 
     assert 9 not in prediction.option_a_points
-    assert len(prediction.perform_one_calls) == 2   # no third deduction
+    assert len(prediction.perform_one_calls) == 2  # no third deduction
     prediction.update_embed()
     assert prediction.odds_a == odds_before
     assert "locked prediction" in prediction.message.replies[-1]
@@ -215,6 +221,7 @@ async def test_balance_reads_a_null_balance_as_zero(migrated_db):
     """users.points is nullable, and the comma format spec raises TypeError on None
     rather than printing it, so the zero has to land before the value reaches the embed."""
     from utils import db
+
     await db.perform_one("DELETE FROM users WHERE discordid = %s;", (TEST_DISCORDID,))
     try:
         await db.perform_one(
@@ -229,12 +236,15 @@ async def test_balance_reads_a_null_balance_as_zero(migrated_db):
         embed = ctx.followup.send_calls[0]["embed"]
         assert embed.description == "0 points"
     finally:
-        await db.perform_one("DELETE FROM users WHERE discordid = %s;", (TEST_DISCORDID,))
+        await db.perform_one(
+            "DELETE FROM users WHERE discordid = %s;", (TEST_DISCORDID,)
+        )
 
 
 @pytest.mark.asyncio
 async def test_balance_groups_a_large_balance_with_commas(migrated_db):
     from utils import db
+
     await db.perform_one("DELETE FROM users WHERE discordid = %s;", (TEST_DISCORDID,))
     try:
         await db.perform_one(
@@ -249,7 +259,9 @@ async def test_balance_groups_a_large_balance_with_commas(migrated_db):
         embed = ctx.followup.send_calls[0]["embed"]
         assert embed.description == "12,480 points"
     finally:
-        await db.perform_one("DELETE FROM users WHERE discordid = %s;", (TEST_DISCORDID,))
+        await db.perform_one(
+            "DELETE FROM users WHERE discordid = %s;", (TEST_DISCORDID,)
+        )
 
 
 @pytest.mark.asyncio

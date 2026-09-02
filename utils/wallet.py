@@ -24,8 +24,10 @@ def distribute_payouts(winning_bets: dict[int, int], losing_pot: int) -> dict[in
     exact = {uid: stake * multiplier for uid, stake in winning_bets.items()}
     payouts = {uid: int(value) for uid, value in exact.items()}
     # Ties keep insertion order, so the same book always splits the same way.
-    by_fraction = sorted(payouts, key=lambda uid: exact[uid] - payouts[uid], reverse=True)
-    for uid in by_fraction[:winning_pot + losing_pot - sum(payouts.values())]:
+    by_fraction = sorted(
+        payouts, key=lambda uid: exact[uid] - payouts[uid], reverse=True
+    )
+    for uid in by_fraction[: winning_pot + losing_pot - sum(payouts.values())]:
         payouts[uid] += 1
     return payouts
 

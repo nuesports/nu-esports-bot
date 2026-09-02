@@ -1,5 +1,6 @@
 import random
 import re
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -20,6 +21,9 @@ from utils.ranks import (
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
 GAME_CHOICES = list(config.game_data.keys())
+
+# Every editor view/modal takes a callback to run once the edit lands.
+OnDone = Callable[[discord.Interaction], Awaitable[None]]
 CUSTOM_EMOJI_RE = re.compile(r"^<a?:\w+:(?P<id>\d+)>$")
 
 ACCOUNT_EXAMPLE_CATEGORY = {
@@ -157,14 +161,14 @@ async def fetch_profile_data(discordid: int) -> dict:
     )
 
     stats_by_game = {row[0]: row for row in stats_rows}
-    roles_by_game = {}
+    roles_by_game: dict[str, list[str]] = {}
     for g, r in role_rows:
         roles_by_game.setdefault(g, []).append(r)
-    mains_by_game = {}
+    mains_by_game: dict[str, list[str]] = {}
     for g, m in main_rows:
         mains_by_game.setdefault(g, []).append(m)
     primary_by_game = {g: p for g, p in primary_rows}
-    role_ranks_by_game = {}
+    role_ranks_by_game: dict[str, dict[str, str]] = {}
     for g, r, label in role_rank_rows:
         role_ranks_by_game.setdefault(g, {})[r] = label
     account_by_game = {g: name for g, name, _ in account_rows}
@@ -360,8 +364,8 @@ def build_game_embed(
 class Profile(commands.Cog):
     """Cog housing the /profile command group:"""
 
-    def __init__(self, bot):
-        self.bot = bot
+    def __init__(self, bot: discord.Bot) -> None:
+        self.bot: discord.Bot = bot
 
     profile = discord.SlashCommandGroup(
         "profile", "Profile tools", guild_ids=[GUILD_ID]
@@ -407,7 +411,7 @@ class Profile(commands.Cog):
     async def bio(
         self,
         ctx: discord.ApplicationContext,
-        bio: discord.Option(str, name="bio", description="About you!"),
+        bio: str = discord.Option(name="bio", description="About you!"),
     ) -> None:
         """Set (or overwrite) your profile bio."""
         await ctx.defer(ephemeral=True)
@@ -433,14 +437,12 @@ class Profile(commands.Cog):
     async def picture(
         self,
         ctx: discord.ApplicationContext,
-        picture: discord.Option(
-            str,
+        picture: str = discord.Option(
             name="url",
             description="URL to picture to set on your profile",
             default=None,
         ),
-        option: discord.Option(
-            str,
+        option: str = discord.Option(
             name="position",
             description="Main or thumbnail",
             autocomplete=picture_autocomplete,
@@ -464,7 +466,6 @@ class Profile(commands.Cog):
                 ephemeral=True,
             )
             return
-        sql = None
         option = option.lower()
         if option == "main":
             sql = """
@@ -484,6 +485,12 @@ class Profile(commands.Cog):
                 thumbnail_url = EXCLUDED.thumbnail_url,
                 updated_at = CURRENT_TIMESTAMP;
             """
+        else:
+            # position is autocompleted, not a fixed choice list, so anything can arrive.
+            await ctx.followup.send(
+                "Position must be either 'main' or 'thumbnail'.", ephemeral=True
+            )
+            return
 
         await db.perform_one(sql, (ctx.author.id, picture))
 
@@ -503,9 +510,9 @@ class Profile(commands.Cog):
     async def account(
         self,
         ctx: discord.ApplicationContext,
-        game: discord.Option(str, choices=GAME_CHOICES),
-        identifier: discord.Option(
-            str, description="Riot ID/BattleTag/Steam ID or vanity"
+        game: str = discord.Option(choices=GAME_CHOICES),
+        identifier: str = discord.Option(
+            description="Riot ID/BattleTag/Steam ID or vanity"
         ),
     ) -> None:
         """Sets your account for a game"""
@@ -546,21 +553,18 @@ class Profile(commands.Cog):
     async def rank(
         self,
         ctx: discord.ApplicationContext,
-        game: discord.Option(
-            str,
+        game: str = discord.Option(
             name="game",
             description="Game to change something about",
             choices=GAME_CHOICES,
         ),
-        tier: discord.Option(
-            str,
+        tier: str = discord.Option(
             name="tier",
             description="Your rank tier (for per-role-ranks games, skips straight to picking which role it's for)",
             autocomplete=tier_autocomplete,
             default=None,
         ),
-        division: discord.Option(
-            str,
+        division: str = discord.Option(
             name="division",
             description="Your division (if applicable)",
             autocomplete=division_autocomplete,
@@ -577,7 +581,7 @@ class Profile(commands.Cog):
         if config.is_per_role_ranks(game):
             if tier is not None:
                 division_int, error = validate_tier_division(game, tier, division)
-                if error:
+                if division_int is None:
                     await ctx.followup.send(error, ephemeral=True)
                     return
                 label = format_rank_label(game, tier, division_int)
@@ -599,7 +603,7 @@ class Profile(commands.Cog):
             return
 
         division_int, error = validate_tier_division(game, tier, division)
-        if error:
+        if division_int is None:
             await ctx.followup.send(error, ephemeral=True)
             return
 
@@ -628,8 +632,7 @@ class Profile(commands.Cog):
     async def role(
         self,
         ctx: discord.ApplicationContext,
-        game: discord.Option(
-            str,
+        game: str = discord.Option(
             name="game",
             description="Game to change something about",
             choices=GAME_CHOICES,
@@ -660,8 +663,7 @@ class Profile(commands.Cog):
     async def main(
         self,
         ctx: discord.ApplicationContext,
-        game: discord.Option(
-            str,
+        game: str = discord.Option(
             name="game",
             description="Game to change something about",
             choices=GAME_CHOICES,
@@ -683,14 +685,12 @@ class Profile(commands.Cog):
     async def primary(
         self,
         ctx: discord.ApplicationContext,
-        game: discord.Option(
-            str,
+        game: str = discord.Option(
             name="game",
             description="Game to change something about",
             choices=GAME_CHOICES,
         ),
-        primary: discord.Option(
-            str,
+        primary: str = discord.Option(
             name="primary",
             description="Used for the little picture on your profile",
             autocomplete=primary_autocomplete,
@@ -748,11 +748,8 @@ class Profile(commands.Cog):
     async def tag(
         self,
         ctx: discord.ApplicationContext,
-        tag: discord.Option(
-            str,
-            name="tag",
-            description="Emoji tag to identify yourself by!",
-            default=None,
+        tag: str = discord.Option(
+            name="tag", description="Emoji tag to identify yourself by!", default=None
         ),
     ) -> None:
         """Set the emoji shown next to your name on your profile and in lobbies, or clear it if ommitted."""
@@ -786,11 +783,10 @@ class Profile(commands.Cog):
     async def view(
         self,
         ctx: discord.ApplicationContext,
-        user: discord.Option(
-            discord.Member, description="Defaults to you", default=None
+        user: discord.Member = discord.Option(
+            description="Defaults to you", default=None
         ),
-        game: discord.Option(
-            str,
+        game: str = discord.Option(
             name="game",
             description="Game to change something about",
             choices=GAME_CHOICES,
@@ -832,7 +828,7 @@ class Profile(commands.Cog):
         pages_games = [g for g in GAME_CHOICES if g in games_with_data]
 
         total_pages = len(pages_games) + 1
-        pages = [
+        pages: list[tuple[discord.Embed, Path | None]] = [
             (
                 build_home_embed(
                     target,
@@ -888,8 +884,8 @@ class Profile(commands.Cog):
     async def elo_view(
         self,
         ctx: discord.ApplicationContext,
-        user: discord.Option(
-            discord.Member, description="Player to check elo for", default=None
+        user: discord.Member = discord.Option(
+            description="Player to check elo for", default=None
         ),
     ) -> None:
         """Show a player's elo for every game they've played. Game heads only."""
@@ -924,7 +920,7 @@ class Profile(commands.Cog):
         elo_by_game = {
             game: (value, games_played) for game, value, games_played in rows
         }
-        role_elo_by_game = {}
+        role_elo_by_game: dict[str, dict[str, tuple[float, int]]] = {}
         for game, role, value, games_played in role_rows:
             role_elo_by_game.setdefault(game, {})[role] = (value, games_played)
 
@@ -978,7 +974,9 @@ class Profile(commands.Cog):
 class ProfilePaginator(discord.ui.View):
     """Left/right paginator over a list of embeds, restricted to whoever ran the command."""
 
-    def __init__(self, requester_id, pages, start_index=0):
+    def __init__(
+        self, requester_id: int, pages: list[discord.Embed], start_index: int = 0
+    ) -> None:
         super().__init__(timeout=120, disable_on_timeout=True)
         self.requester_id = requester_id
         self.pages = pages
@@ -1035,7 +1033,11 @@ class RoleSelectView(discord.ui.View):
     """
 
     def __init__(
-        self, requester_id: int, game: str, current_roles: list[str], on_done=None
+        self,
+        requester_id: int,
+        game: str,
+        current_roles: list[str],
+        on_done: OnDone | None = None,
     ) -> None:
         super().__init__(timeout=120)
         self.requester_id = requester_id
@@ -1059,7 +1061,7 @@ class RoleSelectView(discord.ui.View):
         """Checks if the interactor is the original requester"""
         return interaction.user.id == self.requester_id
 
-    async def on_select(self, interaction: discord.Interaction) -> bool:
+    async def on_select(self, interaction: discord.Interaction) -> None:
         """Overwrite the player's roles for this game with whatever's currently selected."""
         chosen = self.select.values
 
@@ -1092,7 +1094,11 @@ class MainsModal(discord.ui.Modal):
     """
 
     def __init__(
-        self, requester_id: int, game: str, current_mains: list[str], on_done=None
+        self,
+        requester_id: int,
+        game: str,
+        current_mains: list[str],
+        on_done: OnDone | None = None,
     ) -> None:
         super().__init__(title=f"Set your {game.title()} mains")
         self.requester_id = requester_id
@@ -1118,7 +1124,8 @@ class MainsModal(discord.ui.Modal):
             for alias, canonical in config.main_aliases(self.game).items()
         }
         lookup.update({m.lower(): m for m in get_mains(self.game)})
-        resolved, invalid = [], []
+        resolved: list[str] = []
+        invalid: list[str] = []
         for c in candidates:
             match = lookup.get(c.lower())
             (resolved if match else invalid).append(match or c)
@@ -1178,12 +1185,12 @@ class RankSelectView(discord.ui.View):
     dropdown in the same message; otherwise saves immediately with division=1.
     """
 
-    def __init__(self, requester_id: int, game: str, on_done) -> None:
+    def __init__(self, requester_id: int, game: str, on_done: OnDone) -> None:
         super().__init__(timeout=120)
         self.requester_id = requester_id
         self.game = game
         self.on_done = on_done
-        self.tier = None
+        self.tier: str | None = None
 
         options = [discord.SelectOption(label=t, value=t) for t in get_tiers(game)]
         self.select = discord.ui.Select(placeholder="Choose your tier", options=options)
@@ -1194,9 +1201,10 @@ class RankSelectView(discord.ui.View):
         return interaction.user.id == self.requester_id
 
     async def on_tier_select(self, interaction: discord.Interaction) -> None:
-        self.tier = self.select.values[0]
+        tier = self.select.values[0]
+        self.tier = tier
 
-        if not tier_has_divisions(self.game, self.tier):
+        if not tier_has_divisions(self.game, tier):
             await self.save(interaction, division=1)
             return
 
@@ -1220,6 +1228,8 @@ class RankSelectView(discord.ui.View):
         await self.save(interaction, division)
 
     async def save(self, interaction: discord.Interaction, division: int) -> None:
+        if self.tier is None:
+            return  # unreachable: a tier is always picked before save()
         rank_value = compute_rank_value(self.game, self.tier, division)
         rank_label = format_rank_label(self.game, self.tier, division)
 
@@ -1253,7 +1263,7 @@ class RoleRankSelectView(discord.ui.View):
         self,
         requester_id: int,
         game: str,
-        on_done=None,
+        on_done: OnDone | None = None,
         tier: str | None = None,
         division: int | None = None,
     ) -> None:
@@ -1278,7 +1288,7 @@ class RoleRankSelectView(discord.ui.View):
     async def on_role_select(self, interaction: discord.Interaction) -> None:
         self.role = self.select.values[0]
 
-        if self.tier is not None:
+        if self.tier is not None and self.division is not None:
             await self.save(interaction, self.division)
             return
 
@@ -1320,6 +1330,8 @@ class RoleRankSelectView(discord.ui.View):
         await self.save(interaction, division)
 
     async def save(self, interaction: discord.Interaction, division: int) -> None:
+        if self.tier is None:
+            return  # unreachable: a tier is always picked before save()
         rank_value = compute_rank_value(self.game, self.tier, division)
         rank_label = format_rank_label(self.game, self.tier, division)
 
@@ -1353,7 +1365,7 @@ class PrimarySelectView(discord.ui.View):
         game: str,
         mains: list[str],
         current_primary: str | None,
-        on_done,
+        on_done: OnDone,
     ) -> None:
         super().__init__(timeout=120)
         self.requester_id = requester_id
@@ -1390,7 +1402,9 @@ class PrimarySelectView(discord.ui.View):
 class TagModal(discord.ui.Modal):
     """Single-field modal for setting a player's emoji tag."""
 
-    def __init__(self, requester_id: int, current_tag: str | None, on_done) -> None:
+    def __init__(
+        self, requester_id: int, current_tag: str | None, on_done: OnDone
+    ) -> None:
         super().__init__(title="Set your tag")
         self.requester_id = requester_id
         self.on_done = on_done
@@ -1429,7 +1443,9 @@ class TagModal(discord.ui.Modal):
 class BioModal(discord.ui.Modal):
     """Single-field modal for setting a player's bio."""
 
-    def __init__(self, requester_id: int, current_bio: str | None, on_done) -> None:
+    def __init__(
+        self, requester_id: int, current_bio: str | None, on_done: OnDone
+    ) -> None:
         super().__init__(title="Set your bio")
         self.requester_id = requester_id
         self.on_done = on_done
@@ -1463,7 +1479,7 @@ class PictureModal(discord.ui.Modal):
     """Single-field modal for setting a player's main picture or thumbnail URL, for one fixed position."""
 
     def __init__(
-        self, requester_id: int, position: str, current_url: str | None, on_done
+        self, requester_id: int, position: str, current_url: str | None, on_done: OnDone
     ) -> None:
         super().__init__(title=f"Set your {position} picture")
         self.requester_id = requester_id
@@ -1518,7 +1534,11 @@ class AccountModal(discord.ui.Modal):
     """Single-field modal for linking an external game account, via /profile setup."""
 
     def __init__(
-        self, requester_id: int, game: str, current_identifier: str | None, on_done
+        self,
+        requester_id: int,
+        game: str,
+        current_identifier: str | None,
+        on_done: OnDone,
     ) -> None:
         super().__init__(title=f"Link your {game.title()} account")
         self.requester_id = requester_id
@@ -1575,7 +1595,7 @@ class AccountModal(discord.ui.Modal):
 class ResetConfirmView(discord.ui.View):
     """Confirm/cancel guard in front of the destructive per-game reset button."""
 
-    def __init__(self, requester_id: int, game: str, on_done) -> None:
+    def __init__(self, requester_id: int, game: str, on_done: OnDone) -> None:
         super().__init__(timeout=60)
         self.requester_id = requester_id
         self.game = game
@@ -1895,5 +1915,5 @@ class ProfileSetupView(discord.ui.View):
         await self.refresh_page(interaction)
 
 
-def setup(bot: discord.Bot):
+def setup(bot: discord.Bot) -> None:
     bot.add_cog(Profile(bot))

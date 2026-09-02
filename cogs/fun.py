@@ -1,5 +1,6 @@
 import asyncio
 import random
+from typing import Any
 
 import discord
 from discord.ext import commands
@@ -9,22 +10,23 @@ from utils import config
 GUILD_ID = config.secrets["discord"]["guild_id"]
 TYST_STICKER_ID = config.config["fun"]["stickers"]["TYST"]
 
+
 class Fun(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
+    def __init__(self, bot: discord.Bot) -> None:
+        self.bot: discord.Bot = bot
         # Track active mute tasks and original permissions for Hannah
-        self.hannah_mute_state = {
+        self.hannah_mute_state: dict[str, Any] = {
             "text_unmute_task": None,
             "voice_unmute_task": None,
             "original_text_permissions": {},  # {channel_id: send_messages_value}
-        }      
+        }
 
     @discord.slash_command(
         name="mutehannah",
         description="Mutes Hannah for 3 minutes in text and voice",
         guild_ids=[GUILD_ID],
     )
-    async def mutehannah(self, ctx):
+    async def mutehannah(self, ctx: discord.ApplicationContext) -> None:
         # Check if the user has the required role
         required_role_id = config.config["fun"]["hannah-haters"]
         if not ctx.author.get_role(required_role_id):
@@ -77,11 +79,11 @@ class Fun(commands.Cog):
                 await channel.set_permissions(
                     member, overwrite=overwrite, reason="Muted by /mutehannah command"
                 )
-            except (discord.Forbidden, discord.HTTPException):
+            except discord.Forbidden, discord.HTTPException:
                 pass  # Skip channels where we don't have permission
 
         # Schedule permission restore after 3 minutes
-        async def restore_text_permissions():
+        async def restore_text_permissions() -> None:
             try:
                 await asyncio.sleep(180)
                 for channel in text_channels:
@@ -106,7 +108,7 @@ class Fun(commands.Cog):
                                 overwrite=overwrite,
                                 reason="Auto-unmute after 3 minutes",
                             )
-                    except (discord.Forbidden, discord.HTTPException):
+                    except discord.Forbidden, discord.HTTPException:
                         pass  # Silently fail if we can't restore
 
                 # Clear the stored permissions and task reference
@@ -129,7 +131,7 @@ class Fun(commands.Cog):
                 voice_muted = True
 
                 # Schedule unmute after 3 minutes
-                async def unmute_after_delay():
+                async def unmute_after_delay() -> None:
                     try:
                         await asyncio.sleep(180)
                         try:
@@ -138,7 +140,7 @@ class Fun(commands.Cog):
                                 await member.edit(
                                     mute=False, reason="Auto-unmute after 3 minutes"
                                 )
-                        except (discord.Forbidden, discord.HTTPException):
+                        except discord.Forbidden, discord.HTTPException:
                             pass  # Silently fail if we can't unmute
 
                         # Clear task reference
@@ -174,7 +176,7 @@ class Fun(commands.Cog):
         description="Immediately unmutes Hannah (removes all restrictions)",
         guild_ids=[GUILD_ID],
     )
-    async def unmutehannah(self, ctx):
+    async def unmutehannah(self, ctx: discord.ApplicationContext) -> None:
         # Check if the user has the required role
         required_role_id = config.config["fun"]["hannah-haters"]
         if not ctx.author.get_role(required_role_id):
@@ -240,7 +242,7 @@ class Fun(commands.Cog):
                         reason="Unmuted by /unmutehannah command",
                     )
                 text_unmuted = True
-            except (discord.Forbidden, discord.HTTPException):
+            except discord.Forbidden, discord.HTTPException:
                 pass  # Skip channels where we don't have permission
 
         # Clear the stored permissions
@@ -252,7 +254,7 @@ class Fun(commands.Cog):
             try:
                 await member.edit(mute=False, reason="Unmuted by /unmutehannah command")
                 voice_unmuted = True
-            except (discord.Forbidden, discord.HTTPException):
+            except discord.Forbidden, discord.HTTPException:
                 pass  # Silently fail if we can't unmute
 
         # Send confirmation message
@@ -266,28 +268,31 @@ class Fun(commands.Cog):
             await ctx.respond("Hannah was not muted or I don't have permissions!")
 
     @commands.Cog.listener()
-    async def on_message(self, message):
+    async def on_message(self, message: discord.Message) -> None:
         if message.author == self.bot.user:
             return
 
-        if output := chess(self, message):
-            await message.add_reaction(output)
+        if chess_emoji := chess(self, message):
+            await message.add_reaction(chess_emoji)
 
-        if output := await ty_stan(message):
-            await message.reply(output)
+        # ty_stan also returns False when nothing matched, so narrow to the
+        # reply-worthy case rather than testing truthiness.
+        tyst_reply = await ty_stan(message)
+        if isinstance(tyst_reply, str):
+            await message.reply(tyst_reply)
 
-        if output := i_love_osu(message):
-            await message.reply(output)
+        if osu_reply := i_love_osu(message):
+            await message.reply(osu_reply)
 
-        if output := oh_lord(message):
-            await message.reply(output)
+        if lord_reply := oh_lord(message):
+            await message.reply(lord_reply)
 
-        if output := special_interactions(message):
-            for emoji in output:
+        if special_emojis := special_interactions(message):
+            for emoji in special_emojis:
                 await message.add_reaction(emoji)
 
 
-def chess(cog, message):
+def chess(cog: Fun, message: discord.Message) -> str | None:
     """Reacts with a random chess-piece emoji when the bot is @mentioned.
 
     Plain function, not a cog method -- takes `cog` explicitly just to reach
@@ -300,24 +305,28 @@ def chess(cog, message):
         emoji, id = random.choice(list(chess_emojis.items()))
         output = f"<:{emoji}:{id}>"
         return output
+    return None
 
-async def ty_stan(message):
+
+async def ty_stan(message: discord.Message) -> str | bool | None:
     """Returns a string for on_message to reply with, or None/False if there's
     nothing more to do -- including when a sticker was found, since that branch
     already sends its own reply and shouldn't also get echoed by the caller."""
     lower_content = message.content.lower()
-    if random.randint(1, 100) <= 10 and ("thank you shannon tan" in lower_content or "tyst" in lower_content):
+    if random.randint(1, 100) <= 10 and (
+        "thank you shannon tan" in lower_content or "tyst" in lower_content
+    ):
         sticker = discord.utils.get(message.guild.stickers, id=TYST_STICKER_ID)
         if sticker is not None:
             await message.reply(
-                "THANK YOU SHANNON TAN THANK YOU SHANNON TAN",
-                stickers=[sticker]
+                "THANK YOU SHANNON TAN THANK YOU SHANNON TAN", stickers=[sticker]
             )
             return None
         return "THANK YOU SHANNON TAN"
     return False
 
-def i_love_osu(message):
+
+def i_love_osu(message: discord.Message) -> str | None:
     lower_content = message.content.lower()
     if "i love osu" in lower_content:
         output = "Osu 😻"
@@ -325,7 +334,7 @@ def i_love_osu(message):
     return None
 
 
-def oh_lord(message):
+def oh_lord(message: discord.Message) -> str | None:
     lower_content = message.content.lower()
     if random.randint(1, 100) <= 10 and "oh lord" in lower_content:
         output = "https://www.youtube.com/watch?v=YsoP6bjADic"
@@ -333,7 +342,7 @@ def oh_lord(message):
     return None
 
 
-def special_interactions(message):
+def special_interactions(message: discord.Message) -> list[str] | None:
     special_users = config.config["fun"]["special_users"]
     if (
         special_users
@@ -345,5 +354,5 @@ def special_interactions(message):
     return None
 
 
-def setup(bot):
+def setup(bot: discord.Bot) -> None:
     bot.add_cog(Fun(bot))

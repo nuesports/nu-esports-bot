@@ -8,7 +8,7 @@ bot = discord.Bot(intents=discord.Intents.all())
 
 
 @bot.event
-async def on_ready():
+async def on_ready() -> None:
     await db.open_pool()
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
 
@@ -36,7 +36,7 @@ cogs_list = [
     "profile",
     "leaderboard",
     "github_backlog",
-    "sushi"
+    "sushi",
 ]
 
 for cog in cogs_list:

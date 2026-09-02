@@ -11,6 +11,7 @@ import pytest_asyncio
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+
 def _stage(example_name: str, real_name: str) -> None:
     """Stages the config and secrets yamls if they exist.
     If not, copies the examples to be used instead"""
@@ -18,6 +19,7 @@ def _stage(example_name: str, real_name: str) -> None:
     real = Path(real_name)
     if not real.exists():
         shutil.copy(example, real)
+
 
 _stage("config.example.yaml", "config.yaml")
 _stage("secrets.example.yaml", "secrets.yaml")
@@ -37,6 +39,7 @@ def select_interaction():
 class FakeMessage:
     """Stands in for whatever ctx.followup.send()/channel.send() returns -- just
     enough surface for callers that edit or delete the message afterwards."""
+
     def __init__(self):
         self.edit_calls = []
         self.replies = []
@@ -66,6 +69,7 @@ class FakeApplicationContext:
     """Stands in for discord.ApplicationContext -- covers the handful of attributes
     and methods command handlers actually touch (defer/respond/followup, author/user,
     channel), shared across test files since several commands need the same shape."""
+
     def __init__(self, author, channel=None):
         self.author = author
         self.user = author
@@ -85,6 +89,7 @@ class FakeInteractionResponse:
     """Stands in for interaction.response. Every branch a button/modal callback can
     take ends in exactly one of these calls, so recording them is how tests tell
     which branch ran."""
+
     def __init__(self):
         self.messages = []
         self.edits = []
@@ -108,6 +113,7 @@ class FakeInteraction:
     """Stands in for discord.Interaction -- the component-callback counterpart to
     FakeApplicationContext, which only covers slash commands. Views and modals reach
     for response/followup/user/client, so those are what this carries."""
+
     def __init__(self, user, client=None):
         self.user = user
         self.client = client
@@ -138,5 +144,6 @@ async def migrated_db():
     configured in pyproject.toml -- the pool it opens has to stay valid for every
     test that uses it, and an async connection pool can't cross event loops."""
     from utils import db, migrate
+
     await migrate.run_migrations()
     await db.open_pool()

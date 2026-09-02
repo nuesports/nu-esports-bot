@@ -45,7 +45,9 @@ STATE_TO_NAME = {
 }
 
 
-async def reservation_autocomplete(ctx: discord.AutocompleteContext):
+async def reservation_autocomplete(
+    ctx: discord.AutocompleteContext,
+) -> list[discord.OptionChoice]:
     """Autocomplete for user's future reservations"""
     # Format username to match manager field in database
     user = ctx.interaction.user
@@ -73,10 +75,10 @@ async def reservation_autocomplete(ctx: discord.AutocompleteContext):
 
 
 class PCs(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
+    def __init__(self, bot: discord.Bot) -> None:
+        self.bot: discord.Bot = bot
         # Team to prime time quota mapping
-        self.team_prime_time_quota = {
+        self.team_prime_time_quota: dict[str, int] = {
             "Valorant White": 2,
             "Valorant Purple": 1,
             "Overwatch White": 1,
@@ -90,14 +92,14 @@ class PCs(commands.Cog):
         }
         # Staff ping index for cycling through gameroom staff. None until the first
         # ping loads it from the db -- see next_staff_index().
-        self.staff_ping_index = None
+        self.staff_ping_index: int | None = None
         # Track reservation messages pending acknowledgment
         # Format: {message_id: {"staff_id": int, "channel_id": int, "sent_at": datetime, "team": str}}
-        self.pending_acknowledgments = {}
+        self.pending_acknowledgments: dict[int, dict] = {}
         # Start background task
         self.check_pending_acknowledgments.start()
 
-    async def next_staff_index(self):
+    async def next_staff_index(self) -> int:
         """Return the staff member whose turn it is, and advance the rotation.
 
         The index is persisted so the rotation survives a restart -- it used to reset
@@ -121,7 +123,9 @@ class PCs(commands.Cog):
         return current
 
     @commands.Cog.listener()
-    async def on_reaction_add(self, reaction, user):
+    async def on_reaction_add(
+        self, reaction: discord.Reaction, user: discord.User | discord.Member
+    ) -> None:
         """Remove reservation from pending when staff reacts to acknowledge"""
         if user.bot:
             return
@@ -129,7 +133,7 @@ class PCs(commands.Cog):
             del self.pending_acknowledgments[reaction.message.id]
 
     @tasks.loop(hours=1)
-    async def check_pending_acknowledgments(self):
+    async def check_pending_acknowledgments(self) -> None:
         """Re-ping staff for reservations that haven't been acknowledged after 24 hours"""
         now = datetime.now(CENTRAL_TZ)
         reminder_threshold = timedelta(hours=24)
@@ -144,7 +148,7 @@ class PCs(commands.Cog):
                 del self.pending_acknowledgments[msg_id]
 
     @check_pending_acknowledgments.before_loop
-    async def before_check_pending_acknowledgments(self):
+    async def before_check_pending_acknowledgments(self) -> None:
         """Wait until bot is ready before starting the loop"""
         await self.bot.wait_until_ready()
 
@@ -267,7 +271,7 @@ class PCs(commands.Cog):
         end_time: datetime,
         manager: str,
         is_prime_time: bool,
-    ) -> int:
+    ) -> int | None:
         """Save a reservation to the database and return its ID"""
         sql = """
             INSERT INTO reservations (team, pcs, start_time, end_time, manager, is_prime_time)
@@ -287,7 +291,7 @@ class PCs(commands.Cog):
         end_time: datetime,
         cancelled_by: str,
         is_prime_time: bool,
-    ):
+    ) -> None:
         """Send cancellation notification to staff channel"""
         try:
             channel_id = config.config["reservations"]["channel"]
@@ -343,7 +347,9 @@ class PCs(commands.Cog):
         except discord.HTTPException as e:
             print(f"Failed to send cancellation notification: {e}")
 
-    async def cog_command_error(self, ctx, error):
+    async def cog_command_error(
+        self, ctx: discord.ApplicationContext, error: discord.DiscordException
+    ) -> None:
         """Handle errors for commands in this cog"""
         if isinstance(error, commands.CommandOnCooldown):
             minutes, seconds = divmod(int(error.retry_after), 60)
@@ -463,7 +469,7 @@ class PCs(commands.Cog):
 
     async def check_conflicts(
         self, start_time: datetime, end_time: datetime, num_pcs: int
-    ) -> tuple[bool, str, str]:
+    ) -> tuple[bool, str | None, str | None]:
         """
         Check for conflicts with existing reservations.
         Returns (has_conflict, conflicting_team, conflicting_manager)
@@ -482,12 +488,12 @@ class PCs(commands.Cog):
             time_points.add(res["start_time"])
             time_points.add(res["end_time"])
 
-        time_points = sorted(time_points)
+        ordered_points = sorted(time_points)
 
         # Check each interval
-        for i in range(len(time_points) - 1):
-            interval_start = time_points[i]
-            interval_end = time_points[i + 1]
+        for i in range(len(ordered_points) - 1):
+            interval_start = ordered_points[i]
+            interval_end = ordered_points[i + 1]
 
             # Skip intervals outside our requested range
             if interval_end <= start_time or interval_start >= end_time:
@@ -569,7 +575,7 @@ class PCs(commands.Cog):
             return []
 
         # Allocate PCs with preference for back room, then contiguous main room
-        allocated = []
+        allocated: list[int] = []
 
         # First, allocate back room PCs (14, 15, 0/streaming)
         back_room_order = [14, 15, 0]
@@ -620,6 +626,7 @@ class PCs(commands.Cog):
                 if attempt == max_attempts - 1:
                     raise
                 await asyncio.sleep(retry_delay_seconds)
+        raise AssertionError("unreachable: the final attempt always raises")
 
     @staticmethod
     def normalize_key(key: str) -> str:
@@ -685,7 +692,7 @@ class PCs(commands.Cog):
             filtered_data.items(), key=lambda kv: PCs.extract_sort_key(kv[0])
         )
 
-        upcoming_reservations = {}
+        upcoming_reservations: dict[str, int] = {}
         currently_reserved = set()
         if reservations:
             THRESHOLD_MINUTES = 30
@@ -892,7 +899,9 @@ class PCs(commands.Cog):
             except OSError, ValueError:
                 return None
 
-        def draw_text(entry: dict, left_anchor_x: int, y: int, align_right: bool):
+        def draw_text(
+            entry: dict, left_anchor_x: int, y: int, align_right: bool
+        ) -> None:
             main_font = bold_font if entry["should_bold"] else regular_font
             main_text, warning_text = build_text_parts(entry)
             main_w = 0
@@ -939,7 +948,7 @@ class PCs(commands.Cog):
                     font=warning_font,
                 )
 
-        def draw_pc_icon(entry: dict, square_x: int, square_y: int):
+        def draw_pc_icon(entry: dict, square_x: int, square_y: int) -> None:
             pc_num = entry.get("pc_num")
             color = PCs.get_entry_icon_color(entry)
             if isinstance(pc_num, int):
@@ -1041,7 +1050,7 @@ class PCs(commands.Cog):
         return "default"
 
     @staticmethod
-    def pcs_cooldown(ctx):
+    def pcs_cooldown(ctx: discord.ApplicationContext) -> commands.Cooldown | None:
         if config.is_gameroom_staff(ctx.author):
             return None
         return commands.Cooldown(1, 300)
@@ -1050,7 +1059,7 @@ class PCs(commands.Cog):
         name="pcs", description="Show PC statuses as a color grid", guild_ids=[GUILD_ID]
     )
     @commands.dynamic_cooldown(pcs_cooldown, commands.BucketType.user)
-    async def pcs(self, ctx):
+    async def pcs(self, ctx: discord.ApplicationContext) -> None:
         in_bot_channel = ctx.channel.id == BOT_CHANNEL_ID
         await ctx.defer(ephemeral=(not in_bot_channel))
         now = datetime.now(CENTRAL_TZ)
@@ -1152,14 +1161,13 @@ class PCs(commands.Cog):
     @commands.cooldown(1, 300, commands.BucketType.user)
     async def pc(
         self,
-        ctx,
-        pc_number: discord.Option(
-            str,
+        ctx: discord.ApplicationContext,
+        pc_number: str = discord.Option(
             name="pc_number",
             description="PC number (e.g., 1 for Desk 1, 15 for Desk 15)",
             required=True,
         ),
-    ):
+    ) -> None:
         await ctx.defer()
         try:
             data = await self.fetch_pcs()
@@ -1277,14 +1285,13 @@ class PCs(commands.Cog):
     )
     async def reservations(
         self,
-        ctx,
-        date: discord.Option(
-            str,
+        ctx: discord.ApplicationContext,
+        date: str = discord.Option(
             name="date",
             description="Date in YYYY-MM-DD format (default: today)",
             required=False,
         ),
-    ):
+    ) -> None:
         await ctx.defer()
 
         # Parse or default to today (in Central Time)
@@ -1438,9 +1445,8 @@ class PCs(commands.Cog):
     )
     async def reserve(
         self,
-        ctx,
-        team: discord.Option(
-            str,
+        ctx: discord.ApplicationContext,
+        team: str = discord.Option(
             name="team",
             description="Your team",
             choices=[
@@ -1455,7 +1461,7 @@ class PCs(commands.Cog):
             ],
             required=True,
         ),
-        num_pcs: discord.Option(
+        num_pcs: int = discord.Option(
             int,
             name="num_pcs",
             description="Number of PCs to reserve (1-8)",
@@ -1463,14 +1469,13 @@ class PCs(commands.Cog):
             max_value=8,
             required=True,
         ),
-        res_type: discord.Option(
-            str,
+        res_type: str = discord.Option(
             name="type",
             description="Scrim or match",
             choices=["Scrim", "Match"],
             required=True,
         ),
-    ):
+    ) -> None:
         is_bot_dev = config.is_bot_dev(ctx.author)
 
         if not config.can_reserve(ctx.author):
@@ -1489,7 +1494,7 @@ class PCs(commands.Cog):
         description="Reserve all PCs for external event (staff only)",
         guild_ids=[GUILD_ID],
     )
-    async def reserve_external(self, ctx):
+    async def reserve_external(self, ctx: discord.ApplicationContext) -> None:
         # Check if user is staff
         if not config.is_gameroom_staff(ctx.author):
             await ctx.respond(
@@ -1509,15 +1514,14 @@ class PCs(commands.Cog):
     )
     async def cancel_reservation(
         self,
-        ctx,
-        reservation: discord.Option(
-            str,
+        ctx: discord.ApplicationContext,
+        reservation: str = discord.Option(
             name="reservation",
             description="Select a reservation to cancel",
             autocomplete=reservation_autocomplete,
             required=True,
         ),
-    ):
+    ) -> None:
         is_bot_dev = config.is_bot_dev(ctx.author)
 
         if not config.can_reserve(ctx.author):
@@ -1650,7 +1654,7 @@ class PCs(commands.Cog):
             current_time += timedelta(minutes=30)
 
         # Initialize grid: desk -> dict with 'reserved' and 'pending' sets of time slot indices
-        desk_reservations = {
+        desk_reservations: dict[str, dict[str, set[int]]] = {
             desk: {"reserved": set(), "pending": set()} for desk in all_desks
         }
 
@@ -1658,10 +1662,8 @@ class PCs(commands.Cog):
         for res in reservations:
             machines = res.get("machines", [])
 
-            start_time = PCs.to_central_time(
-                datetime.fromisoformat(res.get("start_time"))
-            )
-            end_time = PCs.to_central_time(datetime.fromisoformat(res.get("end_time")))
+            start_time = PCs.to_central_time(datetime.fromisoformat(res["start_time"]))
+            end_time = PCs.to_central_time(datetime.fromisoformat(res["end_time"]))
 
             # Mark time slots as reserved for each machine
             for machine in machines:
@@ -1679,8 +1681,8 @@ class PCs(commands.Cog):
         if pending_reservations:
             for res in pending_reservations:
                 pcs = res.get("pcs", [])
-                start_time = PCs.to_central_time(res.get("start_time"))
-                end_time = PCs.to_central_time(res.get("end_time"))
+                start_time = PCs.to_central_time(res["start_time"])
+                end_time = PCs.to_central_time(res["end_time"])
 
                 # Mark time slots as pending for each PC
                 for pc_num in pcs:
@@ -1788,13 +1790,13 @@ class ReservationTimeModal(discord.ui.Modal):
         num_pcs: int,
         res_type: str,
         is_bot_dev: bool = False,
-    ):
+    ) -> None:
         super().__init__(title="Reserve PCs - Set Time")
-        self.cog = cog
-        self.team = team
-        self.num_pcs = num_pcs
-        self.res_type = res_type
-        self.is_bot_dev = is_bot_dev
+        self.cog: PCs = cog
+        self.team: str = team
+        self.num_pcs: int = num_pcs
+        self.res_type: str = res_type
+        self.is_bot_dev: bool = is_bot_dev
 
         # Calculate example date as today + 2 days (minimum advance booking)
         example_date = (datetime.now(CENTRAL_TZ) + timedelta(days=2)).strftime(
@@ -1827,7 +1829,7 @@ class ReservationTimeModal(discord.ui.Modal):
             )
         )
 
-    async def callback(self, interaction: discord.Interaction):
+    async def callback(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
 
         # Get values from modal
@@ -2028,9 +2030,9 @@ class ReservationTimeModal(discord.ui.Modal):
 
 
 class ExternalReservationTimeModal(discord.ui.Modal):
-    def __init__(self, cog: PCs):
+    def __init__(self, cog: PCs) -> None:
         super().__init__(title="External Reservation - Set Time")
-        self.cog = cog
+        self.cog: PCs = cog
 
         # Calculate example date as today (no advance booking requirement for external)
         example_date = datetime.now(CENTRAL_TZ).strftime("%Y-%m-%d")
@@ -2061,7 +2063,7 @@ class ExternalReservationTimeModal(discord.ui.Modal):
             )
         )
 
-    async def callback(self, interaction: discord.Interaction):
+    async def callback(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
 
         # Get values from modal
@@ -2144,14 +2146,14 @@ class ReservationView(discord.ui.View):
         target_date: datetime,
         cog: PCs,
         pending_reservations: list[dict] | None = None,
-    ):
+    ) -> None:
         super().__init__(timeout=600)
-        self.reservations = reservations
-        self.target_date = target_date
-        self.cog = cog
-        self.pending_reservations = pending_reservations or []
+        self.reservations: list[dict] = reservations
+        self.target_date: datetime = target_date
+        self.cog: PCs = cog
+        self.pending_reservations: list[dict] = pending_reservations or []
 
-    def get_hours_for_range(self):
+    def get_hours_for_range(self) -> tuple[int, int, int]:
         """Get start/end hours based on day of week"""
         # Friday (4), Saturday (5), Sunday (6) open at noon, else 2pm
         is_weekend = self.target_date.weekday() >= 4
@@ -2212,7 +2214,7 @@ class ReservationView(discord.ui.View):
         file = discord.File(image_buffer, filename="reservations.png")
         return embeds, file
 
-    async def _fetch_and_update(self, new_date: datetime):
+    async def _fetch_and_update(self, new_date: datetime) -> None:
         """Fetch reservations for a new date and update the view state.
 
         Raises:
@@ -2246,7 +2248,7 @@ class ReservationView(discord.ui.View):
     @discord.ui.button(label="◀ Previous Day", style=discord.ButtonStyle.gray)
     async def previous_day_button(
         self, button: discord.ui.Button, interaction: discord.Interaction
-    ):
+    ) -> None:
         await interaction.response.defer()
         new_date = self.target_date - timedelta(days=1)
 
@@ -2269,7 +2271,7 @@ class ReservationView(discord.ui.View):
     @discord.ui.button(label="Next Day ▶", style=discord.ButtonStyle.gray)
     async def next_day_button(
         self, button: discord.ui.Button, interaction: discord.Interaction
-    ):
+    ) -> None:
         await interaction.response.defer()
         new_date = self.target_date + timedelta(days=1)
 
@@ -2290,5 +2292,5 @@ class ReservationView(discord.ui.View):
             )
 
 
-def setup(bot):
+def setup(bot: discord.Bot) -> None:
     bot.add_cog(PCs(bot))

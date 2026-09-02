@@ -2,6 +2,8 @@ import asyncio
 import contextlib
 import random
 import time
+from collections.abc import Awaitable, Callable
+from typing import cast
 
 import discord
 from discord.ext import commands
@@ -113,9 +115,7 @@ def generate_cancelled_embed(session: MatchmakingSession) -> discord.Embed:
 def generate_chatters_field(session: MatchmakingSession) -> str:
     """Build the "Chatters" field value: bettors sorted by stake (highest first).
 
-    Each row puts the mention on the side of the team it backs: Team A reads
-    "@user - {points} points" (mention toward the left-hand Team A column), Team B
-    reads "{points} points - @user", so the list visually splits by side.
+    Each row puts the @username on the same side as the team they back.
     """
     if not session.bets:
         rows = ["No bets yet"]
@@ -155,7 +155,7 @@ def generate_chatters_field(session: MatchmakingSession) -> str:
 def generate_match_embed(session: MatchmakingSession) -> discord.Embed:
     """Build the embed for a lobby that's already been shuffled into teams.
 
-    Players are grouped by team and ordered by role (via ROLE_REQUIREMENTS), not join order.
+    Players are grouped by team and ordered by role (via ROLE_REQUIREMENTS).
     """
     title_suffix = session.map if session.map else "Teams"
     embed = discord.Embed(
@@ -165,7 +165,7 @@ def generate_match_embed(session: MatchmakingSession) -> discord.Embed:
     has_roles = bool(ROLE_REQUIREMENTS[session.game])
     lane_order = {lane: i for i, lane in enumerate(ROLE_REQUIREMENTS[session.game])}
 
-    def team_rows(team):
+    def team_rows(team: list[discord.Member]) -> str:
         ordered = sorted(
             team,
             key=lambda m: lane_order.get(session.role_assignments.get(m.id, ""), 99),
@@ -204,6 +204,7 @@ async def get_game_shuffle_data(
     Returns (elo_by_id, roles_by_id), both keyed by discord member id. For per_role_ranks
     games, elo_by_id maps to {role: elo} per member instead of a single float.
     """
+    elo_by_id: dict[int, float] | dict[int, dict[str, float]]
     if config.is_per_role_ranks(game):
         elo_by_id = await get_team_role_elos(game, joined)
     else:
@@ -214,7 +215,7 @@ async def get_game_shuffle_data(
         "SELECT discordid, role FROM profile_roles WHERE discordid = ANY(%s) AND game = %s;",
         (ids, game),
     )
-    roles_by_id = {}
+    roles_by_id: dict[int, list[str]] = {}
     for discordid, role in role_rows:
         roles_by_id.setdefault(discordid, []).append(role)
 
@@ -239,7 +240,7 @@ def balance_teams(
     A small random "jitter" `RANK_JITTER` is added to each player's rank before comparing, so the lobby doesn't shuffle to the same result every time.
 
     `elo_by_id` is a single float per player for games without per-role ranks, or
-    {role: elo} per player for ones with -- see get_game_shuffle_data.
+    {role: elo} per player for ones with (aka overwatch) -- see get_game_shuffle_data.
 
     Returns (team_a, team_b, assignments), where assignments maps member id ->  lane/role.
     """
@@ -249,12 +250,17 @@ def balance_teams(
     per_role = config.is_per_role_ranks(game)
     rankable = ROLE_REQUIREMENTS[game]
 
-    # Normalize to one shape for the rest of this function: every player maps to
-    # {role_or_sentinel: elo}. Games without per-role ranks have exactly one elo
-    # per player, filed under the sentinel key, so every access below can just be
-    # elo_by_id[m.id][key] regardless of which kind of game this is.
-    if not per_role:
-        elo_by_id = {mid: {_GAME_WIDE_ELO: value} for mid, value in elo_by_id.items()}
+    # From here on both kinds of game share one shape: {player_id: {key: elo}}.
+    # Per-role games are already keyed by role name; the rest file their single
+    # elo under _GAME_WIDE_ELO, so every lookup below is elo_by_role[m.id][key].
+    # `per_role` is what picks the arm of the parameter union, which no checker
+    # can see, hence the casts.
+    elo_by_role: dict[int, dict[str, float]]
+    if per_role:
+        elo_by_role = cast("dict[int, dict[str, float]]", elo_by_id)
+    else:
+        flat = cast("dict[int, float]", elo_by_id)
+        elo_by_role = {mid: {_GAME_WIDE_ELO: value} for mid, value in flat.items()}
 
     requirements = list(rankable.items())
     random.shuffle(requirements)
@@ -267,26 +273,27 @@ def balance_teams(
             selected.append((role, count))
             used += count
 
-    # Jittered elo for one lookup key, cached so repeated requests for the same
-    # key -- every non-per-role lookup, or a role/leftover reusing an already-seen
-    # role -- reuse one random draw instead of redrawing jitter each time.
+    # Jittered elo for one lookup key, cached so repeated requests for the
+    # same key reuse one random draw instead of redrawing jitter each time.
     elo_cache: dict[str, dict[int, float]] = {}
 
     def effective_elo_for(key: str) -> dict[int, float]:
         if key not in elo_cache:
-            avg = sum(elo_by_id[m.id][key] for m in joined) / len(joined)
+            avg = sum(elo_by_role[m.id][key] for m in joined) / len(joined)
             elo_cache[key] = {
-                m.id: jittered_elo(elo_by_id[m.id][key], avg) for m in joined
+                m.id: jittered_elo(elo_by_role[m.id][key], avg) for m in joined
             }
         return elo_cache[key]
 
     remaining = list(joined)
-    team_a, team_b = [], []
-    team_a_total, team_b_total = 0, 0
+    team_a: list[discord.Member] = []
+    team_b: list[discord.Member] = []
+    team_a_total: float = 0.0
+    team_b_total: float = 0.0
     assignments = {}
 
     for role, count in selected:
-        # Non-per-role games always look up the sentinel (one elo, reused for
+        # Non-per-role games always look up _GAME_WIDE_ELO (one elo, reused for
         # every bucket); per-role games look up that bucket's own role, since a
         # player's candidacy for Tank shouldn't be decided by their Support elo.
         effective_elo = effective_elo_for(role if per_role else _GAME_WIDE_ELO)
@@ -331,17 +338,17 @@ def balance_teams(
     # Only reachable if role_requirements doesn't fill every slot -- true for any
     # non-full Overwatch lobby, since its roles only add up to exactly lobby_size/2.
     def leftover_key(m: discord.Member) -> str:
-        """Elo lookup key for a leftover player. Non-per-role games always use the
-        sentinel. Flex isn't an assignable lane in a per-role-ranks game, so a
-        Flex-only queue resolves to whichever rankable role they have the best
-        elo in instead -- Tank/Damage/Support always have an elo entry, Flex
-        never does."""
+        """Elo lookup key for a leftover player. Non-per-role games always use
+        _GAME_WIDE_ELO. Flex isn't an assignable lane in a per-role-ranks game,
+        so a Flex-only queue resolves to whichever rankable role they have the
+        best elo in instead -- Tank/Damage/Support always have an elo entry,
+        Flex never does."""
         if not per_role:
             return _GAME_WIDE_ELO
         preferred = roles_by_id[m.id][0]
         if preferred in rankable:
             return preferred
-        return max(rankable, key=lambda r: elo_by_id[m.id].get(r, 0.0))
+        return max(rankable, key=lambda r: elo_by_role[m.id].get(r, 0.0))
 
     remaining_sorted = sorted(
         remaining, key=lambda m: effective_elo_for(leftover_key(m))[m.id], reverse=True
@@ -532,10 +539,13 @@ def swap_slots(session: MatchmakingSession, id_a: int, id_b: int) -> bool:
             session.team_a.append(member_a)
             session.team_b.append(member_b)
 
+    # Only swap lanes when both players actually have one -- writing a None into
+    # role_assignments would render as "None" instead of the "?" fallback.
     lane_a = session.role_assignments.get(member_a.id)
     lane_b = session.role_assignments.get(member_b.id)
-    session.role_assignments[member_a.id] = lane_b
-    session.role_assignments[member_b.id] = lane_a
+    if lane_a is not None and lane_b is not None:
+        session.role_assignments[member_a.id] = lane_b
+        session.role_assignments[member_b.id] = lane_a
 
     return True
 
@@ -832,7 +842,7 @@ async def build_richest_chatter_field(summary: dict | None) -> str | None:
 class MatchmakingSession:
     """Tracks the state of one matchmaking lobby for one (channel, game) pair."""
 
-    def __init__(self, game):
+    def __init__(self, game: str) -> None:
         self.game: str = game
         self.joined: list[discord.Member] = []
         self.tags: dict[int, str] = {}  # member.id to tag
@@ -863,7 +873,7 @@ class MatchmakingSession:
 class Matchmaking(commands.Cog):
     """Cog housing the /matchmaking command group and the active lobby state for all channels."""
 
-    def __init__(self, bot):
+    def __init__(self, bot: discord.Bot) -> None:
         self.bot: discord.Bot = bot
         self.active_sessions: dict[tuple[int, str], MatchmakingSession] = {}
 
@@ -873,11 +883,11 @@ class Matchmaking(commands.Cog):
     async def start(
         self,
         ctx: discord.ApplicationContext,
-        game: discord.Option(
-            str, description="Game to matchmake for", choices=GAME_CHOICES
+        game: str = discord.Option(
+            description="Game to matchmake for", choices=GAME_CHOICES
         ),
-        team_a: discord.Option(str, description="Team A's name", default=None),
-        team_b: discord.Option(str, description="Team B's name", default=None),
+        team_a: str = discord.Option(description="Team A's name", default=None),
+        team_b: str = discord.Option(description="Team B's name", default=None),
     ) -> None:
         """Start a new matchmaking lobby, or bump an existing one in this channel/game.
 
@@ -926,7 +936,7 @@ class Matchmaking(commands.Cog):
 class LobbyView(discord.ui.View):
     """Shared, persistent view on the public lobby message: Join / Leave / Settings."""
 
-    def __init__(self, session):
+    def __init__(self, session: MatchmakingSession) -> None:
         super().__init__(timeout=None)
         self.session = session
         self.join.disabled = len(session.joined) >= LOBBY_SIZE[session.game]
@@ -957,7 +967,7 @@ class LobbyView(discord.ui.View):
             "SELECT tag FROM profiles WHERE discordid = %s;", (interaction.user.id,)
         )
         self.session.tags[interaction.user.id] = (
-            row[0] if row and row[0] else DEFAULT_TAG.get("Lobby")
+            row[0] if row and row[0] else DEFAULT_TAG["Lobby"]
         )
 
         self.session.joined.append(interaction.user)
@@ -1056,13 +1066,7 @@ class LobbyView(discord.ui.View):
 def bet_rejection_reason(
     session: MatchmakingSession, user_id: int, team: str
 ) -> str | None:
-    """Why this user can't back this team, or None if they can.
-
-    One home for the rule so the two enforcement points can't drift: the picker greys out
-    the buttons with it, and BetModal re-checks it under the lock. The picker alone isn't
-    enough -- an ephemeral view opened before a swap survives the swap, and nothing can
-    reach back to disable it.
-    """
+    """Why this user can't back this team, or None if they can."""
     on_team_a = any(m.id == user_id for m in session.team_a)
     on_team_b = any(m.id == user_id for m in session.team_b)
     if (team == "a" and on_team_b) or (team == "b" and on_team_a):
@@ -1079,7 +1083,7 @@ class BetTeamSelectView(discord.ui.View):
     bet on themselves, and once a bet is placed the opposing team's button disables too.
     """
 
-    def __init__(self, session: MatchmakingSession, user: discord.Member):
+    def __init__(self, session: MatchmakingSession, user: discord.Member) -> None:
         super().__init__(timeout=BETTING_WINDOW_SECONDS)
         self.session = session
 
@@ -1097,7 +1101,9 @@ class BetTeamSelectView(discord.ui.View):
         team_b_button.callback = self.make_callback("b")
         self.add_item(team_b_button)
 
-    def make_callback(self, team: str):
+    def make_callback(
+        self, team: str
+    ) -> Callable[[discord.Interaction], Awaitable[None]]:
         async def callback(interaction: discord.Interaction) -> None:
             existing = self.session.bets.get(interaction.user.id)
             current_bet = existing["points"] if existing else 0
@@ -1131,7 +1137,7 @@ class BetModal(discord.ui.Modal):
         team: str,
         current_bet: int,
         balance: int,
-    ):
+    ) -> None:
         super().__init__(title="Place your bet")
         self.session = session
         self.user = user
@@ -1229,14 +1235,9 @@ class BetModal(discord.ui.Modal):
 
 
 class LobbyPanelView(discord.ui.View):
-    """Base for every view reachable from a lobby's admin panel.
+    """Base for every view reachable from a lobby's admin panel."""
 
-    They're ephemeral messages that outlive the lobby. close_admin_panels deletes them
-    when the match ends, but a click already in flight still lands, and Swap's would
-    reopen betting and re-arm a close timer on a session nobody can win.
-    """
-
-    def __init__(self, session: MatchmakingSession):
+    def __init__(self, session: MatchmakingSession) -> None:
         super().__init__(timeout=180)
         self.session = session
 
@@ -1250,7 +1251,7 @@ class LobbyPanelView(discord.ui.View):
 
 
 class SwapSelectView(LobbyPanelView):
-    def __init__(self, session):
+    def __init__(self, session: MatchmakingSession) -> None:
         super().__init__(session)
 
         options = []
@@ -1282,7 +1283,7 @@ class SwapSelectView(LobbyPanelView):
         back_button.callback = self.back
         self.add_item(back_button)
 
-    async def on_select(self, interaction: discord.Interaction):
+    async def on_select(self, interaction: discord.Interaction) -> None:
         """Swap the two selected players' team+lane slots and refresh every open view of this lobby."""
         if not has_privilege(interaction):
             await interaction.response.send_message(
@@ -1304,7 +1305,7 @@ class SwapSelectView(LobbyPanelView):
         )
         await refresh_admin_panels(self.session)
 
-    async def back(self, interaction: discord.Interaction):
+    async def back(self, interaction: discord.Interaction) -> None:
         """Return to the admin panel without swapping anyone."""
         if not has_privilege(interaction):
             await interaction.response.send_message(
@@ -1374,7 +1375,7 @@ async def declare_winner(
 
 
 class MapSelectView(LobbyPanelView):
-    def __init__(self, session):
+    def __init__(self, session: MatchmakingSession) -> None:
         super().__init__(session)
 
         options = [
@@ -1397,7 +1398,7 @@ class MapSelectView(LobbyPanelView):
         back_button.callback = self.back
         self.add_item(back_button)
 
-    async def on_select(self, interaction: discord.Interaction):
+    async def on_select(self, interaction: discord.Interaction) -> None:
         """Set the session's map and refresh every open view of this lobby."""
         if not has_privilege(interaction):
             await interaction.response.send_message(
@@ -1412,7 +1413,7 @@ class MapSelectView(LobbyPanelView):
         )
         await refresh_admin_panels(self.session)
 
-    async def back(self, interaction: discord.Interaction):
+    async def back(self, interaction: discord.Interaction) -> None:
         """Return to the admin panel without changing the map."""
         if not has_privilege(interaction):
             await interaction.response.send_message(
@@ -1429,7 +1430,7 @@ class WinnerSelectView(LobbyPanelView):
 
     Uses manually-constructed buttons so their labels can show the session's actual team names instead of static text."""
 
-    def __init__(self, session):
+    def __init__(self, session: MatchmakingSession) -> None:
         super().__init__(session)
 
         team_a_button = discord.ui.Button(
@@ -1476,7 +1477,7 @@ class SelfBetForfeitWarningView(LobbyPanelView):
     Uses buttons instead of a dropdown, since Select option text can get cut off on Discord's client.
     """
 
-    def __init__(self, session: MatchmakingSession, stake: int):
+    def __init__(self, session: MatchmakingSession, stake: int) -> None:
         super().__init__(session)
 
         continue_button = discord.ui.Button(
@@ -1521,7 +1522,7 @@ class SelfBetForfeitWarningView(LobbyPanelView):
 class PostgameView(discord.ui.View):
     """Post-game view that allows for rematching."""
 
-    def __init__(self, session):
+    def __init__(self, session: MatchmakingSession) -> None:
         super().__init__(timeout=180)
         self.session = session
 
@@ -1683,7 +1684,7 @@ class CancelConfirmView(LobbyPanelView):
     Uses a dropdown rather than buttons, so a misclick doesn't instantly end the game.
     """
 
-    def __init__(self, session):
+    def __init__(self, session: MatchmakingSession) -> None:
         super().__init__(session)
 
         options = [

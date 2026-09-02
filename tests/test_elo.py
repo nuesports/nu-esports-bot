@@ -19,6 +19,7 @@ def game_data(monkeypatch):
     monkeypatch.setattr(elo.config, "game_data", fake)
     return "fakegame"
 
+
 def test_decode_rank_value_none():
     assert elo.decode_rank_value("fakegame", None) is None
 

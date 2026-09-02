@@ -1,3 +1,9 @@
+"""
+NYT's Connections;
+
+Recreated in discord!
+"""
+
 import asyncio
 import io
 import random
@@ -49,8 +55,8 @@ def _normalize_word(word: str) -> str:
 
 
 class Connections(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
+    def __init__(self, bot: discord.Bot) -> None:
+        self.bot: discord.Bot = bot
         self.puzzle_cache: dict[str, CachedPuzzle] = {}
         self.user_sessions: dict[tuple[int, str], GameSession] = {}
         self.fetch_locks: dict[str, asyncio.Lock] = {}
@@ -62,15 +68,14 @@ class Connections(commands.Cog):
     )
     async def connections(
         self,
-        ctx,
-        date_str: discord.Option(
-            str,
+        ctx: discord.ApplicationContext,
+        date_str: str = discord.Option(
             name="date",
             description="Date in YYYY-MM-DD format (defaults to today)",
             required=False,
             default=None,
         ),
-    ):
+    ) -> None:
         requested_date = self._parse_date_or_none(date_str)
         if date_str and not requested_date:
             await ctx.respond(
@@ -119,7 +124,7 @@ class Connections(commands.Cog):
         view = ConnectionsView(self, ctx.user.id, requested_date)
         await ctx.followup.send(embed=embed, file=file, view=view, ephemeral=True)
 
-    def _prune_user_sessions(self, user_id: int, keep_date: str):
+    def _prune_user_sessions(self, user_id: int, keep_date: str) -> None:
         stale_keys = [
             key
             for key in self.user_sessions
@@ -337,7 +342,7 @@ class Connections(commands.Cog):
             lines.append(text)
         return lines
 
-    def _default_font(self, size: int, bold=False) -> ImageFont.ImageFont:
+    def _default_font(self, size: int, bold: bool = False) -> ImageFont.ImageFont:
         font_dir = Path(__file__).resolve().parent.parent / "assets" / "fonts"
         font_file = (
             font_dir / "LibreFranklin-Bold.ttf"
@@ -618,9 +623,9 @@ class Connections(commands.Cog):
 
 
 class GuessWordSelect(discord.ui.Select):
-    def __init__(self, view: ConnectionsView, slot_index: int):
-        self.parent_view = view
-        self.slot_index = slot_index
+    def __init__(self, view: ConnectionsView, slot_index: int) -> None:
+        self.parent_view: ConnectionsView = view
+        self.slot_index: int = slot_index
         placeholder = f"Select Word {slot_index + 1}"
         options = view.build_options_for_slot(slot_index)
         super().__init__(
@@ -631,7 +636,7 @@ class GuessWordSelect(discord.ui.Select):
             row=slot_index,
         )
 
-    async def callback(self, interaction: discord.Interaction):
+    async def callback(self, interaction: discord.Interaction) -> None:
         if not await self.parent_view.ensure_owner(interaction):
             return
         self.parent_view.selected_words[self.slot_index] = self.values[0]
@@ -646,7 +651,7 @@ class ConnectionsView(discord.ui.View):
         user_id: int,
         requested_date: str,
         selected_words: list[str | None] | None = None,
-    ):
+    ) -> None:
         super().__init__(timeout=1800)
         self.cog = cog
         self.user_id = user_id
@@ -694,7 +699,7 @@ class ConnectionsView(discord.ui.View):
             )
         return options
 
-    def rebuild_components(self):
+    def rebuild_components(self) -> None:
         self.clear_items()
         for slot_idx in range(4):
             self.add_item(GuessWordSelect(self, slot_idx))
@@ -703,13 +708,13 @@ class ConnectionsView(discord.ui.View):
             label="Submit Guess", style=discord.ButtonStyle.primary, row=4
         )
 
-        async def submit_callback(interaction: discord.Interaction):
+        async def submit_callback(interaction: discord.Interaction) -> None:
             await self.submit_guess(interaction)
 
         submit_button.callback = submit_callback
         self.add_item(submit_button)
 
-    def _sync_disabled_state(self):
+    def _sync_disabled_state(self) -> None:
         session = self._get_session()
         if not session or session.completed:
             for item in self.children:
@@ -724,7 +729,7 @@ class ConnectionsView(discord.ui.View):
             return False
         return True
 
-    async def submit_guess(self, interaction: discord.Interaction):
+    async def submit_guess(self, interaction: discord.Interaction) -> None:
         if not await self.ensure_owner(interaction):
             return
         if any(word is None for word in self.selected_words):
@@ -754,5 +759,5 @@ class ConnectionsView(discord.ui.View):
         )
 
 
-def setup(bot):
+def setup(bot: discord.Bot) -> None:
     bot.add_cog(Connections(bot))

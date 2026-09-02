@@ -16,17 +16,23 @@ PLATFORM_ROUTING = "na1"
 RANKED_SOLO_QUEUE = "RANKED_SOLO_5x5"
 ROMAN_TO_DIVISION = {"I": 1, "II": 2, "III": 3, "IV": 4}
 
+
 def _get_riot_api_key() -> str:
     apis = config.secrets.get("apis", {})
     key = apis.get("riot-api-key") if isinstance(apis, dict) else None
     if not isinstance(key, str) or not key.strip():
-        raise LinkError("Riot API key not configured. Ask a bot dev to set `secrets.yaml -> apis.riot-api-key`")
+        raise LinkError(
+            "Riot API key not configured. Ask a bot dev to set `secrets.yaml -> apis.riot-api-key`"
+        )
     return key.strip()
+
 
 class LeagueClient:
     game = "league"
 
-    async def _maybe_seed_mains(self, discordid: int, puuid: str, headers: dict) -> None:
+    async def _maybe_seed_mains(
+        self, discordid: int, puuid: str, headers: dict
+    ) -> None:
         """Seed mains via top 3 mastery, but only when mains is empty (aka the first time)"""
         if await has_profile_mains(discordid, "league"):
             return
@@ -41,7 +47,11 @@ class LeagueClient:
 
         with readable_payload(self.game):
             champion_names = config.game_data["league"]["champion_ids"]
-            mains = [champion_names[c["championId"]] for c in top_champs if c["championId"] in champion_names]
+            mains = [
+                champion_names[c["championId"]]
+                for c in top_champs
+                if c["championId"] in champion_names
+            ]
         await seed_mains(discordid, "league", mains)
 
     async def link(self, raw_identifier: str) -> LinkResult:
@@ -61,18 +71,22 @@ class LeagueClient:
             account = await fetch_json_with_retries(account_url, headers=headers)
         except GameAPIError as e:
             if e.status == 404:
-                raise LinkError(f"No Riot account found for {game_name}#{tag_line}") from e
-            raise LinkError("Riot API's having troubles right now, try again soon") from e
+                raise LinkError(
+                    f"No Riot account found for {game_name}#{tag_line}"
+                ) from e
+            raise LinkError(
+                "Riot API's having troubles right now, try again soon"
+            ) from e
 
         with readable_payload(self.game):
             puuid = account["puuid"]
             resolved_id = f"{account.get('gameName', game_name)}#{account.get('tagLine', tag_line)}"
 
         return LinkResult(
-            external_id = resolved_id,
-            display_name = resolved_id,
-            provider_account_id = puuid,
-            provider_secondary_id=None
+            external_id=resolved_id,
+            display_name=resolved_id,
+            provider_account_id=puuid,
+            provider_secondary_id=None,
         )
 
     async def fetch_and_store(self, discordid: int, account_row: tuple) -> None:
@@ -83,7 +97,9 @@ class LeagueClient:
         entries = await fetch_json_with_retries(entries_url, headers=headers)
 
         with readable_payload(self.game):
-            solo_entry = next((e for e in entries if e.get("queueType") == RANKED_SOLO_QUEUE), None)
+            solo_entry = next(
+                (e for e in entries if e.get("queueType") == RANKED_SOLO_QUEUE), None
+            )
         if solo_entry is not None:
             with readable_payload(self.game):
                 tier = solo_entry["tier"].title()
@@ -92,7 +108,9 @@ class LeagueClient:
                     # anything unrecognized is a data error and must not be silently defaulted.
                     rank_key = solo_entry.get("rank")
                     if rank_key not in ROMAN_TO_DIVISION:
-                        raise GameAPIError(f"Unrecognized League division {rank_key!r} in ranked solo entry")
+                        raise GameAPIError(
+                            f"Unrecognized League division {rank_key!r} in ranked solo entry"
+                        )
                     division = ROMAN_TO_DIVISION[rank_key]
                 else:
                     # Flat tiers (Master/Grandmaster/Challenger) have no division; Riot may or

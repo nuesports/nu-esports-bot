@@ -4,7 +4,7 @@ import discord
 import yaml
 
 
-def load_config():
+def load_config() -> dict:
     """Load config from config.yaml file."""
     config_file = Path("config.yaml")
     if not config_file.exists():
@@ -13,7 +13,7 @@ def load_config():
         return yaml.safe_load(f)
 
 
-def load_secrets():
+def load_secrets() -> dict:
     """Load secrets from secrets.yaml file."""
     secrets_file = Path("secrets.yaml")
     if not secrets_file.exists():
@@ -21,7 +21,8 @@ def load_secrets():
     with open(secrets_file, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
-def load_game_data():
+
+def load_game_data() -> dict:
     """Load game data from data/games/*.yaml file."""
     game_data = {}
     for path in Path("data/games").glob("*.yaml"):
@@ -31,14 +32,16 @@ def load_game_data():
         raise FileNotFoundError("data/game/<game>.yaml not found in local directory")
     return game_data
 
-def load_gameroom_data():
+
+def load_gameroom_data() -> dict:
     gameroom_file = Path("data/gameroom.yaml")
     if not gameroom_file.exists():
         raise FileNotFoundError("data/gameroom.yaml not found in local directory")
     with open(gameroom_file, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
-    
-def load_matchmaking_data():
+
+
+def load_matchmaking_data() -> dict:
     matchmaking_file = Path("data/matchmaking.yaml")
     if not matchmaking_file.exists():
         raise FileNotFoundError("data/matchmaking.yaml not found in local directory")
@@ -47,20 +50,23 @@ def load_matchmaking_data():
         data.setdefault("team_names", [])
         return data
 
-def load_fun_data():
+
+def load_fun_data() -> dict:
     fun_file = Path("data/fun.yaml")
     if not fun_file.exists():
         raise FileNotFoundError("data/fun.yaml not found in local directory")
     with open(fun_file, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
-def load_antiscam_data():
+
+def load_antiscam_data() -> dict:
     """Load the scam-detector scoring rules from data/antiscam.yaml."""
     antiscam_file = Path("data/antiscam.yaml")
     if not antiscam_file.exists():
         raise FileNotFoundError("data/antiscam.yaml not found in local directory")
     with open(antiscam_file, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
 
 config = load_config()
 secrets = load_secrets()
@@ -70,13 +76,15 @@ matchmaking_data = load_matchmaking_data()
 fun_data = load_fun_data()
 antiscam_data = load_antiscam_data()
 
-def _role_ids(value) -> set[int]:
+
+def _role_ids(value: int | list[int] | None) -> set[int]:
     """Normalize a roles config value (int, list, or None) to a set of role IDs."""
     if value is None:
         return set()
     if isinstance(value, int):
         return {value}
     return set(value)
+
 
 def _in_role_group(member: discord.Member, group: dict) -> bool:
     """True for admins, or if member is in the group's explicit user list or holds its role(s)."""
@@ -87,21 +95,32 @@ def _in_role_group(member: discord.Member, group: dict) -> bool:
     member_role_ids = {r.id for r in member.roles}
     return bool(member_role_ids & _role_ids(group.get("role")))
 
+
 def is_bot_dev(member: discord.Member) -> bool:
     return _in_role_group(member, config["roles"]["bot_devs"])
+
 
 def is_gameroom_staff(member: discord.Member) -> bool:
     return _in_role_group(member, config["roles"]["gameroom_staff"])
 
+
 def has_leadership(member: discord.Member) -> bool:
     return _in_role_group(member, config["roles"]["leadership"])
+
 
 def is_stream_team(member: discord.Member) -> bool:
     return _in_role_group(member, config["roles"]["stream_team"])
 
+
 def can_reserve(member: discord.Member) -> bool:
     """Who can invoke reservation commands: bot devs, gameroom staff, leadership, or gameheads."""
-    return is_bot_dev(member) or is_gameroom_staff(member) or has_leadership(member) or is_game_head(member)
+    return (
+        is_bot_dev(member)
+        or is_gameroom_staff(member)
+        or has_leadership(member)
+        or is_game_head(member)
+    )
+
 
 def is_game_head(member: discord.Member) -> bool:
     """True for admins or anyone holding any per-game gamehead role."""
@@ -111,6 +130,7 @@ def is_game_head(member: discord.Member) -> bool:
     gamehead_role_ids = {r for r in config["roles"]["gameheads"].values() if r}
     return bool(member_role_ids & gamehead_role_ids)
 
+
 def gamehead_email(username: str) -> str | None:
     """Look up a gamehead's email by Discord username across every game's roster."""
     for roster in config["gameheads"].values():
@@ -118,17 +138,21 @@ def gamehead_email(username: str) -> str | None:
             return roster[username]
     return None
 
+
 def is_per_role_ranks(game: str) -> bool:
     """Whether a game tracks rank (and elo) separately per role instead of once per game."""
     return bool(game_data[game].get("per_role_ranks"))
+
 
 def rankable_roles(game: str) -> list[str]:
     """Roles a player can set a rank for in a per-role-ranks game (role_requirements keys, excludes Flex)."""
     return list(game_data[game].get("role_requirements") or {})
 
+
 def role_icon(game: str, role: str) -> str:
     """Emoji for a role, shown next to a player's name on a mixed per-role leaderboard entry."""
     return game_data[game].get("role_icons", {}).get(role, "")
+
 
 def main_aliases(game: str) -> dict[str, str]:
     """Alternate spellings accepted for /profile set main (e.g. old names after a rename),

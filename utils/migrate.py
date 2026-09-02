@@ -25,7 +25,7 @@ MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "postgres" / "migratio
 _LOCK_KEY = 4867209
 
 
-async def run_migrations():
+async def run_migrations() -> None:
     """Apply any migrations the database hasn't seen yet.
 
     Uses its own connection rather than the shared pool, so it can run before the

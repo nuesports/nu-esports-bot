@@ -29,25 +29,33 @@ class OverwatchClient:
 
         player_id = f"{name}-{tag}"
         try:
-            await fetch_json_with_retries(f"{OVERFAST_BASE_URL}/players/{player_id}/summary")
+            await fetch_json_with_retries(
+                f"{OVERFAST_BASE_URL}/players/{player_id}/summary"
+            )
         except GameAPIError as e:
             if e.status == 404:
                 raise LinkError(
                     f"Couldn't find {name}#{tag} -- double check the BattleTag, and make sure your Career "
                     "Profile is set to Public (Esc -> Options -> Social -> Career Profile Visibility -> Public)."
                 ) from e
-            raise LinkError("OverFast's having troubles right now, try again soon") from e
+            raise LinkError(
+                "OverFast's having troubles right now, try again soon"
+            ) from e
 
         resolved_id = f"{name}#{tag}"
         return LinkResult(external_id=resolved_id, display_name=resolved_id)
 
     async def fetch_and_store(self, discordid: int, account_row: tuple) -> None:
         with readable_payload(self.game):
-            external_id = account_row[1]  # no puuid-equivalent here -- BattleTag is the key
+            external_id = account_row[
+                1
+            ]  # no puuid-equivalent here -- BattleTag is the key
             name, tag = external_id.split("#", 1)
             player_id = f"{name}-{tag}"
 
-        summary = await fetch_json_with_retries(f"{OVERFAST_BASE_URL}/players/{player_id}/summary")
+        summary = await fetch_json_with_retries(
+            f"{OVERFAST_BASE_URL}/players/{player_id}/summary"
+        )
 
         rows = []
         with readable_payload(self.game):
@@ -56,8 +64,10 @@ class OverwatchClient:
                 rank = competitive.get(api_role)
                 if rank is None:
                     continue  # unranked in this role -- don't overwrite with "no rank"
-                tier = rank["division"].title()   # OverFast's "division" = our "tier"
-                division = rank["tier"]           # OverFast's "tier" = our "division"; 1 is best, matches League
+                tier = rank["division"].title()  # OverFast's "division" = our "tier"
+                division = rank[
+                    "tier"
+                ]  # OverFast's "tier" = our "division"; 1 is best, matches League
                 rank_value = compute_rank_value("overwatch", tier, division)
                 rank_label = format_rank_label("overwatch", tier, division)
                 rows.append((discordid, "overwatch", our_role, rank_value, rank_label))
@@ -105,7 +115,9 @@ class OverwatchClient:
 
         await self._maybe_seed_roles(discordid, [key for key, _ in top_heroes])
 
-    async def _maybe_seed_roles(self, discordid: int, hero_keys_played: list[str]) -> None:
+    async def _maybe_seed_roles(
+        self, discordid: int, hero_keys_played: list[str]
+    ) -> None:
         """Seed roles from the same top-3 mains just seeded above (e.g. Kiriko/Mercy/Ana
         -> just Support; Genji/Sigma/Juno -> all three), but only if the player has no
         roles on file -- checked separately from mains, since /profile set main allows

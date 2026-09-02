@@ -1,11 +1,16 @@
 import asyncio
+from typing import Any
 
 import aiohttp
 
 from .base import GameAPIError
 
+type Json = Any
 
-async def fetch_json_with_retries(url: str, headers: dict | None = None, params: dict | None = None) -> dict | list:
+
+async def fetch_json_with_retries(
+    url: str, headers: dict | None = None, params: dict | None = None
+) -> Json:
     """GET a url and parse json, retrying transient failures up to 4 times.
 
     a 404 (doesn't exist) or 401/403 (bad/expired api key) raises immediately without
@@ -21,7 +26,10 @@ async def fetch_json_with_retries(url: str, headers: dict | None = None, params:
 
     for attempt in range(max_attempts):
         try:
-            async with aiohttp.ClientSession(timeout=timeout) as session, session.get(url, headers=headers, params=params) as resp:
+            async with (
+                aiohttp.ClientSession(timeout=timeout) as session,
+                session.get(url, headers=headers, params=params) as resp,
+            ):
                 resp.raise_for_status()
                 return await resp.json()
         except aiohttp.ClientResponseError as e:
@@ -34,3 +42,4 @@ async def fetch_json_with_retries(url: str, headers: dict | None = None, params:
             if attempt == max_attempts - 1:
                 raise GameAPIError(f"{url} was unreachable: {e!r}") from e
             await asyncio.sleep(retry_delay_seconds)
+    raise AssertionError("unreachable: the final attempt always raises")

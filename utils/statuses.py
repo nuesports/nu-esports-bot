@@ -8,7 +8,8 @@ TYPE_MAP = {
     "competing": discord.ActivityType.competing,
 }
 
-def load_statuses():
+
+def load_statuses() -> list[discord.Activity]:
     with open("data/statuses.yaml", "r") as file:
         statuses = yaml.safe_load(file)
     return [

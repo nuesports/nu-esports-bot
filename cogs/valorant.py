@@ -10,8 +10,8 @@ GUILD_ID = config.secrets["discord"]["guild_id"]
 
 
 class Valorant(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
+    def __init__(self, bot: discord.Bot) -> None:
+        self.bot: discord.Bot = bot
 
     valorant = discord.SlashCommandGroup("valorant", "Valorant-related utils")
 
@@ -22,22 +22,20 @@ class Valorant(commands.Cog):
     )
     async def random_lobby(
         self,
-        ctx,
-        map_flags: discord.Option(
-            str,
+        ctx: discord.ApplicationContext,
+        map_flags: str = discord.Option(
             name="maps",
             description="Map pool used for randomization (default all)",
             choices=["active", "newest", "all"],
             default="all",
         ),
-        team_flags: discord.Option(
-            str,
+        team_flags: str = discord.Option(
             name="teams",
             description="Agent selection used for randomization (default role-balanced)",
             choices=["role-balanced", "random"],
             default="role-balanced",
         ),
-    ):
+    ) -> None:
         map = random_map(map_flags)
         attackers = random_team(team_flags)
         defenders = random_team(team_flags)
@@ -58,11 +56,11 @@ class Valorant(commands.Cog):
         await ctx.respond("", embed=embed)
 
 
-def setup(bot):
+def setup(bot: discord.Bot) -> None:
     bot.add_cog(Valorant(bot))
 
 
-def random_map(flags):
+def random_map(flags: str) -> str:
     maps = config.game_data["valorant"]["maps"]
     maps_active = config.game_data["valorant"]["maps_active"]
 
@@ -75,7 +73,7 @@ def random_map(flags):
             return random.choice(maps)
 
 
-def random_team(flags):
+def random_team(flags: str) -> list[str]:
     agents = config.game_data["valorant"]["characters"]
     agents_roles = copy.deepcopy(
         config.game_data["valorant"]["agents_roles"]
