@@ -14,7 +14,7 @@ repos:
   hooks:
     - id: mypy
       name: mypy
-      entry: uvx mypy@2.3.1
+      entry: uvx --python 3.14 mypy@2.3.1
       language: system
       types: [python]
       pass_filenames: false

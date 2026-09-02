@@ -79,7 +79,7 @@ class Fun(commands.Cog):
                 await channel.set_permissions(
                     member, overwrite=overwrite, reason="Muted by /mutehannah command"
                 )
-            except (discord.Forbidden, discord.HTTPException):
+            except discord.Forbidden, discord.HTTPException:
                 pass  # Skip channels where we don't have permission
 
         # Schedule permission restore after 3 minutes
@@ -108,7 +108,7 @@ class Fun(commands.Cog):
                                 overwrite=overwrite,
                                 reason="Auto-unmute after 3 minutes",
                             )
-                    except (discord.Forbidden, discord.HTTPException):
+                    except discord.Forbidden, discord.HTTPException:
                         pass  # Silently fail if we can't restore
 
                 # Clear the stored permissions and task reference
@@ -140,7 +140,7 @@ class Fun(commands.Cog):
                                 await member.edit(
                                     mute=False, reason="Auto-unmute after 3 minutes"
                                 )
-                        except (discord.Forbidden, discord.HTTPException):
+                        except discord.Forbidden, discord.HTTPException:
                             pass  # Silently fail if we can't unmute
 
                         # Clear task reference
@@ -242,7 +242,7 @@ class Fun(commands.Cog):
                         reason="Unmuted by /unmutehannah command",
                     )
                 text_unmuted = True
-            except (discord.Forbidden, discord.HTTPException):
+            except discord.Forbidden, discord.HTTPException:
                 pass  # Skip channels where we don't have permission
 
         # Clear the stored permissions
@@ -254,7 +254,7 @@ class Fun(commands.Cog):
             try:
                 await member.edit(mute=False, reason="Unmuted by /unmutehannah command")
                 voice_unmuted = True
-            except (discord.Forbidden, discord.HTTPException):
+            except discord.Forbidden, discord.HTTPException:
                 pass  # Silently fail if we can't unmute
 
         # Send confirmation message

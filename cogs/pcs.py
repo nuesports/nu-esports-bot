@@ -1101,12 +1101,7 @@ class PCs(commands.Cog):
             date_str = today.strftime("%Y-%m-%d")
             reservations_data = await self.fetch_reservations(date_str)
             reservations = reservations_data.get("reservations", [])
-        except (
-            aiohttp.ClientError,
-            asyncio.TimeoutError,
-            ValueError,
-            AttributeError,
-        ) as e:
+        except (TimeoutError, aiohttp.ClientError, ValueError, AttributeError) as e:
             print(f"Failed to fetch reservations: {e}")
             reservations = []
 
@@ -1204,12 +1199,7 @@ class PCs(commands.Cog):
             date_str = today.strftime("%Y-%m-%d")
             reservations_data = await self.fetch_reservations(date_str)
             reservations = reservations_data.get("reservations", [])
-        except (
-            aiohttp.ClientError,
-            asyncio.TimeoutError,
-            ValueError,
-            AttributeError,
-        ) as e:
+        except (TimeoutError, aiohttp.ClientError, ValueError, AttributeError) as e:
             print(f"Failed to fetch reservations: {e}")
             reservations = []
 
@@ -2040,7 +2030,7 @@ class ReservationTimeModal(discord.ui.Modal):
 
 
 class ExternalReservationTimeModal(discord.ui.Modal):
-    def __init__(self, cog: "PCs") -> None:
+    def __init__(self, cog: PCs) -> None:
         super().__init__(title="External Reservation - Set Time")
         self.cog: PCs = cog
 
@@ -2267,8 +2257,8 @@ class ReservationView(discord.ui.View):
             embeds, file = await self.build_embed_and_file()
             await interaction.message.edit(embeds=embeds, file=file, view=self)
         except (
+            TimeoutError,
             aiohttp.ClientError,
-            asyncio.TimeoutError,
             OSError,
             ValueError,
             discord.HTTPException,
@@ -2290,8 +2280,8 @@ class ReservationView(discord.ui.View):
             embeds, file = await self.build_embed_and_file()
             await interaction.message.edit(embeds=embeds, file=file, view=self)
         except (
+            TimeoutError,
             aiohttp.ClientError,
-            asyncio.TimeoutError,
             OSError,
             ValueError,
             discord.HTTPException,

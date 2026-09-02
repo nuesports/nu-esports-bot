@@ -191,9 +191,7 @@ async def fetch_profile_data(discordid: int) -> dict:
     }
 
 
-async def link_account(
-    discordid: int, game: str, result: "game_apis.LinkResult"
-) -> None:
+async def link_account(discordid: int, game: str, result: game_apis.LinkResult) -> None:
     """Upserts a linked game account and immediately force-refreshes it, so the player
     doesn't have to wait out the staleness TTL to see a rank right after linking.
     Shared by /profile set account and the setup-flow AccountModal so the two never drift."""
@@ -308,7 +306,7 @@ def build_game_embed(
     setup: bool,
     role_ranks: dict[str, str] | None = None,
     account_name: str | None = None,
-) -> tuple[discord.Embed, "Path | None"]:
+) -> tuple[discord.Embed, Path | None]:
     """Build one per-game profile page: rank, roles, mains, wins/losses, and a champion thumbnail if one exists.
 
     For per-role-ranks games, pass `role_ranks` (role -> rank_label) to render one

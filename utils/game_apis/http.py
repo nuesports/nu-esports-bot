@@ -1,11 +1,11 @@
 import asyncio
-from typing import Any, TypeAlias
+from typing import Any
 
 import aiohttp
 
 from .base import GameAPIError
 
-Json: TypeAlias = Any
+type Json = Any
 
 
 async def fetch_json_with_retries(

@@ -623,7 +623,7 @@ class Connections(commands.Cog):
 
 
 class GuessWordSelect(discord.ui.Select):
-    def __init__(self, view: "ConnectionsView", slot_index: int) -> None:
+    def __init__(self, view: ConnectionsView, slot_index: int) -> None:
         self.parent_view: ConnectionsView = view
         self.slot_index: int = slot_index
         placeholder = f"Select Word {slot_index + 1}"

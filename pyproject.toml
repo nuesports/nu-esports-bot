@@ -14,8 +14,8 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "pre-commit==4.3.0",
-    "ruff==0.16.0",
+    "pre-commit==4.6.2",
+    "ruff==0.16.5",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.0.0",
 ]
@@ -34,7 +34,11 @@ asyncio_default_test_loop_scope = "session"
 
 
 [tool.mypy]
-python_version = "3.10"
+# Must track requires-python. ruff format emits 3.14 syntax (PEP 758's
+# unparenthesized `except A, B:`, PEP 695's `type` statement), which mypy can
+# only parse when it is *running* on 3.14 -- hence `uvx --python 3.14` in both
+# the pre-commit hook and mypy.yml. This setting alone is not enough.
+python_version = "3.14"
 files = ["cogs", "utils"]
 ignore_missing_imports = true
 explicit_package_bases = true
