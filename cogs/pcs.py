@@ -1779,6 +1779,35 @@ class PCs(commands.Cog):
         return buffer
 
 
+def build_outside_hours_embed(
+    start_time: datetime, end_time: datetime
+) -> discord.Embed:
+    """Warn that a requested slot falls outside the gameroom's hours for that day."""
+    hours = config.gameroom_data["default_hours"][start_time.weekday()]
+    embed = discord.Embed(
+        title="⚠️ Outside Gameroom Hours",
+        description=(
+            "This reservation falls outside the gameroom's hours for that day. "
+            "You can still book it, but staff will be pinged to review it."
+        ),
+        color=discord.Color.orange(),
+    )
+    embed.add_field(
+        name="You asked for",
+        value=(
+            f"{start_time.strftime('%A, %B %d, %Y')}\n"
+            f"{start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')} CST"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name=f"{start_time.strftime('%A')} hours",
+        value=hours,
+        inline=False,
+    )
+    return embed
+
+
 class ReservationTimeModal(discord.ui.Modal):
     def __init__(
         self,
@@ -1787,6 +1816,9 @@ class ReservationTimeModal(discord.ui.Modal):
         num_pcs: int,
         res_type: str,
         is_bot_dev: bool = False,
+        date_value: str = "",
+        start_value: str = "",
+        end_value: str = "",
     ) -> None:
         super().__init__(title="Reserve PCs - Set Time")
         self.cog: PCs = cog
@@ -1805,6 +1837,7 @@ class ReservationTimeModal(discord.ui.Modal):
                 placeholder=f"YYYY-MM-DD (e.g., {example_date})",
                 style=discord.InputTextStyle.short,
                 required=True,
+                value=date_value or None,
             )
         )
 
@@ -1814,6 +1847,7 @@ class ReservationTimeModal(discord.ui.Modal):
                 placeholder="H:MMAM/PM (e.g., 7:00PM)",
                 style=discord.InputTextStyle.short,
                 required=True,
+                value=start_value or None,
             )
         )
 
@@ -1823,6 +1857,7 @@ class ReservationTimeModal(discord.ui.Modal):
                 placeholder="H:MMAM/PM (e.g., 9:00PM)",
                 style=discord.InputTextStyle.short,
                 required=True,
+                value=end_value or None,
             )
         )
 
@@ -1852,14 +1887,34 @@ class ReservationTimeModal(discord.ui.Modal):
             )
             return
 
-        # Policy breaks no longer refuse the booking -- they ride along as warnings on
-        # the staff embed and ping the staff role to sign off. Only the checks below
-        # that describe physical impossibility still refuse.
-        warnings: list[str] = []
-
+        # Outside gameroom hours is the one policy break worth a second look before
+        # anything is written -- it is far more often a mistyped date than a real request
         if not self.cog.is_within_open_hours(start_time, end_time):
-            warnings.append("Outside gameroom hours")
+            view = OutsideHoursView(
+                self, start_time, end_time, (date_str, start_time_str, end_time_str)
+            )
+            view.prompt = await interaction.followup.send(
+                embed=build_outside_hours_embed(start_time, end_time),
+                view=view,
+                ephemeral=True,
+                wait=True,
+            )
+            return
 
+        await self.complete(interaction, start_time, end_time, [])
+
+    async def complete(
+        self,
+        interaction: discord.Interaction,
+        start_time: datetime,
+        end_time: datetime,
+        warnings: list[str],
+    ) -> None:
+        """Run the refusing checks, save the reservation, then notify staff.
+
+        Split out of callback() so the outside-hours prompt can call it once the booker
+        confirms. Nothing is written to the db before this runs.
+        """
         if not self.cog.validate_advance_booking(start_time):
             warnings.append(f"Booked less than {ADVANCE_BOOKING_DAYS} days in advance")
 
@@ -2047,6 +2102,84 @@ class ReservationTimeModal(discord.ui.Modal):
                     await reservations_channel.send(embed=embed)
         except discord.HTTPException as e:
             print(f"Failed to send notification to nexus-reservations: {e}")
+
+
+class OutsideHoursView(discord.ui.View):
+    """Confirm/edit/cancel prompt for a reservation that falls outside gameroom hours.
+
+    Booking it is allowed -- staff get pinged to review -- but it is far more often a
+    mistyped date than a real request, so nothing is written until the booker confirms.
+    """
+
+    def __init__(
+        self,
+        modal: ReservationTimeModal,
+        start_time: datetime,
+        end_time: datetime,
+        raw_values: tuple[str, str, str],
+    ) -> None:
+        super().__init__(timeout=300)
+        self.modal: ReservationTimeModal = modal
+        self.start_time: datetime = start_time
+        self.end_time: datetime = end_time
+        self.raw_values: tuple[str, str, str] = raw_values
+        # Set by the caller right after send(), so the buttons can be retired
+        self.prompt: discord.WebhookMessage | None = None
+
+    def _disable(self) -> None:
+        for child in self.children:
+            child.disabled = True
+
+    async def on_timeout(self) -> None:
+        self._disable()
+        if self.prompt:
+            await self.prompt.edit(
+                content="⌛ Timed out. Nothing was booked -- run `/reserve` again.",
+                view=self,
+            )
+
+    @discord.ui.button(label="Book it anyway", style=discord.ButtonStyle.success)
+    async def confirm_button(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ) -> None:
+        self._disable()
+        await interaction.response.edit_message(view=self)
+        await self.modal.complete(
+            interaction, self.start_time, self.end_time, ["Outside gameroom hours"]
+        )
+        self.stop()
+
+    @discord.ui.button(label="Edit times", style=discord.ButtonStyle.primary)
+    async def edit_button(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ) -> None:
+        date_value, start_value, end_value = self.raw_values
+        await interaction.response.send_modal(
+            ReservationTimeModal(
+                self.modal.cog,
+                self.modal.team,
+                self.modal.num_pcs,
+                self.modal.res_type,
+                self.modal.is_bot_dev,
+                date_value=date_value,
+                start_value=start_value,
+                end_value=end_value,
+            )
+        )
+        self._disable()
+        if self.prompt:
+            await self.prompt.edit(content="✏️ Editing those times.", view=self)
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
+    async def cancel_button(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ) -> None:
+        self._disable()
+        await interaction.response.edit_message(
+            content="❌ Cancelled. Nothing was booked.", view=self
+        )
+        self.stop()
 
 
 class ExternalReservationTimeModal(discord.ui.Modal):
