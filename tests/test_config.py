@@ -89,3 +89,13 @@ def test_load_game_data_raises_if_missing(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     with pytest.raises(FileNotFoundError):
         config.load_game_data()
+
+
+def test_staff_role_id_reads_the_roles_block(monkeypatch):
+    monkeypatch.setattr(config, "config", {"roles": {"staff_role": 42}})
+    assert config.staff_role_id() == 42
+
+
+def test_staff_role_id_is_none_when_unset(monkeypatch):
+    monkeypatch.setattr(config, "config", {"roles": {}})
+    assert config.staff_role_id() is None

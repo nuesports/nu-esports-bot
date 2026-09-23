@@ -30,6 +30,24 @@ PRIME_TIME_WEEKEND_HOUR = 18  # 6 PM
 
 STAFF_LIST = config.config["roles"]["gameroom_staff"]["users"]
 
+# Prime time reservations a team gets per week. Also the source of the /reserve team
+# list, so a team can't exist in one and not the other.
+TEAM_PRIME_TIME_QUOTA: dict[str, int] = {
+    "Valorant White": 2,
+    "Valorant Purple": 1,
+    "Overwatch White": 1,
+    "Overwatch Purple": 1,
+    "League Purple": 1,
+    "Deadlock Purple": 1,
+    "Apex White": 1,
+    "Apex Purple": 1,
+    "Rocket League Purple": 1,
+    # External events have unlimited prime time quota since they're staff-managed
+    "External": 99,
+}
+# External is staff-only via /reserve-external, so it isn't offered in the dropdown
+RESERVABLE_TEAMS = [team for team in TEAM_PRIME_TIME_QUOTA if team != "External"]
+
 STATE_TO_EMOJI = {
     "ReadyForUser": ":green_square:",
     "UserLoggedIn": ":red_square:",
@@ -77,19 +95,7 @@ async def reservation_autocomplete(
 class PCs(commands.Cog):
     def __init__(self, bot: discord.Bot) -> None:
         self.bot: discord.Bot = bot
-        # Team to prime time quota mapping
-        self.team_prime_time_quota: dict[str, int] = {
-            "Valorant White": 2,
-            "Valorant Purple": 1,
-            "Overwatch White": 1,
-            "Overwatch Purple": 1,
-            "League Purple": 1,
-            "Apex White": 1,
-            "Apex Purple": 1,
-            "Rocket League Purple": 1,
-            # External events have unlimited prime time quota since they're staff-managed
-            "External": 99,
-        }
+        self.team_prime_time_quota: dict[str, int] = TEAM_PRIME_TIME_QUOTA
         # Staff ping index for cycling through gameroom staff. None until the first
         # ping loads it from the db -- see next_staff_index().
         self.staff_ping_index: int | None = None
@@ -1449,16 +1455,7 @@ class PCs(commands.Cog):
         team: str = discord.Option(
             name="team",
             description="Your team",
-            choices=[
-                "Valorant White",
-                "Valorant Purple",
-                "Overwatch White",
-                "Overwatch Purple",
-                "League Purple",
-                "Apex White",
-                "Apex Purple",
-                "Rocket League Purple",
-            ],
+            choices=RESERVABLE_TEAMS,
             required=True,
         ),
         num_pcs: int = discord.Option(
@@ -1855,20 +1852,16 @@ class ReservationTimeModal(discord.ui.Modal):
             )
             return
 
-        # Ensure reservation is within Gameroom hours
-        if not self.cog.is_within_open_hours(start_time, end_time):
-            await interaction.followup.send(
-                "❌ Requested reservation is not within Gameroom hours.", ephemeral=True
-            )
-            return
+        # Policy breaks no longer refuse the booking -- they ride along as warnings on
+        # the staff embed and ping the staff role to sign off. Only the checks below
+        # that describe physical impossibility still refuse.
+        warnings: list[str] = []
 
-        # Validate advance booking (at least 2 days)
+        if not self.cog.is_within_open_hours(start_time, end_time):
+            warnings.append("Outside gameroom hours")
+
         if not self.cog.validate_advance_booking(start_time):
-            await interaction.followup.send(
-                "❌ Reservations must be made at least 2 days in advance. Please choose a date at least 2 days from today.",
-                ephemeral=True,
-            )
-            return
+            warnings.append(f"Booked less than {ADVANCE_BOOKING_DAYS} days in advance")
 
         # Check conflicts first
         (
@@ -1907,12 +1900,12 @@ class ReservationTimeModal(discord.ui.Modal):
             )
             quota = self.cog.team_prime_time_quota[self.team]
             if not has_quota:
-                await interaction.followup.send(
-                    f"❌ **{self.team}** has already used all {quota} prime time reservation(s) this week ({used_count}/{quota} used).\n"
-                    f"Prime time resets every Monday at 12:00 AM CST.",
-                    ephemeral=True,
+                warnings.append(
+                    f"Prime time quota exceeded ({used_count}/{quota} used this week)"
                 )
-                return
+
+        if is_prime and is_over_2_hours:
+            warnings.append("Prime time reservation longer than 2 hours")
 
         # Save reservation to database (skip for bot devs)
         manager = (
@@ -1935,6 +1928,13 @@ class ReservationTimeModal(discord.ui.Modal):
         test_status = (
             "🧪 **Test Reservation** (Not saved to database)" if self.is_bot_dev else ""
         )
+        # The booking stands either way -- this tells the booker staff are reviewing it
+        warning_status = (
+            "\n".join(f"⚠️ {warning}" for warning in warnings)
+            + "\n**Booked anyway. Staff have been pinged to review it.**"
+            if warnings
+            else ""
+        )
         await interaction.followup.send(
             f"✅ Reservation confirmed!\n\n"
             f"**Team:** {self.team}\n"
@@ -1942,7 +1942,8 @@ class ReservationTimeModal(discord.ui.Modal):
             f"**Time:** {start_time.strftime('%A, %B %d, %Y %I:%M %p')} - {end_time.strftime('%I:%M %p')} CST\n"
             f"**Manager:** {manager}\n"
             f"{prime_time_status}\n"
-            f"{test_status}",
+            f"{test_status}\n"
+            f"{warning_status}",
             ephemeral=True,
         )
 
@@ -2005,17 +2006,32 @@ class ReservationTimeModal(discord.ui.Modal):
                         inline=False,
                     )
 
-                if is_prime and is_over_2_hours:
+                if warnings:
                     embed.add_field(
                         name="Notes",
-                        value="‼️ Prime Time Reservation longer than 2 Hours",
+                        value="\n".join(f"‼️ {warning}" for warning in warnings),
                         inline=False,
                     )
+
+                # A warned booking still goes through, so the staff role gets pinged on
+                # top of the usual rotation -- someone has to decide whether it stands
+                staff_role = None
+                if warnings and (role_id := config.staff_role_id()):
+                    staff_role = reservations_channel.guild.get_role(role_id)
+                mentions = discord.AllowedMentions(
+                    everyone=False,
+                    users=True,
+                    roles=[staff_role] if staff_role else False,
+                )
+                pings = [staff_role.mention] if staff_role else []
 
                 # Ping the next staff member in rotation
                 if STAFF_LIST:
                     staff_id = STAFF_LIST[await self.cog.next_staff_index()]
-                    msg = await reservations_channel.send(f"<@{staff_id}>", embed=embed)
+                    pings.append(f"<@{staff_id}>")
+                    msg = await reservations_channel.send(
+                        " ".join(pings), embed=embed, allowed_mentions=mentions
+                    )
                     # Track for acknowledgment
                     self.cog.pending_acknowledgments[msg.id] = {
                         "staff_id": staff_id,
@@ -2023,6 +2039,10 @@ class ReservationTimeModal(discord.ui.Modal):
                         "sent_at": datetime.now(CENTRAL_TZ),
                         "team": self.team,
                     }
+                elif pings:
+                    await reservations_channel.send(
+                        " ".join(pings), embed=embed, allowed_mentions=mentions
+                    )
                 else:
                     await reservations_channel.send(embed=embed)
         except discord.HTTPException as e:

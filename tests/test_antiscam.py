@@ -354,13 +354,13 @@ def build_cog(monkeypatch, events, role=DEFAULT_ROLE, guild=None):
         antiscam.config,
         "config",
         {
+            "roles": {"staff_role": 99},
             "antiscam": {
                 "alert_channel": 5,
-                "staff_role": 99,
                 "timeout_days": 28,
                 "ban_delete_message_days": 7,
                 "purge_window_minutes": 60,
-            }
+            },
         },
     )
     monkeypatch.setattr(antiscam.config, "has_leadership", lambda member: False)
