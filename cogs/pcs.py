@@ -1780,29 +1780,30 @@ class PCs(commands.Cog):
 
 
 def build_outside_hours_embed(
-    start_time: datetime, end_time: datetime
+    cog: PCs, start_time: datetime, end_time: datetime
 ) -> discord.Embed:
     """Warn that a requested slot falls outside the gameroom's hours for that day."""
     hours = config.gameroom_data["default_hours"][start_time.weekday()]
+    # Re-parse the day's hours so they print in the same format as the request
+    open_time, close_time = cog.parse_time_range(
+        start_time.strftime("%Y-%m-%d") + " " + hours.replace(" ", "")
+    )
     embed = discord.Embed(
         title="⚠️ Outside Gameroom Hours",
-        description=(
-            "This reservation falls outside the gameroom's hours for that day. "
-            "You can still book it, but staff will be pinged to review it."
-        ),
+        description="This reservation falls outside the gameroom's hours for that day.",
         color=discord.Color.orange(),
     )
     embed.add_field(
-        name="You asked for",
+        name="You booked",
         value=(
             f"{start_time.strftime('%A, %B %d, %Y')}\n"
-            f"{start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')} CST"
+            f"{start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')}"
         ),
         inline=False,
     )
     embed.add_field(
-        name=f"{start_time.strftime('%A')} hours",
-        value=hours,
+        name=f"{start_time.strftime('%A')}'s hours",
+        value=f"{open_time.strftime('%I:%M %p')} - {close_time.strftime('%I:%M %p')}",
         inline=False,
     )
     return embed
@@ -1894,7 +1895,7 @@ class ReservationTimeModal(discord.ui.Modal):
                 self, start_time, end_time, (date_str, start_time_str, end_time_str)
             )
             view.prompt = await interaction.followup.send(
-                embed=build_outside_hours_embed(start_time, end_time),
+                embed=build_outside_hours_embed(self.cog, start_time, end_time),
                 view=view,
                 ephemeral=True,
                 wait=True,
@@ -1916,7 +1917,9 @@ class ReservationTimeModal(discord.ui.Modal):
         confirms. Nothing is written to the db before this runs.
         """
         if not self.cog.validate_advance_booking(start_time):
-            warnings.append(f"Booked less than {ADVANCE_BOOKING_DAYS} days in advance")
+            warnings.append(
+                f"⌛ Booked less than {ADVANCE_BOOKING_DAYS} days in advance"
+            )
 
         # Check conflicts first
         (
@@ -1956,11 +1959,11 @@ class ReservationTimeModal(discord.ui.Modal):
             quota = self.cog.team_prime_time_quota[self.team]
             if not has_quota:
                 warnings.append(
-                    f"Prime time quota exceeded ({used_count}/{quota} used this week)"
+                    f"✨ Prime time quota exceeded ({used_count}/{quota} used this week)"
                 )
 
         if is_prime and is_over_2_hours:
-            warnings.append("Prime time reservation longer than 2 hours")
+            warnings.append("🕑 Prime time reservation longer than 2 hours")
 
         # Save reservation to database (skip for bot devs)
         manager = (
@@ -1985,7 +1988,7 @@ class ReservationTimeModal(discord.ui.Modal):
         )
         # The booking stands either way -- this tells the booker staff are reviewing it
         warning_status = (
-            "\n".join(f"⚠️ {warning}" for warning in warnings)
+            "\n".join(warnings)
             + "\n**Booked anyway. Staff have been pinged to review it.**"
             if warnings
             else ""
@@ -2061,18 +2064,21 @@ class ReservationTimeModal(discord.ui.Modal):
                         inline=False,
                     )
 
-                if warnings:
-                    embed.add_field(
-                        name="Notes",
-                        value="\n".join(f"‼️ {warning}" for warning in warnings),
-                        inline=False,
-                    )
-
-                # A warned booking still goes through, so the staff role gets pinged on
-                # top of the usual rotation -- someone has to decide whether it stands
+                # The role mention rides in the Notes field, but a mention inside an
+                # embed does not notify -- the ping in the message content does that
                 staff_role = None
                 if warnings and (role_id := config.staff_role_id()):
                     staff_role = reservations_channel.guild.get_role(role_id)
+
+                if warnings:
+                    note_lines = [f"⚠️ {staff_role.mention}"] if staff_role else []
+                    note_lines += warnings
+                    embed.add_field(
+                        name="Notes",
+                        value="\n".join(note_lines),
+                        inline=False,
+                    )
+
                 mentions = discord.AllowedMentions(
                     everyone=False,
                     users=True,
@@ -2145,7 +2151,7 @@ class OutsideHoursView(discord.ui.View):
         self._disable()
         await interaction.response.edit_message(view=self)
         await self.modal.complete(
-            interaction, self.start_time, self.end_time, ["Outside gameroom hours"]
+            interaction, self.start_time, self.end_time, ["🌃 Outside gameroom hours"]
         )
         self.stop()
 
