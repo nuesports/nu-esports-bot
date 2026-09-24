@@ -27,8 +27,27 @@ BACK_ROOM_PCS = [0, 14, 15]  # 0 = Streaming, 14 = Back Room 1, 15 = Back Room 2
 MAIN_ROOM_PCS = list(range(1, 11))
 PRIME_TIME_WEEKDAY_HOUR = 19  # 7 PM
 PRIME_TIME_WEEKEND_HOUR = 18  # 6 PM
+# Norris locks overnight, so nothing can be booked before it reopens
+NORRIS_OPEN_HOUR = 8
 
 STAFF_LIST = config.config["roles"]["gameroom_staff"]["users"]
+
+# also the source of the /reserve team list, so the two can't drift
+TEAM_PRIME_TIME_QUOTA: dict[str, int] = {
+    "Valorant White": 2,
+    "Valorant Purple": 1,
+    "Overwatch White": 1,
+    "Overwatch Purple": 1,
+    "League Purple": 1,
+    "Deadlock Purple": 1,
+    "Apex White": 1,
+    "Apex Purple": 1,
+    "Rocket League Purple": 1,
+    # External events have unlimited prime time quota since they're staff-managed
+    "External": 99,
+}
+# external is staff-only, so it isn't offered in the dropdown
+RESERVABLE_TEAMS = [team for team in TEAM_PRIME_TIME_QUOTA if team != "External"]
 
 STATE_TO_EMOJI = {
     "ReadyForUser": ":green_square:",
@@ -43,6 +62,23 @@ STATE_TO_NAME = {
     "AdminMode": "In Use",
     "Off": "Offline",
 }
+
+
+async def date_autocomplete(
+    ctx: discord.AutocompleteContext,
+) -> list[discord.OptionChoice]:
+    """Offer the coming week, today first -- a slash option can't be pre-filled."""
+    today = datetime.now(CENTRAL_TZ).date()
+    typed = ctx.value.strip() if ctx.value else ""
+    choices = []
+    for offset in range(8):
+        day = today + timedelta(days=offset)
+        iso = day.isoformat()
+        if typed and not iso.startswith(typed):
+            continue
+        label = {0: "today", 1: "tomorrow"}.get(offset, day.strftime("%A"))
+        choices.append(discord.OptionChoice(name=f"{iso} ({label})", value=iso))
+    return choices
 
 
 async def reservation_autocomplete(
@@ -77,19 +113,7 @@ async def reservation_autocomplete(
 class PCs(commands.Cog):
     def __init__(self, bot: discord.Bot) -> None:
         self.bot: discord.Bot = bot
-        # Team to prime time quota mapping
-        self.team_prime_time_quota: dict[str, int] = {
-            "Valorant White": 2,
-            "Valorant Purple": 1,
-            "Overwatch White": 1,
-            "Overwatch Purple": 1,
-            "League Purple": 1,
-            "Apex White": 1,
-            "Apex Purple": 1,
-            "Rocket League Purple": 1,
-            # External events have unlimited prime time quota since they're staff-managed
-            "External": 99,
-        }
+        self.team_prime_time_quota: dict[str, int] = TEAM_PRIME_TIME_QUOTA
         # Staff ping index for cycling through gameroom staff. None until the first
         # ping loads it from the db -- see next_staff_index().
         self.staff_ping_index: int | None = None
@@ -365,6 +389,38 @@ class PCs(commands.Cog):
             # Re-raise other errors
             raise error
 
+    @staticmethod
+    def parse_clock(value: str) -> datetime:
+        """Parse a clock time, no marker means PM."""
+        cleaned = value.strip().replace(" ", "").upper()
+        for fmt in ("%I:%M%p", "%I%p"):
+            try:
+                return datetime.strptime(cleaned, fmt).replace(tzinfo=CENTRAL_TZ)
+            except ValueError:
+                continue
+        # only where it can't also be a 12-hour time, so 7:30 falls through to PM below
+        for fmt in ("%H:%M", "%H"):
+            try:
+                parsed = datetime.strptime(cleaned, fmt).replace(tzinfo=CENTRAL_TZ)
+            except ValueError:
+                continue
+            if parsed.hour == 0 or parsed.hour > 12:
+                return parsed
+        for fmt in ("%I:%M", "%I"):
+            try:
+                parsed = datetime.strptime(cleaned, fmt).replace(tzinfo=CENTRAL_TZ)
+            except ValueError:
+                continue
+            # 12 is already noon, everything else shifts to afternoon
+            return parsed.replace(
+                hour=parsed.hour if parsed.hour == 12 else parsed.hour + 12
+            )
+        raise ValueError(f"Could not read the time {value.strip()!r}")
+
+    def is_building_closed(self, start_time: datetime, end_time: datetime) -> bool:
+        """True if the slot starts during Norris's overnight closure."""
+        return start_time.hour < NORRIS_OPEN_HOUR
+
     def parse_time_range(self, time_str: str) -> tuple[datetime, datetime]:
         """Parse time range string like '2025-10-10 7:00PM-9:00PM' into datetime objects (CST)"""
         # Split date and time range
@@ -376,17 +432,13 @@ class PCs(commands.Cog):
             year, month, day = map(int, date_part.split("-"))
 
             # Parse start time
-            start_time = datetime.strptime(start_time_str.strip(), "%I:%M%p").replace(
-                tzinfo=CENTRAL_TZ
-            )
+            start_time = self.parse_clock(start_time_str)
             start_dt = datetime(
                 year, month, day, start_time.hour, start_time.minute, tzinfo=CENTRAL_TZ
             )
 
             # Parse end time
-            end_time = datetime.strptime(end_time_str.strip(), "%I:%M%p").replace(
-                tzinfo=CENTRAL_TZ
-            )
+            end_time = self.parse_clock(end_time_str)
             end_dt = datetime(
                 year, month, day, end_time.hour, end_time.minute, tzinfo=CENTRAL_TZ
             )
@@ -394,7 +446,9 @@ class PCs(commands.Cog):
             return start_dt, end_dt
         except ValueError:
             raise ValueError(
-                "Invalid time format. Expected format: 'YYYY-MM-DD H:MMAM/PM-H:MMAM/PM' (e.g., '2025-10-10 7:00PM-9:00PM')"
+                "Invalid time format. Expected 'YYYY-MM-DD <start>-<end>', where each "
+                "time looks like 7, 7:30, 7PM or 7:30 am -- PM is assumed when you "
+                "leave it off (e.g. '2025-10-10 7-9:30')"
             )
 
     def validate_advance_booking(self, start_time: datetime) -> bool:
@@ -1289,6 +1343,7 @@ class PCs(commands.Cog):
         date: str = discord.Option(
             name="date",
             description="Date in YYYY-MM-DD format (default: today)",
+            autocomplete=date_autocomplete,
             required=False,
         ),
     ) -> None:
@@ -1449,16 +1504,7 @@ class PCs(commands.Cog):
         team: str = discord.Option(
             name="team",
             description="Your team",
-            choices=[
-                "Valorant White",
-                "Valorant Purple",
-                "Overwatch White",
-                "Overwatch Purple",
-                "League Purple",
-                "Apex White",
-                "Apex Purple",
-                "Rocket League Purple",
-            ],
+            choices=RESERVABLE_TEAMS,
             required=True,
         ),
         num_pcs: int = discord.Option(
@@ -1782,6 +1828,64 @@ class PCs(commands.Cog):
         return buffer
 
 
+# the booker's embed and the staff notes both render these verbatim
+WARN_OUTSIDE_HOURS = "🌃 Outside gameroom hours"
+WARN_SHORT_NOTICE = f"⌛ Booked less than {ADVANCE_BOOKING_DAYS} days in advance"
+WARN_LONG_PRIME = "🕑 Prime time reservation longer than 2 hours"
+
+
+# render order for the prompt -- prime time warnings land too late to appear there
+WARNING_ORDER = [WARN_OUTSIDE_HOURS, WARN_SHORT_NOTICE]
+
+
+def warn_prime_quota(used_count: int, quota: int) -> str:
+    return f"✨ Prime time quota exceeded ({used_count}/{quota} used this week)"
+
+
+def format_slot(start_time: datetime, end_time: datetime) -> str:
+    """The date and timeframe line every reservation prompt prints."""
+    return (
+        f"{start_time.strftime('%A, %B %d, %Y')}\n"
+        f"{start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')}"
+    )
+
+
+def build_warnings_embed(
+    cog: PCs,
+    start_time: datetime,
+    end_time: datetime,
+    warnings: list[str],
+    resolved: list[str],
+) -> discord.Embed:
+    """Confirm prompt for a broken policy, green once every warning is struck through."""
+    hours = config.gameroom_data["default_hours"][start_time.weekday()]
+    # re-parse the day's hours so they print like the request does
+    open_time, close_time = cog.parse_time_range(
+        start_time.strftime("%Y-%m-%d") + " " + hours.replace(" ", "")
+    )
+    lines = [
+        warning if warning in warnings else f"~~{warning}~~"
+        for warning in WARNING_ORDER
+        if warning in warnings or warning in resolved
+    ]
+    embed = discord.Embed(
+        title="⚠️ Booking Warnings" if warnings else "✅ Booking Ready",
+        description="\n".join(lines),
+        color=discord.Color.orange() if warnings else discord.Color.green(),
+    )
+    embed.add_field(
+        name="You booked",
+        value=format_slot(start_time, end_time),
+        inline=False,
+    )
+    embed.add_field(
+        name=f"{start_time.strftime('%A')}'s hours",
+        value=f"{open_time.strftime('%I:%M %p')} - {close_time.strftime('%I:%M %p')}",
+        inline=False,
+    )
+    return embed
+
+
 class ReservationTimeModal(discord.ui.Modal):
     def __init__(
         self,
@@ -1790,6 +1894,10 @@ class ReservationTimeModal(discord.ui.Modal):
         num_pcs: int,
         res_type: str,
         is_bot_dev: bool = False,
+        date_value: str = "",
+        start_value: str = "",
+        end_value: str = "",
+        origin_view: BookingWarningsView | None = None,
     ) -> None:
         super().__init__(title="Reserve PCs - Set Time")
         self.cog: PCs = cog
@@ -1797,6 +1905,7 @@ class ReservationTimeModal(discord.ui.Modal):
         self.num_pcs: int = num_pcs
         self.res_type: str = res_type
         self.is_bot_dev: bool = is_bot_dev
+        self.origin_view: BookingWarningsView | None = origin_view
 
         # Calculate example date as today + 2 days (minimum advance booking)
         example_date = (datetime.now(CENTRAL_TZ) + timedelta(days=2)).strftime(
@@ -1808,24 +1917,27 @@ class ReservationTimeModal(discord.ui.Modal):
                 placeholder=f"YYYY-MM-DD (e.g., {example_date})",
                 style=discord.InputTextStyle.short,
                 required=True,
+                value=date_value or example_date,
             )
         )
 
         self.add_item(
             discord.ui.InputText(
                 label="Start Time",
-                placeholder="H:MMAM/PM (e.g., 7:00PM)",
+                placeholder="7, 7:30, or 7:30AM (assumes PM)",
                 style=discord.InputTextStyle.short,
                 required=True,
+                value=start_value or None,
             )
         )
 
         self.add_item(
             discord.ui.InputText(
                 label="End Time",
-                placeholder="H:MMAM/PM (e.g., 9:00PM)",
+                placeholder="9, 9:30, or 9:30PM (assumes PM)",
                 style=discord.InputTextStyle.short,
                 required=True,
+                value=end_value or None,
             )
         )
 
@@ -1855,20 +1967,63 @@ class ReservationTimeModal(discord.ui.Modal):
             )
             return
 
-        # Ensure reservation is within Gameroom hours
-        if not self.cog.is_within_open_hours(start_time, end_time):
+        # hard refusal, not a warning -- nobody can unlock the building
+        if self.cog.is_building_closed(start_time, end_time):
             await interaction.followup.send(
-                "❌ Requested reservation is not within Gameroom hours.", ephemeral=True
-            )
-            return
-
-        # Validate advance booking (at least 2 days)
-        if not self.cog.validate_advance_booking(start_time):
-            await interaction.followup.send(
-                "❌ Reservations must be made at least 2 days in advance. Please choose a date at least 2 days from today.",
+                f"❌ Norris is closed between 12:00 AM and {NORRIS_OPEN_HOUR}:00 AM. "
+                "Pick a later start time.",
                 ephemeral=True,
             )
             return
+
+        # retire only after the hard checks, or a refused edit loses the booker's times
+        previous_warnings: list[str] = []
+        if self.origin_view:
+            previous_warnings = list(self.origin_view.warnings) + list(
+                self.origin_view.resolved
+            )
+            await self.origin_view.retire("✏️ Replaced by your edited times.")
+
+        # everything knowable before allocation -- complete() adds the prime time ones
+        warnings: list[str] = []
+        if not self.cog.is_within_open_hours(start_time, end_time):
+            warnings.append(WARN_OUTSIDE_HOURS)
+        if not self.cog.validate_advance_booking(start_time):
+            warnings.append(WARN_SHORT_NOTICE)
+
+        # what the edit cleared, so the booker sees the fix land
+        resolved = [w for w in previous_warnings if w not in warnings]
+
+        # resolved keeps the prompt up after the last warning clears, so it's still confirmed
+        if warnings or resolved:
+            view = BookingWarningsView(
+                self,
+                start_time,
+                end_time,
+                (date_str, start_time_str, end_time_str),
+                warnings,
+                resolved,
+            )
+            view.prompt = await interaction.followup.send(
+                embed=build_warnings_embed(
+                    self.cog, start_time, end_time, warnings, resolved
+                ),
+                view=view,
+                ephemeral=True,
+                wait=True,
+            )
+            return
+
+        await self.complete(interaction, start_time, end_time, warnings)
+
+    async def complete(
+        self,
+        interaction: discord.Interaction,
+        start_time: datetime,
+        end_time: datetime,
+        warnings: list[str],
+    ) -> None:
+        """Refusing checks, save, then notify staff -- nothing is written before this runs."""
 
         # Check conflicts first
         (
@@ -1907,12 +2062,10 @@ class ReservationTimeModal(discord.ui.Modal):
             )
             quota = self.cog.team_prime_time_quota[self.team]
             if not has_quota:
-                await interaction.followup.send(
-                    f"❌ **{self.team}** has already used all {quota} prime time reservation(s) this week ({used_count}/{quota} used).\n"
-                    f"Prime time resets every Monday at 12:00 AM CST.",
-                    ephemeral=True,
-                )
-                return
+                warnings.append(warn_prime_quota(used_count, quota))
+
+        if is_prime and is_over_2_hours:
+            warnings.append(WARN_LONG_PRIME)
 
         # Save reservation to database (skip for bot devs)
         manager = (
@@ -1935,6 +2088,13 @@ class ReservationTimeModal(discord.ui.Modal):
         test_status = (
             "🧪 **Test Reservation** (Not saved to database)" if self.is_bot_dev else ""
         )
+        # the booking stands either way, this just says staff are looking at it
+        warning_status = (
+            "\n".join(warnings)
+            + "\n**Booked anyway. Staff have been pinged to review it.**"
+            if warnings
+            else ""
+        )
         await interaction.followup.send(
             f"✅ Reservation confirmed!\n\n"
             f"**Team:** {self.team}\n"
@@ -1942,7 +2102,8 @@ class ReservationTimeModal(discord.ui.Modal):
             f"**Time:** {start_time.strftime('%A, %B %d, %Y %I:%M %p')} - {end_time.strftime('%I:%M %p')} CST\n"
             f"**Manager:** {manager}\n"
             f"{prime_time_status}\n"
-            f"{test_status}",
+            f"{test_status}\n"
+            f"{warning_status}",
             ephemeral=True,
         )
 
@@ -2005,17 +2166,32 @@ class ReservationTimeModal(discord.ui.Modal):
                         inline=False,
                     )
 
-                if is_prime and is_over_2_hours:
+                # mentions only notify from the content, not from inside an embed
+                staff_role = None
+                if warnings and (role_id := config.staff_role_id()):
+                    staff_role = reservations_channel.guild.get_role(role_id)
+                mentions = discord.AllowedMentions(
+                    everyone=False,
+                    users=True,
+                    roles=[staff_role] if staff_role else False,
+                )
+
+                if warnings:
                     embed.add_field(
-                        name="Notes",
-                        value="‼️ Prime Time Reservation longer than 2 Hours",
+                        name="⚠️ Notes",
+                        value="\n".join(warnings),
                         inline=False,
                     )
 
                 # Ping the next staff member in rotation
                 if STAFF_LIST:
                     staff_id = STAFF_LIST[await self.cog.next_staff_index()]
-                    msg = await reservations_channel.send(f"<@{staff_id}>", embed=embed)
+                    content = f"<@{staff_id}>"
+                    if staff_role:
+                        content += f" // ⚠️ {staff_role.mention}"
+                    msg = await reservations_channel.send(
+                        content, embed=embed, allowed_mentions=mentions
+                    )
                     # Track for acknowledgment
                     self.cog.pending_acknowledgments[msg.id] = {
                         "staff_id": staff_id,
@@ -2023,10 +2199,180 @@ class ReservationTimeModal(discord.ui.Modal):
                         "sent_at": datetime.now(CENTRAL_TZ),
                         "team": self.team,
                     }
+                elif staff_role:
+                    await reservations_channel.send(
+                        f"⚠️ {staff_role.mention}",
+                        embed=embed,
+                        allowed_mentions=mentions,
+                    )
                 else:
                     await reservations_channel.send(embed=embed)
         except discord.HTTPException as e:
             print(f"Failed to send notification to nexus-reservations: {e}")
+
+
+class BookingWarningsView(discord.ui.View):
+    """Confirm/edit/cancel prompt, since a break is usually a mistyped date."""
+
+    def __init__(
+        self,
+        modal: ReservationTimeModal,
+        start_time: datetime,
+        end_time: datetime,
+        raw_values: tuple[str, str, str],
+        warnings: list[str],
+        resolved: list[str],
+    ) -> None:
+        super().__init__(timeout=300)
+        self.modal: ReservationTimeModal = modal
+        self.start_time: datetime = start_time
+        self.end_time: datetime = end_time
+        self.raw_values: tuple[str, str, str] = raw_values
+        # carried forward so confirming keeps every warning the prompt showed
+        self.warnings: list[str] = warnings
+        self.resolved: list[str] = resolved
+        if not warnings:
+            for child in self.children:
+                if getattr(child, "label", None) == "Book it anyway":
+                    child.label = "Book now"
+        # set by the caller right after send(), so the buttons can be retired
+        self.prompt: discord.WebhookMessage | None = None
+
+    def _disable(self) -> None:
+        for child in self.children:
+            child.disabled = True
+
+    async def retire(self, note: str) -> None:
+        """Disable the buttons and stop listening, editing the prompt to say why."""
+        self._disable()
+        if self.prompt:
+            await self.prompt.edit(content=note, view=self)
+        self.stop()
+
+    async def on_timeout(self) -> None:
+        await self.retire("⌛ Timed out. Nothing was booked -- run `/reserve` again.")
+
+    @discord.ui.button(label="Book it anyway", style=discord.ButtonStyle.success)
+    async def confirm_button(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ) -> None:
+        self._disable()
+        await interaction.response.edit_message(view=self)
+        await self.modal.complete(
+            interaction, self.start_time, self.end_time, list(self.warnings)
+        )
+        self.stop()
+
+    @discord.ui.button(label="Edit times", style=discord.ButtonStyle.primary)
+    async def edit_button(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ) -> None:
+        # stay live -- dismissing a modal fires no event, so the new one retires this
+        date_value, start_value, end_value = self.raw_values
+        await interaction.response.send_modal(
+            ReservationTimeModal(
+                self.modal.cog,
+                self.modal.team,
+                self.modal.num_pcs,
+                self.modal.res_type,
+                self.modal.is_bot_dev,
+                date_value=date_value,
+                start_value=start_value,
+                end_value=end_value,
+                origin_view=self,
+            )
+        )
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
+    async def cancel_button(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ) -> None:
+        # keep this view alive so "No, go back" can restore it
+        await interaction.response.edit_message(view=ReservationCancelView(self))
+
+
+class ReservationCancelView(discord.ui.View):
+    """Dropdown confirm before dropping a booking, like matchmaking's CancelConfirmView."""
+
+    def __init__(self, parent: BookingWarningsView) -> None:
+        super().__init__(timeout=300)
+        self.parent: BookingWarningsView = parent
+
+        options = [
+            discord.SelectOption(
+                label="Yes, cancel this booking", value="confirm", emoji="🗑️"
+            ),
+            discord.SelectOption(label="No, go back", value="back", emoji="↩️"),
+        ]
+        self.select: discord.ui.Select = discord.ui.Select(
+            placeholder="Are you sure you want to cancel this booking?",
+            options=options,
+        )
+        self.select.callback = self.on_select
+        self.add_item(self.select)
+
+    async def on_select(self, interaction: discord.Interaction) -> None:
+        """Cancel the booking if confirmed, otherwise hand back the warning prompt."""
+        if self.select.values[0] == "back":
+            await interaction.response.edit_message(
+                embed=build_warnings_embed(
+                    self.parent.modal.cog,
+                    self.parent.start_time,
+                    self.parent.end_time,
+                    self.parent.warnings,
+                    self.parent.resolved,
+                ),
+                view=self.parent,
+            )
+            self.stop()
+            return
+
+        embed = discord.Embed(
+            title="❌ Booking Cancelled",
+            color=discord.Color.red(),
+        )
+        embed.add_field(
+            name="You Tried Booking",
+            value=format_slot(self.parent.start_time, self.parent.end_time),
+            inline=False,
+        )
+        await interaction.response.edit_message(
+            content=None,
+            embed=embed,
+            view=RemakeBookingView(self.parent.modal, self.parent.raw_values),
+        )
+        self.parent.stop()
+        self.stop()
+
+
+class RemakeBookingView(discord.ui.View):
+    """Lone button left on a cancelled booking, reopening the modal as it was typed."""
+
+    def __init__(
+        self, modal: ReservationTimeModal, raw_values: tuple[str, str, str]
+    ) -> None:
+        super().__init__(timeout=600)
+        self.modal: ReservationTimeModal = modal
+        self.raw_values: tuple[str, str, str] = raw_values
+
+    @discord.ui.button(label="Remake booking", style=discord.ButtonStyle.primary)
+    async def remake_button(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ) -> None:
+        # team, pc count and type come from the slash options, so only times reopen
+        date_value, start_value, end_value = self.raw_values
+        await interaction.response.send_modal(
+            ReservationTimeModal(
+                self.modal.cog,
+                self.modal.team,
+                self.modal.num_pcs,
+                self.modal.res_type,
+                self.modal.is_bot_dev,
+                date_value=date_value,
+                start_value=start_value,
+                end_value=end_value,
+            )
+        )
 
 
 class ExternalReservationTimeModal(discord.ui.Modal):
@@ -2048,7 +2394,7 @@ class ExternalReservationTimeModal(discord.ui.Modal):
         self.add_item(
             discord.ui.InputText(
                 label="Start Time",
-                placeholder="H:MMAM/PM (e.g., 7:00PM)",
+                placeholder="7, 7:30, or 7:30AM (assumes PM)",
                 style=discord.InputTextStyle.short,
                 required=True,
             )
@@ -2057,7 +2403,7 @@ class ExternalReservationTimeModal(discord.ui.Modal):
         self.add_item(
             discord.ui.InputText(
                 label="End Time",
-                placeholder="H:MMAM/PM (e.g., 9:00PM)",
+                placeholder="9, 9:30, or 9:30PM (assumes PM)",
                 style=discord.InputTextStyle.short,
                 required=True,
             )
@@ -2085,6 +2431,15 @@ class ExternalReservationTimeModal(discord.ui.Modal):
         if start_time > end_time:
             await interaction.followup.send(
                 "❌ Requested reservation start time is after the requested end time.",
+                ephemeral=True,
+            )
+            return
+
+        # hard refusal, not a warning -- nobody can unlock the building
+        if self.cog.is_building_closed(start_time, end_time):
+            await interaction.followup.send(
+                f"❌ Norris is closed between 12:00 AM and {NORRIS_OPEN_HOUR}:00 AM. "
+                "Pick a later start time.",
                 ephemeral=True,
             )
             return

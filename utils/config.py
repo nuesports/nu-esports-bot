@@ -112,6 +112,11 @@ def is_stream_team(member: discord.Member) -> bool:
     return _in_role_group(member, config["roles"]["stream_team"])
 
 
+def staff_role_id() -> int | None:
+    """The role pinged when something needs a human."""
+    return config["roles"].get("staff_role")
+
+
 def can_reserve(member: discord.Member) -> bool:
     """Who can invoke reservation commands: bot devs, gameroom staff, leadership, or gameheads."""
     return (

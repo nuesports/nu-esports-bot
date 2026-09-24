@@ -17,6 +17,8 @@ fun:
     #- ...
 
 roles:
+  # pinged when something needs a human
+  staff_role: #<role_id>
   bot_devs:
     users:
       - #<user_id>
@@ -78,8 +80,6 @@ github_backlog:
 antiscam:
   # where flagged messages and their member-info embed get posted
   alert_channel: #<channel_id>
-  # pinged when something is flagged
-  staff_role: #<role_id>
   # 28 is Discord's maximum; the timeout is meant to hold until staff clear it
   timeout_days: 28
   # how much of a banned member's history the ban purges, Discord allows up to 7

@@ -336,7 +336,7 @@ class AntiScam(commands.Cog):
         self.bot: discord.Bot = bot
         cfg = config.config["antiscam"]
         self.alert_channel_id = cfg["alert_channel"]
-        self.staff_role_id = cfg["staff_role"]
+        self.staff_role_id = config.staff_role_id()
         self.timeout_days = min(cfg["timeout_days"], MAX_TIMEOUT_DAYS)
         self.ban_delete_days = min(cfg["ban_delete_message_days"], MAX_BAN_DELETE_DAYS)
         self.purge_window_minutes = cfg["purge_window_minutes"]
@@ -407,7 +407,9 @@ class AntiScam(commands.Cog):
         if not channel:
             return
 
-        staff_role = message.guild.get_role(self.staff_role_id)
+        staff_role = (
+            message.guild.get_role(self.staff_role_id) if self.staff_role_id else None
+        )
         mentions = discord.AllowedMentions(
             everyone=False, users=False, roles=[staff_role] if staff_role else False
         )
