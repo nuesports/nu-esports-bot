@@ -27,6 +27,8 @@ BACK_ROOM_PCS = [0, 14, 15]  # 0 = Streaming, 14 = Back Room 1, 15 = Back Room 2
 MAIN_ROOM_PCS = list(range(1, 11))
 PRIME_TIME_WEEKDAY_HOUR = 19  # 7 PM
 PRIME_TIME_WEEKEND_HOUR = 18  # 6 PM
+# Norris locks overnight, so nothing can be booked before it reopens
+NORRIS_OPEN_HOUR = 8
 
 STAFF_LIST = config.config["roles"]["gameroom_staff"]["users"]
 
@@ -371,6 +373,25 @@ class PCs(commands.Cog):
             # Re-raise other errors
             raise error
 
+    @staticmethod
+    def parse_clock(value: str) -> datetime:
+        """Parse a single clock time, tolerating '7pm', '7 PM' and '7:00 pm' alike."""
+        cleaned = value.strip().replace(" ", "").upper()
+        for fmt in ("%I:%M%p", "%I%p"):
+            try:
+                return datetime.strptime(cleaned, fmt).replace(tzinfo=CENTRAL_TZ)
+            except ValueError:
+                continue
+        raise ValueError(f"Could not read the time {value.strip()!r}")
+
+    def is_building_closed(self, start_time: datetime, end_time: datetime) -> bool:
+        """True if the slot runs during Norris's overnight closure.
+
+        Both ends are parsed onto the same date, so a start at or after opening puts
+        the whole slot clear of the closure.
+        """
+        return start_time.hour < NORRIS_OPEN_HOUR
+
     def parse_time_range(self, time_str: str) -> tuple[datetime, datetime]:
         """Parse time range string like '2025-10-10 7:00PM-9:00PM' into datetime objects (CST)"""
         # Split date and time range
@@ -382,17 +403,13 @@ class PCs(commands.Cog):
             year, month, day = map(int, date_part.split("-"))
 
             # Parse start time
-            start_time = datetime.strptime(start_time_str.strip(), "%I:%M%p").replace(
-                tzinfo=CENTRAL_TZ
-            )
+            start_time = self.parse_clock(start_time_str)
             start_dt = datetime(
                 year, month, day, start_time.hour, start_time.minute, tzinfo=CENTRAL_TZ
             )
 
             # Parse end time
-            end_time = datetime.strptime(end_time_str.strip(), "%I:%M%p").replace(
-                tzinfo=CENTRAL_TZ
-            )
+            end_time = self.parse_clock(end_time_str)
             end_dt = datetime(
                 year, month, day, end_time.hour, end_time.minute, tzinfo=CENTRAL_TZ
             )
@@ -400,7 +417,8 @@ class PCs(commands.Cog):
             return start_dt, end_dt
         except ValueError:
             raise ValueError(
-                "Invalid time format. Expected format: 'YYYY-MM-DD H:MMAM/PM-H:MMAM/PM' (e.g., '2025-10-10 7:00PM-9:00PM')"
+                "Invalid time format. Expected 'YYYY-MM-DD <start>-<end>', where each "
+                "time looks like 7PM, 7:00PM or 7:00 pm (e.g. '2025-10-10 7PM-9:30PM')"
             )
 
     def validate_advance_booking(self, start_time: datetime) -> bool:
@@ -1933,6 +1951,16 @@ class ReservationTimeModal(discord.ui.Modal):
             )
             return
 
+        # Norris is locked overnight, so nothing can run then. Unlike the gameroom's
+        # own hours this is a hard refusal -- no one can wave the building open.
+        if self.cog.is_building_closed(start_time, end_time):
+            await interaction.followup.send(
+                f"❌ Norris is closed between 12:00 AM and {NORRIS_OPEN_HOUR}:00 AM. "
+                "Pick a later start time.",
+                ephemeral=True,
+            )
+            return
+
         # Everything knowable before PCs are allocated. complete() appends the
         # prime-time warnings, which depend on which PCs it manages to allocate.
         warnings: list[str] = []
@@ -2402,6 +2430,16 @@ class ExternalReservationTimeModal(discord.ui.Modal):
         if start_time > end_time:
             await interaction.followup.send(
                 "❌ Requested reservation start time is after the requested end time.",
+                ephemeral=True,
+            )
+            return
+
+        # Norris is locked overnight, so nothing can run then. Unlike the gameroom's
+        # own hours this is a hard refusal -- no one can wave the building open.
+        if self.cog.is_building_closed(start_time, end_time):
+            await interaction.followup.send(
+                f"❌ Norris is closed between 12:00 AM and {NORRIS_OPEN_HOUR}:00 AM. "
+                "Pick a later start time.",
                 ephemeral=True,
             )
             return
