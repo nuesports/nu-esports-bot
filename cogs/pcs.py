@@ -396,13 +396,26 @@ class PCs(commands.Cog):
 
     @staticmethod
     def parse_clock(value: str) -> datetime:
-        """Parse a single clock time, tolerating '7pm', '7 PM' and '7:00 pm' alike."""
+        """Parse a single clock time, tolerating '7pm', '7 PM' and '7:00 pm' alike.
+
+        A time with no AM/PM is read as PM, since the gameroom shuts at 11PM and opens
+        at noon at the earliest -- '7' means 7PM to everyone booking it.
+        """
         cleaned = value.strip().replace(" ", "").upper()
         for fmt in ("%I:%M%p", "%I%p"):
             try:
                 return datetime.strptime(cleaned, fmt).replace(tzinfo=CENTRAL_TZ)
             except ValueError:
                 continue
+        for fmt in ("%I:%M", "%I"):
+            try:
+                parsed = datetime.strptime(cleaned, fmt).replace(tzinfo=CENTRAL_TZ)
+            except ValueError:
+                continue
+            # 12 is already noon; every other bare hour shifts into the afternoon
+            return parsed.replace(
+                hour=parsed.hour if parsed.hour == 12 else parsed.hour + 12
+            )
         raise ValueError(f"Could not read the time {value.strip()!r}")
 
     def is_building_closed(self, start_time: datetime, end_time: datetime) -> bool:
@@ -439,7 +452,8 @@ class PCs(commands.Cog):
         except ValueError:
             raise ValueError(
                 "Invalid time format. Expected 'YYYY-MM-DD <start>-<end>', where each "
-                "time looks like 7PM, 7:00PM or 7:00 pm (e.g. '2025-10-10 7PM-9:30PM')"
+                "time looks like 7, 7:30, 7PM or 7:30 am -- PM is assumed when you "
+                "leave it off (e.g. '2025-10-10 7-9:30')"
             )
 
     def validate_advance_booking(self, start_time: datetime) -> bool:
@@ -1921,7 +1935,7 @@ class ReservationTimeModal(discord.ui.Modal):
         self.add_item(
             discord.ui.InputText(
                 label="Start Time",
-                placeholder="H:MMAM/PM (e.g., 7:00PM)",
+                placeholder="7, 7:30 or 7:30AM -- PM assumed",
                 style=discord.InputTextStyle.short,
                 required=True,
                 value=start_value or None,
@@ -1931,7 +1945,7 @@ class ReservationTimeModal(discord.ui.Modal):
         self.add_item(
             discord.ui.InputText(
                 label="End Time",
-                placeholder="H:MMAM/PM (e.g., 9:00PM)",
+                placeholder="9, 9:30 or 9:30PM -- PM assumed",
                 style=discord.InputTextStyle.short,
                 required=True,
                 value=end_value or None,
@@ -2416,7 +2430,7 @@ class ExternalReservationTimeModal(discord.ui.Modal):
         self.add_item(
             discord.ui.InputText(
                 label="Start Time",
-                placeholder="H:MMAM/PM (e.g., 7:00PM)",
+                placeholder="7, 7:30 or 7:30AM -- PM assumed",
                 style=discord.InputTextStyle.short,
                 required=True,
             )
@@ -2425,7 +2439,7 @@ class ExternalReservationTimeModal(discord.ui.Modal):
         self.add_item(
             discord.ui.InputText(
                 label="End Time",
-                placeholder="H:MMAM/PM (e.g., 9:00PM)",
+                placeholder="9, 9:30 or 9:30PM -- PM assumed",
                 style=discord.InputTextStyle.short,
                 required=True,
             )

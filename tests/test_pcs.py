@@ -61,3 +61,33 @@ def test_parse_time_range_still_rejects_a_bad_time(cog):
 def test_is_building_closed_covers_the_overnight_window(cog, times, closed):
     start, end = cog.parse_time_range(f"2026-09-28 {times}")
     assert cog.is_building_closed(start, end) is closed
+
+
+@pytest.mark.parametrize(
+    ("written", "expected"),
+    [
+        ("7", 19),
+        ("11", 23),
+        ("12", 12),
+        ("3", 15),
+        ("07", 19),
+    ],
+    ids=["seven", "eleven", "noon stays noon", "three", "zero padded"],
+)
+def test_parse_clock_assumes_pm_when_unmarked(cog, written, expected):
+    assert cog.parse_clock(written).hour == expected
+
+
+def test_parse_clock_assumes_pm_with_minutes(cog):
+    parsed = cog.parse_clock("7:30")
+    assert (parsed.hour, parsed.minute) == (19, 30)
+
+
+def test_parse_clock_still_honours_an_explicit_am(cog):
+    assert cog.parse_clock("7am").hour == 7
+
+
+def test_parse_time_range_reads_a_bare_range_as_evening(cog):
+    start, end = cog.parse_time_range("2026-09-28 7-9:30")
+    assert (start.hour, start.minute) == (19, 0)
+    assert (end.hour, end.minute) == (21, 30)
