@@ -1841,7 +1841,7 @@ class ReservationTimeModal(discord.ui.Modal):
         date_value: str = "",
         start_value: str = "",
         end_value: str = "",
-        origin_view: OutsideHoursView | None = None,
+        origin_view: BookingWarningsView | None = None,
     ) -> None:
         super().__init__(title="Reserve PCs - Set Time")
         self.cog: PCs = cog
@@ -1849,7 +1849,7 @@ class ReservationTimeModal(discord.ui.Modal):
         self.num_pcs: int = num_pcs
         self.res_type: str = res_type
         self.is_bot_dev: bool = is_bot_dev
-        self.origin_view: OutsideHoursView | None = origin_view
+        self.origin_view: BookingWarningsView | None = origin_view
 
         # Calculate example date as today + 2 days (minimum advance booking)
         example_date = (datetime.now(CENTRAL_TZ) + timedelta(days=2)).strftime(
@@ -1929,10 +1929,10 @@ class ReservationTimeModal(discord.ui.Modal):
         # Anything the edit cleared, so the booker sees their fix land
         resolved = [w for w in previous_warnings if w not in warnings]
 
-        # Out of hours is the one break worth asking about before anything is written
-        # -- it is far more often a mistyped date than a real request
-        if WARN_OUTSIDE_HOURS in warnings:
-            view = OutsideHoursView(
+        # Any break knowable before allocation gets confirmed first -- an edit that
+        # clears one but not the others must not slip straight through to a booking
+        if warnings:
+            view = BookingWarningsView(
                 self,
                 start_time,
                 end_time,
@@ -2160,11 +2160,13 @@ class ReservationTimeModal(discord.ui.Modal):
             print(f"Failed to send notification to nexus-reservations: {e}")
 
 
-class OutsideHoursView(discord.ui.View):
+class BookingWarningsView(discord.ui.View):
     """Confirm/edit/cancel prompt for a reservation that broke a booking policy.
 
-    Booking it is allowed -- staff get pinged to review -- but an out-of-hours slot is
-    far more often a mistyped date, so nothing is written until the booker confirms.
+    Booking it is allowed -- staff get pinged to review -- but a break is far more
+    often a mistyped date, so nothing is written until the booker confirms. Only the
+    breaks knowable before allocation reach this; the prime-time ones are found later
+    and ride out on the staff embed.
     """
 
     def __init__(
