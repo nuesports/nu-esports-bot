@@ -19,8 +19,7 @@ class FakeBooker:
 
 @pytest.fixture
 def cog():
-    """The time helpers never touch cog state, so an uninitialised instance is enough
-    -- PCs.__init__ starts a background task and wants a live bot."""
+    """PCs.__init__ wants a live bot, and the helpers never touch cog state."""
     return pcs.PCs.__new__(pcs.PCs)
 
 
@@ -679,8 +678,7 @@ async def test_a_clean_booking_pings_only_the_rotation(booked, modal, monkeypatc
 
 @pytest_asyncio.fixture
 async def external(cog):
-    """External bookings skip advance notice and gameroom hours, but not the
-    building being locked -- these stubs stand in for the db-backed steps."""
+    """External skips advance notice and gameroom hours, but not the locked building."""
 
     async def nothing_overlaps(*args):
         return []
@@ -701,8 +699,7 @@ async def test_external_is_refused_while_norris_is_locked(external):
 
 @pytest.mark.asyncio
 async def test_external_may_still_ignore_gameroom_hours(external):
-    # 9AM is outside the gameroom's own hours, which staff are allowed to override --
-    # the building closure is the only time rule they cannot
+    # 9am is outside gameroom hours, which staff can override, unlike the closure
     interaction = await submit(external, "2026-09-28", "9:00AM", "11:00AM")
     assert (
         "External reservation confirmed"

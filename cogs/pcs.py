@@ -32,8 +32,7 @@ NORRIS_OPEN_HOUR = 8
 
 STAFF_LIST = config.config["roles"]["gameroom_staff"]["users"]
 
-# Prime time reservations a team gets per week. Also the source of the /reserve team
-# list, so a team can't exist in one and not the other.
+# also the source of the /reserve team list, so the two can't drift
 TEAM_PRIME_TIME_QUOTA: dict[str, int] = {
     "Valorant White": 2,
     "Valorant Purple": 1,
@@ -47,7 +46,7 @@ TEAM_PRIME_TIME_QUOTA: dict[str, int] = {
     # External events have unlimited prime time quota since they're staff-managed
     "External": 99,
 }
-# External is staff-only via /reserve-external, so it isn't offered in the dropdown
+# external is staff-only, so it isn't offered in the dropdown
 RESERVABLE_TEAMS = [team for team in TEAM_PRIME_TIME_QUOTA if team != "External"]
 
 STATE_TO_EMOJI = {
@@ -68,11 +67,7 @@ STATE_TO_NAME = {
 async def date_autocomplete(
     ctx: discord.AutocompleteContext,
 ) -> list[discord.OptionChoice]:
-    """Offer the coming week, today first.
-
-    Discord has no way to pre-fill a slash option with real text -- only a modal's
-    InputText takes a value -- so the nearest thing is putting today one keystroke away.
-    """
+    """Offer the coming week, today first -- a slash option can't be pre-filled."""
     today = datetime.now(CENTRAL_TZ).date()
     typed = ctx.value.strip() if ctx.value else ""
     choices = []
@@ -396,19 +391,14 @@ class PCs(commands.Cog):
 
     @staticmethod
     def parse_clock(value: str) -> datetime:
-        """Parse a single clock time, tolerating '7pm', '7 PM' and '7:00 pm' alike.
-
-        A time with no AM/PM is read as PM, since the gameroom shuts at 11PM and opens
-        at noon at the earliest -- '7' means 7PM to everyone booking it.
-        """
+        """Parse a clock time, no marker means PM."""
         cleaned = value.strip().replace(" ", "").upper()
         for fmt in ("%I:%M%p", "%I%p"):
             try:
                 return datetime.strptime(cleaned, fmt).replace(tzinfo=CENTRAL_TZ)
             except ValueError:
                 continue
-        # 24-hour, but only where it cannot also be read as a 12-hour time: 19:00 and
-        # 00:30 say what they mean, 7:30 does not and falls to the PM default below
+        # only where it can't also be a 12-hour time, so 7:30 falls through to PM below
         for fmt in ("%H:%M", "%H"):
             try:
                 parsed = datetime.strptime(cleaned, fmt).replace(tzinfo=CENTRAL_TZ)
@@ -421,18 +411,14 @@ class PCs(commands.Cog):
                 parsed = datetime.strptime(cleaned, fmt).replace(tzinfo=CENTRAL_TZ)
             except ValueError:
                 continue
-            # 12 is already noon; every other bare hour shifts into the afternoon
+            # 12 is already noon, everything else shifts to afternoon
             return parsed.replace(
                 hour=parsed.hour if parsed.hour == 12 else parsed.hour + 12
             )
         raise ValueError(f"Could not read the time {value.strip()!r}")
 
     def is_building_closed(self, start_time: datetime, end_time: datetime) -> bool:
-        """True if the slot runs during Norris's overnight closure.
-
-        Both ends are parsed onto the same date, so a start at or after opening puts
-        the whole slot clear of the closure.
-        """
+        """True if the slot starts during Norris's overnight closure."""
         return start_time.hour < NORRIS_OPEN_HOUR
 
     def parse_time_range(self, time_str: str) -> tuple[datetime, datetime]:
@@ -1842,15 +1828,13 @@ class PCs(commands.Cog):
         return buffer
 
 
-# One source of truth for warning lines: the booker's confirm embed and the staff
-# Notes field both render these strings verbatim, so they can never disagree.
+# the booker's embed and the staff notes both render these verbatim
 WARN_OUTSIDE_HOURS = "🌃 Outside gameroom hours"
 WARN_SHORT_NOTICE = f"⌛ Booked less than {ADVANCE_BOOKING_DAYS} days in advance"
 WARN_LONG_PRIME = "🕑 Prime time reservation longer than 2 hours"
 
 
-# Render order for the confirm prompt. Prime-time warnings are found after
-# allocation, so they never reach that prompt and are not listed here.
+# render order for the prompt -- prime time warnings land too late to appear there
 WARNING_ORDER = [WARN_OUTSIDE_HOURS, WARN_SHORT_NOTICE]
 
 
@@ -1873,13 +1857,9 @@ def build_warnings_embed(
     warnings: list[str],
     resolved: list[str],
 ) -> discord.Embed:
-    """Ask the booker to confirm a reservation that broke one or more booking policies.
-
-    Warnings an edit has since cleared stay on the list, struck through, so the booker
-    can see their fix land. Once every one is struck the embed turns green.
-    """
+    """Confirm prompt for a broken policy, green once every warning is struck through."""
     hours = config.gameroom_data["default_hours"][start_time.weekday()]
-    # Re-parse the day's hours so they print in the same format as the request
+    # re-parse the day's hours so they print like the request does
     open_time, close_time = cog.parse_time_range(
         start_time.strftime("%Y-%m-%d") + " " + hours.replace(" ", "")
     )
@@ -1987,8 +1967,7 @@ class ReservationTimeModal(discord.ui.Modal):
             )
             return
 
-        # Norris is locked overnight, so nothing can run then. Unlike the gameroom's
-        # own hours this is a hard refusal -- no one can wave the building open.
+        # hard refusal, not a warning -- nobody can unlock the building
         if self.cog.is_building_closed(start_time, end_time):
             await interaction.followup.send(
                 f"❌ Norris is closed between 12:00 AM and {NORRIS_OPEN_HOUR}:00 AM. "
@@ -1997,9 +1976,7 @@ class ReservationTimeModal(discord.ui.Modal):
             )
             return
 
-        # Only now that the hard checks have passed does the prompt this edit came
-        # from get retired -- a refusal above must leave it standing, or the booker
-        # loses the times they typed and has to run /reserve again
+        # retire only after the hard checks, or a refused edit loses the booker's times
         previous_warnings: list[str] = []
         if self.origin_view:
             previous_warnings = list(self.origin_view.warnings) + list(
@@ -2007,20 +1984,17 @@ class ReservationTimeModal(discord.ui.Modal):
             )
             await self.origin_view.retire("✏️ Replaced by your edited times.")
 
-        # Everything knowable before PCs are allocated. complete() appends the
-        # prime-time warnings, which depend on which PCs it manages to allocate.
+        # everything knowable before allocation -- complete() adds the prime time ones
         warnings: list[str] = []
         if not self.cog.is_within_open_hours(start_time, end_time):
             warnings.append(WARN_OUTSIDE_HOURS)
         if not self.cog.validate_advance_booking(start_time):
             warnings.append(WARN_SHORT_NOTICE)
 
-        # Anything the edit cleared, so the booker sees their fix land
+        # what the edit cleared, so the booker sees the fix land
         resolved = [w for w in previous_warnings if w not in warnings]
 
-        # Any break knowable before allocation gets confirmed first. `resolved` keeps
-        # the prompt up after an edit clears the last one, so the booker still okays
-        # it -- a clean first attempt has neither and books straight through.
+        # resolved keeps the prompt up after the last warning clears, so it's still confirmed
         if warnings or resolved:
             view = BookingWarningsView(
                 self,
@@ -2049,11 +2023,7 @@ class ReservationTimeModal(discord.ui.Modal):
         end_time: datetime,
         warnings: list[str],
     ) -> None:
-        """Run the refusing checks, save the reservation, then notify staff.
-
-        Split out of callback() so the confirm prompt can call it once the booker says
-        yes. Nothing is written to the db before this runs.
-        """
+        """Refusing checks, save, then notify staff -- nothing is written before this runs."""
 
         # Check conflicts first
         (
@@ -2118,7 +2088,7 @@ class ReservationTimeModal(discord.ui.Modal):
         test_status = (
             "🧪 **Test Reservation** (Not saved to database)" if self.is_bot_dev else ""
         )
-        # The booking stands either way -- this tells the booker staff are reviewing it
+        # the booking stands either way, this just says staff are looking at it
         warning_status = (
             "\n".join(warnings)
             + "\n**Booked anyway. Staff have been pinged to review it.**"
@@ -2196,8 +2166,7 @@ class ReservationTimeModal(discord.ui.Modal):
                         inline=False,
                     )
 
-                # The role mention must sit in the message content -- a mention inside
-                # an embed renders but never notifies anyone
+                # mentions only notify from the content, not from inside an embed
                 staff_role = None
                 if warnings and (role_id := config.staff_role_id()):
                     staff_role = reservations_channel.guild.get_role(role_id)
@@ -2243,13 +2212,7 @@ class ReservationTimeModal(discord.ui.Modal):
 
 
 class BookingWarningsView(discord.ui.View):
-    """Confirm/edit/cancel prompt for a reservation that broke a booking policy.
-
-    Booking it is allowed -- staff get pinged to review -- but a break is far more
-    often a mistyped date, so nothing is written until the booker confirms. Only the
-    breaks knowable before allocation reach this; the prime-time ones are found later
-    and ride out on the staff embed.
-    """
+    """Confirm/edit/cancel prompt, since a break is usually a mistyped date."""
 
     def __init__(
         self,
@@ -2265,14 +2228,14 @@ class BookingWarningsView(discord.ui.View):
         self.start_time: datetime = start_time
         self.end_time: datetime = end_time
         self.raw_values: tuple[str, str, str] = raw_values
-        # Every warning the prompt showed, so confirming carries all of them forward
+        # carried forward so confirming keeps every warning the prompt showed
         self.warnings: list[str] = warnings
         self.resolved: list[str] = resolved
         if not warnings:
             for child in self.children:
                 if getattr(child, "label", None) == "Book it anyway":
                     child.label = "Book now"
-        # Set by the caller right after send(), so the buttons can be retired
+        # set by the caller right after send(), so the buttons can be retired
         self.prompt: discord.WebhookMessage | None = None
 
     def _disable(self) -> None:
@@ -2304,9 +2267,7 @@ class BookingWarningsView(discord.ui.View):
     async def edit_button(
         self, button: discord.ui.Button, interaction: discord.Interaction
     ) -> None:
-        # The buttons stay live: dismissing a modal fires no event, so retiring them
-        # here would strand the booker with a dead prompt. The replacement modal
-        # retires this view itself, but only once it is actually submitted.
+        # stay live -- dismissing a modal fires no event, so the new one retires this
         date_value, start_value, end_value = self.raw_values
         await interaction.response.send_modal(
             ReservationTimeModal(
@@ -2326,17 +2287,12 @@ class BookingWarningsView(discord.ui.View):
     async def cancel_button(
         self, button: discord.ui.Button, interaction: discord.Interaction
     ) -> None:
-        # Swap in the confirmation dropdown, keeping this view alive so "No, go back"
-        # can restore it with the times the booker already typed
+        # keep this view alive so "No, go back" can restore it
         await interaction.response.edit_message(view=ReservationCancelView(self))
 
 
 class ReservationCancelView(discord.ui.View):
-    """Confirmation step before dropping a reservation that has not been booked yet.
-
-    Mirrors matchmaking's CancelConfirmView: a dropdown rather than a button, so a
-    misclick can't throw away the times the booker just typed.
-    """
+    """Dropdown confirm before dropping a booking, like matchmaking's CancelConfirmView."""
 
     def __init__(self, parent: BookingWarningsView) -> None:
         super().__init__(timeout=300)
@@ -2403,8 +2359,7 @@ class RemakeBookingView(discord.ui.View):
     async def remake_button(
         self, button: discord.ui.Button, interaction: discord.Interaction
     ) -> None:
-        # Team, PC count and type came from the slash options, so they carry over with
-        # the modal -- only the date and times are worth reopening for
+        # team, pc count and type come from the slash options, so only times reopen
         date_value, start_value, end_value = self.raw_values
         await interaction.response.send_modal(
             ReservationTimeModal(
@@ -2480,8 +2435,7 @@ class ExternalReservationTimeModal(discord.ui.Modal):
             )
             return
 
-        # Norris is locked overnight, so nothing can run then. Unlike the gameroom's
-        # own hours this is a hard refusal -- no one can wave the building open.
+        # hard refusal, not a warning -- nobody can unlock the building
         if self.cog.is_building_closed(start_time, end_time):
             await interaction.followup.send(
                 f"❌ Norris is closed between 12:00 AM and {NORRIS_OPEN_HOUR}:00 AM. "

@@ -17,7 +17,7 @@ fun:
     #- ...
 
 roles:
-  # pinged when something needs a human: antiscam holds, soft-blocked reservations
+  # pinged when something needs a human
   staff_role: #<role_id>
   bot_devs:
     users:

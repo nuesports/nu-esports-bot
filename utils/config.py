@@ -113,7 +113,7 @@ def is_stream_team(member: discord.Member) -> bool:
 
 
 def staff_role_id() -> int | None:
-    """The role pinged when something needs a human: antiscam holds, soft-blocked reservations."""
+    """The role pinged when something needs a human."""
     return config["roles"].get("staff_role")
 
 
