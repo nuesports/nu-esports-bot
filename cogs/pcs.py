@@ -2306,9 +2306,44 @@ class ReservationCancelView(discord.ui.View):
             value=format_slot(self.parent.start_time, self.parent.end_time),
             inline=False,
         )
-        await interaction.response.edit_message(content=None, embed=embed, view=None)
+        await interaction.response.edit_message(
+            content=None,
+            embed=embed,
+            view=RemakeBookingView(self.parent.modal, self.parent.raw_values),
+        )
         self.parent.stop()
         self.stop()
+
+
+class RemakeBookingView(discord.ui.View):
+    """Lone button left on a cancelled booking, reopening the modal as it was typed."""
+
+    def __init__(
+        self, modal: ReservationTimeModal, raw_values: tuple[str, str, str]
+    ) -> None:
+        super().__init__(timeout=600)
+        self.modal: ReservationTimeModal = modal
+        self.raw_values: tuple[str, str, str] = raw_values
+
+    @discord.ui.button(label="Remake booking", style=discord.ButtonStyle.primary)
+    async def remake_button(
+        self, button: discord.ui.Button, interaction: discord.Interaction
+    ) -> None:
+        # Team, PC count and type came from the slash options, so they carry over with
+        # the modal -- only the date and times are worth reopening for
+        date_value, start_value, end_value = self.raw_values
+        await interaction.response.send_modal(
+            ReservationTimeModal(
+                self.modal.cog,
+                self.modal.team,
+                self.modal.num_pcs,
+                self.modal.res_type,
+                self.modal.is_bot_dev,
+                date_value=date_value,
+                start_value=start_value,
+                end_value=end_value,
+            )
+        )
 
 
 class ExternalReservationTimeModal(discord.ui.Modal):
