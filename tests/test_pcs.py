@@ -672,3 +672,60 @@ async def test_a_clean_booking_pings_only_the_rotation(booked, modal, monkeypatc
     posted = channel.sent[0]
     assert posted["content"] == "<@99>"
     assert not [f for f in posted["embed"].fields if f.name == "⚠️ Notes"]
+
+
+# --- /reserve-external ---------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def external(cog):
+    """External bookings skip advance notice and gameroom hours, but not the
+    building being locked -- these stubs stand in for the db-backed steps."""
+
+    async def nothing_overlaps(*args):
+        return []
+
+    async def save(*args):
+        return None
+
+    cog.get_reservations_in_range = nothing_overlaps
+    cog.save_reservation = save
+    return pcs.ExternalReservationTimeModal(cog)
+
+
+@pytest.mark.asyncio
+async def test_external_is_refused_while_norris_is_locked(external):
+    interaction = await submit(external, "2026-09-28", "6:00AM", "10:00AM")
+    assert "Norris is closed" in interaction.followup.send_calls[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_external_may_still_ignore_gameroom_hours(external):
+    # 9AM is outside the gameroom's own hours, which staff are allowed to override --
+    # the building closure is the only time rule they cannot
+    interaction = await submit(external, "2026-09-28", "9:00AM", "11:00AM")
+    assert (
+        "External reservation confirmed"
+        in interaction.followup.send_calls[0]["content"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_external_still_refuses_a_backwards_slot(external):
+    interaction = await submit(external, "2026-09-28", "9:00PM", "5:00PM")
+    assert (
+        "after the requested end time" in interaction.followup.send_calls[0]["content"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_external_refuses_when_something_already_holds_a_pc(external, cog):
+    async def occupied(*args):
+        return [{"team": "Valorant White"}]
+
+    cog.get_reservations_in_range = occupied
+    interaction = await submit(external, "2026-09-28", "3:00PM", "5:00PM")
+
+    body = interaction.followup.send_calls[0]["content"]
+    assert "Cannot reserve all PCs" in body
+    assert "Valorant White" in body
