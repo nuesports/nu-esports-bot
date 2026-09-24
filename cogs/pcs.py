@@ -65,6 +65,27 @@ STATE_TO_NAME = {
 }
 
 
+async def date_autocomplete(
+    ctx: discord.AutocompleteContext,
+) -> list[discord.OptionChoice]:
+    """Offer the coming week, today first.
+
+    Discord has no way to pre-fill a slash option with real text -- only a modal's
+    InputText takes a value -- so the nearest thing is putting today one keystroke away.
+    """
+    today = datetime.now(CENTRAL_TZ).date()
+    typed = ctx.value.strip() if ctx.value else ""
+    choices = []
+    for offset in range(8):
+        day = today + timedelta(days=offset)
+        iso = day.isoformat()
+        if typed and not iso.startswith(typed):
+            continue
+        label = {0: "today", 1: "tomorrow"}.get(offset, day.strftime("%A"))
+        choices.append(discord.OptionChoice(name=f"{iso} ({label})", value=iso))
+    return choices
+
+
 async def reservation_autocomplete(
     ctx: discord.AutocompleteContext,
 ) -> list[discord.OptionChoice]:
@@ -1313,6 +1334,7 @@ class PCs(commands.Cog):
         date: str = discord.Option(
             name="date",
             description="Date in YYYY-MM-DD format (default: today)",
+            autocomplete=date_autocomplete,
             required=False,
         ),
     ) -> None:
