@@ -407,6 +407,15 @@ class PCs(commands.Cog):
                 return datetime.strptime(cleaned, fmt).replace(tzinfo=CENTRAL_TZ)
             except ValueError:
                 continue
+        # 24-hour, but only where it cannot also be read as a 12-hour time: 19:00 and
+        # 00:30 say what they mean, 7:30 does not and falls to the PM default below
+        for fmt in ("%H:%M", "%H"):
+            try:
+                parsed = datetime.strptime(cleaned, fmt).replace(tzinfo=CENTRAL_TZ)
+            except ValueError:
+                continue
+            if parsed.hour == 0 or parsed.hour > 12:
+                return parsed
         for fmt in ("%I:%M", "%I"):
             try:
                 parsed = datetime.strptime(cleaned, fmt).replace(tzinfo=CENTRAL_TZ)
