@@ -1818,7 +1818,7 @@ def build_warnings_embed(
         if warning in warnings or warning in resolved
     ]
     embed = discord.Embed(
-        title="⚠️ Booking Warnings",
+        title="⚠️ Booking Warnings" if warnings else "✅ Booking Ready",
         description="\n".join(lines),
         color=discord.Color.orange() if warnings else discord.Color.green(),
     )
