@@ -1791,7 +1791,11 @@ def warn_prime_quota(used_count: int, quota: int) -> str:
 
 
 def build_warnings_embed(
-    cog: PCs, start_time: datetime, end_time: datetime, warnings: list[str]
+    cog: PCs,
+    start_time: datetime,
+    end_time: datetime,
+    warnings: list[str],
+    resolved: list[str],
 ) -> discord.Embed:
     """Ask the booker to confirm a reservation that broke one or more booking policies."""
     hours = config.gameroom_data["default_hours"][start_time.weekday()]
@@ -1804,6 +1808,12 @@ def build_warnings_embed(
         description="\n".join(warnings),
         color=discord.Color.orange(),
     )
+    if resolved:
+        embed.add_field(
+            name="✅ Fixed by your edit",
+            value="\n".join(f"~~{warning}~~" for warning in resolved),
+            inline=False,
+        )
     embed.add_field(
         name="You booked",
         value=(
@@ -1880,7 +1890,9 @@ class ReservationTimeModal(discord.ui.Modal):
 
         # An edited resubmission retires the prompt it came from, so those buttons
         # can never act on the times this one replaced
+        previous_warnings: list[str] = []
         if self.origin_view:
+            previous_warnings = list(self.origin_view.warnings)
             await self.origin_view.retire("✏️ Replaced by your edited times.")
 
         # Get values from modal
@@ -1914,6 +1926,9 @@ class ReservationTimeModal(discord.ui.Modal):
         if not self.cog.validate_advance_booking(start_time):
             warnings.append(WARN_SHORT_NOTICE)
 
+        # Anything the edit cleared, so the booker sees their fix land
+        resolved = [w for w in previous_warnings if w not in warnings]
+
         # Out of hours is the one break worth asking about before anything is written
         # -- it is far more often a mistyped date than a real request
         if WARN_OUTSIDE_HOURS in warnings:
@@ -1923,16 +1938,19 @@ class ReservationTimeModal(discord.ui.Modal):
                 end_time,
                 (date_str, start_time_str, end_time_str),
                 warnings,
+                resolved,
             )
             view.prompt = await interaction.followup.send(
-                embed=build_warnings_embed(self.cog, start_time, end_time, warnings),
+                embed=build_warnings_embed(
+                    self.cog, start_time, end_time, warnings, resolved
+                ),
                 view=view,
                 ephemeral=True,
                 wait=True,
             )
             return
 
-        await self.complete(interaction, start_time, end_time, warnings)
+        await self.complete(interaction, start_time, end_time, warnings, resolved)
 
     async def complete(
         self,
@@ -1940,6 +1958,7 @@ class ReservationTimeModal(discord.ui.Modal):
         start_time: datetime,
         end_time: datetime,
         warnings: list[str],
+        resolved: list[str],
     ) -> None:
         """Run the refusing checks, save the reservation, then notify staff.
 
@@ -2017,6 +2036,12 @@ class ReservationTimeModal(discord.ui.Modal):
             if warnings
             else ""
         )
+        fixed_status = (
+            "**Fixed by your edit:**\n"
+            + "\n".join(f"✅ ~~{warning}~~" for warning in resolved)
+            if resolved
+            else ""
+        )
         await interaction.followup.send(
             f"✅ Reservation confirmed!\n\n"
             f"**Team:** {self.team}\n"
@@ -2025,6 +2050,7 @@ class ReservationTimeModal(discord.ui.Modal):
             f"**Manager:** {manager}\n"
             f"{prime_time_status}\n"
             f"{test_status}\n"
+            f"{fixed_status}\n"
             f"{warning_status}",
             ephemeral=True,
         )
@@ -2088,25 +2114,33 @@ class ReservationTimeModal(discord.ui.Modal):
                         inline=False,
                     )
 
-                # A mention only notifies from the message content, and an embed field
-                # *title* renders one as raw text -- so it goes in the Notes value.
+                # The role mention must sit in the message content -- a mention inside
+                # an embed renders but never notifies anyone
                 staff_role = None
                 if warnings and (role_id := config.staff_role_id()):
                     staff_role = reservations_channel.guild.get_role(role_id)
+                mentions = discord.AllowedMentions(
+                    everyone=False,
+                    users=True,
+                    roles=[staff_role] if staff_role else False,
+                )
 
                 if warnings:
-                    note_lines = [staff_role.mention] if staff_role else []
-                    note_lines += warnings
                     embed.add_field(
                         name="⚠️ Notes",
-                        value="\n".join(note_lines),
+                        value="\n".join(warnings),
                         inline=False,
                     )
 
                 # Ping the next staff member in rotation
                 if STAFF_LIST:
                     staff_id = STAFF_LIST[await self.cog.next_staff_index()]
-                    msg = await reservations_channel.send(f"<@{staff_id}>", embed=embed)
+                    content = f"<@{staff_id}>"
+                    if staff_role:
+                        content += f" // ⚠️ {staff_role.mention}"
+                    msg = await reservations_channel.send(
+                        content, embed=embed, allowed_mentions=mentions
+                    )
                     # Track for acknowledgment
                     self.cog.pending_acknowledgments[msg.id] = {
                         "staff_id": staff_id,
@@ -2114,9 +2148,14 @@ class ReservationTimeModal(discord.ui.Modal):
                         "sent_at": datetime.now(CENTRAL_TZ),
                         "team": self.team,
                     }
+                elif staff_role:
+                    await reservations_channel.send(
+                        f"⚠️ {staff_role.mention}",
+                        embed=embed,
+                        allowed_mentions=mentions,
+                    )
                 else:
                     await reservations_channel.send(embed=embed)
-
         except discord.HTTPException as e:
             print(f"Failed to send notification to nexus-reservations: {e}")
 
@@ -2135,6 +2174,7 @@ class OutsideHoursView(discord.ui.View):
         end_time: datetime,
         raw_values: tuple[str, str, str],
         warnings: list[str],
+        resolved: list[str],
     ) -> None:
         super().__init__(timeout=300)
         self.modal: ReservationTimeModal = modal
@@ -2143,6 +2183,7 @@ class OutsideHoursView(discord.ui.View):
         self.raw_values: tuple[str, str, str] = raw_values
         # Every warning the prompt showed, so confirming carries all of them forward
         self.warnings: list[str] = warnings
+        self.resolved: list[str] = resolved
         # Set by the caller right after send(), so the buttons can be retired
         self.prompt: discord.WebhookMessage | None = None
 
@@ -2167,7 +2208,11 @@ class OutsideHoursView(discord.ui.View):
         self._disable()
         await interaction.response.edit_message(view=self)
         await self.modal.complete(
-            interaction, self.start_time, self.end_time, list(self.warnings)
+            interaction,
+            self.start_time,
+            self.end_time,
+            list(self.warnings),
+            list(self.resolved),
         )
         self.stop()
 
