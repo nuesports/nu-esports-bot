@@ -1935,7 +1935,7 @@ class ReservationTimeModal(discord.ui.Modal):
         self.add_item(
             discord.ui.InputText(
                 label="Start Time",
-                placeholder="7, 7:30 or 7:30AM -- PM assumed",
+                placeholder="7, 7:30, or 7:30AM (assumes PM)",
                 style=discord.InputTextStyle.short,
                 required=True,
                 value=start_value or None,
@@ -1945,7 +1945,7 @@ class ReservationTimeModal(discord.ui.Modal):
         self.add_item(
             discord.ui.InputText(
                 label="End Time",
-                placeholder="9, 9:30 or 9:30PM -- PM assumed",
+                placeholder="9, 9:30, or 9:30PM (assumes PM)",
                 style=discord.InputTextStyle.short,
                 required=True,
                 value=end_value or None,
