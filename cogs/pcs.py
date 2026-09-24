@@ -1779,18 +1779,29 @@ class PCs(commands.Cog):
         return buffer
 
 
-def build_outside_hours_embed(
-    cog: PCs, start_time: datetime, end_time: datetime
+# One source of truth for warning lines: the booker's confirm embed and the staff
+# Notes field both render these strings verbatim, so they can never disagree.
+WARN_OUTSIDE_HOURS = "🌃 Outside gameroom hours"
+WARN_SHORT_NOTICE = f"⌛ Booked less than {ADVANCE_BOOKING_DAYS} days in advance"
+WARN_LONG_PRIME = "🕑 Prime time reservation longer than 2 hours"
+
+
+def warn_prime_quota(used_count: int, quota: int) -> str:
+    return f"✨ Prime time quota exceeded ({used_count}/{quota} used this week)"
+
+
+def build_warnings_embed(
+    cog: PCs, start_time: datetime, end_time: datetime, warnings: list[str]
 ) -> discord.Embed:
-    """Warn that a requested slot falls outside the gameroom's hours for that day."""
+    """Ask the booker to confirm a reservation that broke one or more booking policies."""
     hours = config.gameroom_data["default_hours"][start_time.weekday()]
     # Re-parse the day's hours so they print in the same format as the request
     open_time, close_time = cog.parse_time_range(
         start_time.strftime("%Y-%m-%d") + " " + hours.replace(" ", "")
     )
     embed = discord.Embed(
-        title="⚠️ Outside Gameroom Hours",
-        description="This reservation falls outside the gameroom's hours for that day.",
+        title="⚠️ Booking Warnings",
+        description="\n".join(warnings),
         color=discord.Color.orange(),
     )
     embed.add_field(
@@ -1820,6 +1831,7 @@ class ReservationTimeModal(discord.ui.Modal):
         date_value: str = "",
         start_value: str = "",
         end_value: str = "",
+        origin_view: OutsideHoursView | None = None,
     ) -> None:
         super().__init__(title="Reserve PCs - Set Time")
         self.cog: PCs = cog
@@ -1827,6 +1839,7 @@ class ReservationTimeModal(discord.ui.Modal):
         self.num_pcs: int = num_pcs
         self.res_type: str = res_type
         self.is_bot_dev: bool = is_bot_dev
+        self.origin_view: OutsideHoursView | None = origin_view
 
         # Calculate example date as today + 2 days (minimum advance booking)
         example_date = (datetime.now(CENTRAL_TZ) + timedelta(days=2)).strftime(
@@ -1865,6 +1878,11 @@ class ReservationTimeModal(discord.ui.Modal):
     async def callback(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
 
+        # An edited resubmission retires the prompt it came from, so those buttons
+        # can never act on the times this one replaced
+        if self.origin_view:
+            await self.origin_view.retire("✏️ Replaced by your edited times.")
+
         # Get values from modal
         date_str = self.children[0].value.strip()
         start_time_str = self.children[1].value.strip()
@@ -1888,21 +1906,33 @@ class ReservationTimeModal(discord.ui.Modal):
             )
             return
 
-        # Outside gameroom hours is the one policy break worth a second look before
-        # anything is written -- it is far more often a mistyped date than a real request
+        # Everything knowable before PCs are allocated. complete() appends the
+        # prime-time warnings, which depend on which PCs it manages to allocate.
+        warnings: list[str] = []
         if not self.cog.is_within_open_hours(start_time, end_time):
+            warnings.append(WARN_OUTSIDE_HOURS)
+        if not self.cog.validate_advance_booking(start_time):
+            warnings.append(WARN_SHORT_NOTICE)
+
+        # Out of hours is the one break worth asking about before anything is written
+        # -- it is far more often a mistyped date than a real request
+        if WARN_OUTSIDE_HOURS in warnings:
             view = OutsideHoursView(
-                self, start_time, end_time, (date_str, start_time_str, end_time_str)
+                self,
+                start_time,
+                end_time,
+                (date_str, start_time_str, end_time_str),
+                warnings,
             )
             view.prompt = await interaction.followup.send(
-                embed=build_outside_hours_embed(self.cog, start_time, end_time),
+                embed=build_warnings_embed(self.cog, start_time, end_time, warnings),
                 view=view,
                 ephemeral=True,
                 wait=True,
             )
             return
 
-        await self.complete(interaction, start_time, end_time, [])
+        await self.complete(interaction, start_time, end_time, warnings)
 
     async def complete(
         self,
@@ -1913,13 +1943,9 @@ class ReservationTimeModal(discord.ui.Modal):
     ) -> None:
         """Run the refusing checks, save the reservation, then notify staff.
 
-        Split out of callback() so the outside-hours prompt can call it once the booker
-        confirms. Nothing is written to the db before this runs.
+        Split out of callback() so the confirm prompt can call it once the booker says
+        yes. Nothing is written to the db before this runs.
         """
-        if not self.cog.validate_advance_booking(start_time):
-            warnings.append(
-                f"⌛ Booked less than {ADVANCE_BOOKING_DAYS} days in advance"
-            )
 
         # Check conflicts first
         (
@@ -1958,12 +1984,10 @@ class ReservationTimeModal(discord.ui.Modal):
             )
             quota = self.cog.team_prime_time_quota[self.team]
             if not has_quota:
-                warnings.append(
-                    f"✨ Prime time quota exceeded ({used_count}/{quota} used this week)"
-                )
+                warnings.append(warn_prime_quota(used_count, quota))
 
         if is_prime and is_over_2_hours:
-            warnings.append("🕑 Prime time reservation longer than 2 hours")
+            warnings.append(WARN_LONG_PRIME)
 
         # Save reservation to database (skip for bot devs)
         manager = (
@@ -2064,35 +2088,25 @@ class ReservationTimeModal(discord.ui.Modal):
                         inline=False,
                     )
 
-                # The role mention rides in the Notes field, but a mention inside an
-                # embed does not notify -- the ping in the message content does that
+                # A mention only notifies from the message content, and an embed field
+                # *title* renders one as raw text -- so it goes in the Notes value.
                 staff_role = None
                 if warnings and (role_id := config.staff_role_id()):
                     staff_role = reservations_channel.guild.get_role(role_id)
 
                 if warnings:
-                    note_lines = [f"⚠️ {staff_role.mention}"] if staff_role else []
+                    note_lines = [staff_role.mention] if staff_role else []
                     note_lines += warnings
                     embed.add_field(
-                        name="Notes",
+                        name="⚠️ Notes",
                         value="\n".join(note_lines),
                         inline=False,
                     )
 
-                mentions = discord.AllowedMentions(
-                    everyone=False,
-                    users=True,
-                    roles=[staff_role] if staff_role else False,
-                )
-                pings = [staff_role.mention] if staff_role else []
-
                 # Ping the next staff member in rotation
                 if STAFF_LIST:
                     staff_id = STAFF_LIST[await self.cog.next_staff_index()]
-                    pings.append(f"<@{staff_id}>")
-                    msg = await reservations_channel.send(
-                        " ".join(pings), embed=embed, allowed_mentions=mentions
-                    )
+                    msg = await reservations_channel.send(f"<@{staff_id}>", embed=embed)
                     # Track for acknowledgment
                     self.cog.pending_acknowledgments[msg.id] = {
                         "staff_id": staff_id,
@@ -2100,21 +2114,18 @@ class ReservationTimeModal(discord.ui.Modal):
                         "sent_at": datetime.now(CENTRAL_TZ),
                         "team": self.team,
                     }
-                elif pings:
-                    await reservations_channel.send(
-                        " ".join(pings), embed=embed, allowed_mentions=mentions
-                    )
                 else:
                     await reservations_channel.send(embed=embed)
+
         except discord.HTTPException as e:
             print(f"Failed to send notification to nexus-reservations: {e}")
 
 
 class OutsideHoursView(discord.ui.View):
-    """Confirm/edit/cancel prompt for a reservation that falls outside gameroom hours.
+    """Confirm/edit/cancel prompt for a reservation that broke a booking policy.
 
-    Booking it is allowed -- staff get pinged to review -- but it is far more often a
-    mistyped date than a real request, so nothing is written until the booker confirms.
+    Booking it is allowed -- staff get pinged to review -- but an out-of-hours slot is
+    far more often a mistyped date, so nothing is written until the booker confirms.
     """
 
     def __init__(
@@ -2123,12 +2134,15 @@ class OutsideHoursView(discord.ui.View):
         start_time: datetime,
         end_time: datetime,
         raw_values: tuple[str, str, str],
+        warnings: list[str],
     ) -> None:
         super().__init__(timeout=300)
         self.modal: ReservationTimeModal = modal
         self.start_time: datetime = start_time
         self.end_time: datetime = end_time
         self.raw_values: tuple[str, str, str] = raw_values
+        # Every warning the prompt showed, so confirming carries all of them forward
+        self.warnings: list[str] = warnings
         # Set by the caller right after send(), so the buttons can be retired
         self.prompt: discord.WebhookMessage | None = None
 
@@ -2136,13 +2150,15 @@ class OutsideHoursView(discord.ui.View):
         for child in self.children:
             child.disabled = True
 
-    async def on_timeout(self) -> None:
+    async def retire(self, note: str) -> None:
+        """Disable the buttons and stop listening, editing the prompt to say why."""
         self._disable()
         if self.prompt:
-            await self.prompt.edit(
-                content="⌛ Timed out. Nothing was booked -- run `/reserve` again.",
-                view=self,
-            )
+            await self.prompt.edit(content=note, view=self)
+        self.stop()
+
+    async def on_timeout(self) -> None:
+        await self.retire("⌛ Timed out. Nothing was booked -- run `/reserve` again.")
 
     @discord.ui.button(label="Book it anyway", style=discord.ButtonStyle.success)
     async def confirm_button(
@@ -2151,7 +2167,7 @@ class OutsideHoursView(discord.ui.View):
         self._disable()
         await interaction.response.edit_message(view=self)
         await self.modal.complete(
-            interaction, self.start_time, self.end_time, ["🌃 Outside gameroom hours"]
+            interaction, self.start_time, self.end_time, list(self.warnings)
         )
         self.stop()
 
@@ -2159,6 +2175,9 @@ class OutsideHoursView(discord.ui.View):
     async def edit_button(
         self, button: discord.ui.Button, interaction: discord.Interaction
     ) -> None:
+        # The buttons stay live: dismissing a modal fires no event, so retiring them
+        # here would strand the booker with a dead prompt. The replacement modal
+        # retires this view itself, but only once it is actually submitted.
         date_value, start_value, end_value = self.raw_values
         await interaction.response.send_modal(
             ReservationTimeModal(
@@ -2170,12 +2189,9 @@ class OutsideHoursView(discord.ui.View):
                 date_value=date_value,
                 start_value=start_value,
                 end_value=end_value,
+                origin_view=self,
             )
         )
-        self._disable()
-        if self.prompt:
-            await self.prompt.edit(content="✏️ Editing those times.", view=self)
-        self.stop()
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
     async def cancel_button(
