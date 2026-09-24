@@ -2252,17 +2252,62 @@ class BookingWarningsView(discord.ui.View):
     async def cancel_button(
         self, button: discord.ui.Button, interaction: discord.Interaction
     ) -> None:
-        self._disable()
+        # Swap in the confirmation dropdown, keeping this view alive so "No, go back"
+        # can restore it with the times the booker already typed
+        await interaction.response.edit_message(view=ReservationCancelView(self))
+
+
+class ReservationCancelView(discord.ui.View):
+    """Confirmation step before dropping a reservation that has not been booked yet.
+
+    Mirrors matchmaking's CancelConfirmView: a dropdown rather than a button, so a
+    misclick can't throw away the times the booker just typed.
+    """
+
+    def __init__(self, parent: BookingWarningsView) -> None:
+        super().__init__(timeout=300)
+        self.parent: BookingWarningsView = parent
+
+        options = [
+            discord.SelectOption(
+                label="Yes, cancel this booking", value="confirm", emoji="🗑️"
+            ),
+            discord.SelectOption(label="No, go back", value="back", emoji="↩️"),
+        ]
+        self.select: discord.ui.Select = discord.ui.Select(
+            placeholder="Are you sure you want to cancel this booking?",
+            options=options,
+        )
+        self.select.callback = self.on_select
+        self.add_item(self.select)
+
+    async def on_select(self, interaction: discord.Interaction) -> None:
+        """Cancel the booking if confirmed, otherwise hand back the warning prompt."""
+        if self.select.values[0] == "back":
+            await interaction.response.edit_message(
+                embed=build_warnings_embed(
+                    self.parent.modal.cog,
+                    self.parent.start_time,
+                    self.parent.end_time,
+                    self.parent.warnings,
+                    self.parent.resolved,
+                ),
+                view=self.parent,
+            )
+            self.stop()
+            return
+
         embed = discord.Embed(
             title="❌ Booking Cancelled",
             color=discord.Color.red(),
         )
         embed.add_field(
             name="You Tried Booking",
-            value=format_slot(self.start_time, self.end_time),
+            value=format_slot(self.parent.start_time, self.parent.end_time),
             inline=False,
         )
-        await interaction.response.edit_message(content=None, embed=embed, view=self)
+        await interaction.response.edit_message(content=None, embed=embed, view=None)
+        self.parent.stop()
         self.stop()
 
 
