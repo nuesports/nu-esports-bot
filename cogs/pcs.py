@@ -1786,6 +1786,11 @@ WARN_SHORT_NOTICE = f"⌛ Booked less than {ADVANCE_BOOKING_DAYS} days in advanc
 WARN_LONG_PRIME = "🕑 Prime time reservation longer than 2 hours"
 
 
+# Render order for the confirm prompt. Prime-time warnings are found after
+# allocation, so they never reach that prompt and are not listed here.
+WARNING_ORDER = [WARN_OUTSIDE_HOURS, WARN_SHORT_NOTICE]
+
+
 def warn_prime_quota(used_count: int, quota: int) -> str:
     return f"✨ Prime time quota exceeded ({used_count}/{quota} used this week)"
 
@@ -1797,23 +1802,26 @@ def build_warnings_embed(
     warnings: list[str],
     resolved: list[str],
 ) -> discord.Embed:
-    """Ask the booker to confirm a reservation that broke one or more booking policies."""
+    """Ask the booker to confirm a reservation that broke one or more booking policies.
+
+    Warnings an edit has since cleared stay on the list, struck through, so the booker
+    can see their fix land. Once every one is struck the embed turns green.
+    """
     hours = config.gameroom_data["default_hours"][start_time.weekday()]
     # Re-parse the day's hours so they print in the same format as the request
     open_time, close_time = cog.parse_time_range(
         start_time.strftime("%Y-%m-%d") + " " + hours.replace(" ", "")
     )
+    lines = [
+        warning if warning in warnings else f"~~{warning}~~"
+        for warning in WARNING_ORDER
+        if warning in warnings or warning in resolved
+    ]
     embed = discord.Embed(
         title="⚠️ Booking Warnings",
-        description="\n".join(warnings),
-        color=discord.Color.orange(),
+        description="\n".join(lines),
+        color=discord.Color.orange() if warnings else discord.Color.green(),
     )
-    if resolved:
-        embed.add_field(
-            name="✅ Fixed by your edit",
-            value="\n".join(f"~~{warning}~~" for warning in resolved),
-            inline=False,
-        )
     embed.add_field(
         name="You booked",
         value=(
@@ -1892,7 +1900,9 @@ class ReservationTimeModal(discord.ui.Modal):
         # can never act on the times this one replaced
         previous_warnings: list[str] = []
         if self.origin_view:
-            previous_warnings = list(self.origin_view.warnings)
+            previous_warnings = list(self.origin_view.warnings) + list(
+                self.origin_view.resolved
+            )
             await self.origin_view.retire("✏️ Replaced by your edited times.")
 
         # Get values from modal
@@ -1929,9 +1939,10 @@ class ReservationTimeModal(discord.ui.Modal):
         # Anything the edit cleared, so the booker sees their fix land
         resolved = [w for w in previous_warnings if w not in warnings]
 
-        # Any break knowable before allocation gets confirmed first -- an edit that
-        # clears one but not the others must not slip straight through to a booking
-        if warnings:
+        # Any break knowable before allocation gets confirmed first. `resolved` keeps
+        # the prompt up after an edit clears the last one, so the booker still okays
+        # it -- a clean first attempt has neither and books straight through.
+        if warnings or resolved:
             view = BookingWarningsView(
                 self,
                 start_time,
@@ -1950,7 +1961,7 @@ class ReservationTimeModal(discord.ui.Modal):
             )
             return
 
-        await self.complete(interaction, start_time, end_time, warnings, resolved)
+        await self.complete(interaction, start_time, end_time, warnings)
 
     async def complete(
         self,
@@ -1958,7 +1969,6 @@ class ReservationTimeModal(discord.ui.Modal):
         start_time: datetime,
         end_time: datetime,
         warnings: list[str],
-        resolved: list[str],
     ) -> None:
         """Run the refusing checks, save the reservation, then notify staff.
 
@@ -2036,12 +2046,6 @@ class ReservationTimeModal(discord.ui.Modal):
             if warnings
             else ""
         )
-        fixed_status = (
-            "**Fixed by your edit:**\n"
-            + "\n".join(f"✅ ~~{warning}~~" for warning in resolved)
-            if resolved
-            else ""
-        )
         await interaction.followup.send(
             f"✅ Reservation confirmed!\n\n"
             f"**Team:** {self.team}\n"
@@ -2050,7 +2054,6 @@ class ReservationTimeModal(discord.ui.Modal):
             f"**Manager:** {manager}\n"
             f"{prime_time_status}\n"
             f"{test_status}\n"
-            f"{fixed_status}\n"
             f"{warning_status}",
             ephemeral=True,
         )
@@ -2186,6 +2189,10 @@ class BookingWarningsView(discord.ui.View):
         # Every warning the prompt showed, so confirming carries all of them forward
         self.warnings: list[str] = warnings
         self.resolved: list[str] = resolved
+        if not warnings:
+            for child in self.children:
+                if getattr(child, "label", None) == "Book it anyway":
+                    child.label = "Book now"
         # Set by the caller right after send(), so the buttons can be retired
         self.prompt: discord.WebhookMessage | None = None
 
@@ -2210,11 +2217,7 @@ class BookingWarningsView(discord.ui.View):
         self._disable()
         await interaction.response.edit_message(view=self)
         await self.modal.complete(
-            interaction,
-            self.start_time,
-            self.end_time,
-            list(self.warnings),
-            list(self.resolved),
+            interaction, self.start_time, self.end_time, list(self.warnings)
         )
         self.stop()
 
