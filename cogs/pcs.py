@@ -1795,6 +1795,14 @@ def warn_prime_quota(used_count: int, quota: int) -> str:
     return f"✨ Prime time quota exceeded ({used_count}/{quota} used this week)"
 
 
+def format_slot(start_time: datetime, end_time: datetime) -> str:
+    """The date and timeframe line every reservation prompt prints."""
+    return (
+        f"{start_time.strftime('%A, %B %d, %Y')}\n"
+        f"{start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')}"
+    )
+
+
 def build_warnings_embed(
     cog: PCs,
     start_time: datetime,
@@ -1824,10 +1832,7 @@ def build_warnings_embed(
     )
     embed.add_field(
         name="You booked",
-        value=(
-            f"{start_time.strftime('%A, %B %d, %Y')}\n"
-            f"{start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')}"
-        ),
+        value=format_slot(start_time, end_time),
         inline=False,
     )
     embed.add_field(
@@ -2248,9 +2253,16 @@ class BookingWarningsView(discord.ui.View):
         self, button: discord.ui.Button, interaction: discord.Interaction
     ) -> None:
         self._disable()
-        await interaction.response.edit_message(
-            content="❌ Cancelled. Nothing was booked.", view=self
+        embed = discord.Embed(
+            title="❌ Booking Cancelled",
+            color=discord.Color.red(),
         )
+        embed.add_field(
+            name="You Tried Booking",
+            value=format_slot(self.start_time, self.end_time),
+            inline=False,
+        )
+        await interaction.response.edit_message(content=None, embed=embed, view=self)
         self.stop()
 
 
