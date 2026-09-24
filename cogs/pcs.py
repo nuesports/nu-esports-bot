@@ -1941,15 +1941,6 @@ class ReservationTimeModal(discord.ui.Modal):
     async def callback(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
 
-        # An edited resubmission retires the prompt it came from, so those buttons
-        # can never act on the times this one replaced
-        previous_warnings: list[str] = []
-        if self.origin_view:
-            previous_warnings = list(self.origin_view.warnings) + list(
-                self.origin_view.resolved
-            )
-            await self.origin_view.retire("✏️ Replaced by your edited times.")
-
         # Get values from modal
         date_str = self.children[0].value.strip()
         start_time_str = self.children[1].value.strip()
@@ -1982,6 +1973,16 @@ class ReservationTimeModal(discord.ui.Modal):
                 ephemeral=True,
             )
             return
+
+        # Only now that the hard checks have passed does the prompt this edit came
+        # from get retired -- a refusal above must leave it standing, or the booker
+        # loses the times they typed and has to run /reserve again
+        previous_warnings: list[str] = []
+        if self.origin_view:
+            previous_warnings = list(self.origin_view.warnings) + list(
+                self.origin_view.resolved
+            )
+            await self.origin_view.retire("✏️ Replaced by your edited times.")
 
         # Everything knowable before PCs are allocated. complete() appends the
         # prime-time warnings, which depend on which PCs it manages to allocate.
