@@ -175,8 +175,27 @@ TUESDAY_EVENING = (
 
 
 @pytest.mark.asyncio
+async def test_the_cap_is_exactly_what_the_allocator_can_hand_out(empty_room):
+    assert pcs.MAX_RESERVABLE_PCS == 13
+    most = await empty_room.allocate_pcs(*TUESDAY_EVENING, pcs.MAX_RESERVABLE_PCS)
+    assert len(most) == pcs.MAX_RESERVABLE_PCS
+    assert (
+        await empty_room.allocate_pcs(*TUESDAY_EVENING, pcs.MAX_RESERVABLE_PCS + 1)
+        == []
+    )
+
+
+@pytest.mark.asyncio
 async def test_tuesday_books_the_back_room_first(empty_room):
     assert await empty_room.allocate_pcs(*TUESDAY_EVENING, 3) == [14, 15, 0]
+
+
+@pytest.mark.asyncio
+async def test_tuesday_conflicts_count_the_back_room(empty_room):
+    clash, _, _ = await empty_room.check_conflicts(
+        *TUESDAY_EVENING, pcs.MAX_RESERVABLE_PCS
+    )
+    assert not clash
 
 
 # --- the confirm embed --------------------------------------------------------

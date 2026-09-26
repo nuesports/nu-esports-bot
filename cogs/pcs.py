@@ -26,9 +26,9 @@ GGLEAP_BOOKING_GRID_URL = "https://admin.ggleap.com/booking/grid"
 # Constants - Use ZoneInfo for proper DST handling
 CENTRAL_TZ = ZoneInfo("America/Chicago")
 ADVANCE_BOOKING_DAYS = 2
-MAX_MAIN_ROOM_PCS = 5
 BACK_ROOM_PCS = [0, 14, 15]  # 0 = Streaming, 14 = Back Room 1, 15 = Back Room 2
 MAIN_ROOM_PCS = list(range(1, 11))
+MAX_RESERVABLE_PCS = len(BACK_ROOM_PCS) + len(MAIN_ROOM_PCS)
 PRIME_TIME_WEEKDAY_HOUR = 19  # 7 PM
 PRIME_TIME_WEEKEND_HOUR = 18  # 6 PM
 # Norris locks overnight, so nothing can be booked before it reopens
@@ -581,13 +581,12 @@ class PCs(commands.Cog):
 
             # Check if we can fit the requested PCs
             # We have: back room (14, 15, streaming) = 3 PCs, main room = 10 PCs
-            # Max main room at once = 5
 
             # Available back room PCs in this interval
             back_room_available = len(BACK_ROOM_PCS) - back_room_used
 
             # Available main room PCs
-            main_room_available = MAX_MAIN_ROOM_PCS - main_room_used
+            main_room_available = len(MAIN_ROOM_PCS) - main_room_used
 
             # Can we fit num_pcs?
             total_available = back_room_available + main_room_available
@@ -649,11 +648,6 @@ class PCs(commands.Cog):
             for pc in main_room_group2:
                 if len(allocated) < num_pcs:
                     allocated.append(pc)
-
-        # Verify we don't exceed max main room PCs
-        main_room_allocated = [pc for pc in allocated if pc in MAIN_ROOM_PCS]
-        if len(main_room_allocated) > MAX_MAIN_ROOM_PCS:
-            return []  # Can't allocate
 
         return allocated
 
@@ -1507,9 +1501,9 @@ class PCs(commands.Cog):
         num_pcs: int = discord.Option(
             int,
             name="num_pcs",
-            description="Number of PCs to reserve (1-8)",
+            description=f"Number of PCs to reserve (1-{MAX_RESERVABLE_PCS})",
             min_value=1,
-            max_value=8,
+            max_value=MAX_RESERVABLE_PCS,
             required=True,
         ),
         res_type: str = discord.Option(
