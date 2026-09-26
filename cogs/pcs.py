@@ -1525,9 +1525,13 @@ class PCs(commands.Cog):
             choices=["Scrim", "Match"],
             required=True,
         ),
+        test: bool = discord.Option(
+            bool,
+            name="test",
+            description="Bot devs only: walk the flow without saving",
+            default=False,
+        ),
     ) -> None:
-        is_bot_dev = config.is_bot_dev(ctx.author)
-
         if not config.can_reserve(ctx.author):
             await ctx.respond(
                 "❌ You don't have permission to reserve PCs. Contact a team manager.",
@@ -1535,8 +1539,15 @@ class PCs(commands.Cog):
             )
             return
 
+        # opt-in, since bot devs and admins also book real slots as staff
+        if test and not config.is_bot_dev(ctx.author):
+            await ctx.respond(
+                "❌ Only bot devs can make test reservations.", ephemeral=True
+            )
+            return
+
         # Show modal for time input
-        modal = ReservationTimeModal(self, team, num_pcs, res_type, is_bot_dev)
+        modal = ReservationTimeModal(self, team, num_pcs, res_type, test)
         await ctx.send_modal(modal)
 
     @commands.slash_command(
@@ -1919,7 +1930,7 @@ class ReservationTimeModal(discord.ui.Modal):
         team: str,
         num_pcs: int,
         res_type: str,
-        is_bot_dev: bool = False,
+        is_test: bool = False,
         date_value: str = "",
         start_value: str = "",
         end_value: str = "",
@@ -1930,7 +1941,7 @@ class ReservationTimeModal(discord.ui.Modal):
         self.team: str = team
         self.num_pcs: int = num_pcs
         self.res_type: str = res_type
-        self.is_bot_dev: bool = is_bot_dev
+        self.is_test: bool = is_test
         self.origin_view: BookingWarningsView | None = origin_view
 
         # Calculate example date as today + 2 days (minimum advance booking)
@@ -2081,8 +2092,8 @@ class ReservationTimeModal(discord.ui.Modal):
         if end_time > start_time + timedelta(hours=2):
             is_over_2_hours = True
 
-        # If prime time, check quota (skip for bot devs)
-        if is_prime and not self.is_bot_dev:
+        # If prime time, check quota (skip for test bookings)
+        if is_prime and not self.is_test:
             has_quota, used_count = await self.cog.check_prime_time_quota(
                 self.team, start_time
             )
@@ -2093,13 +2104,13 @@ class ReservationTimeModal(discord.ui.Modal):
         if is_prime and is_over_2_hours:
             warnings.append(WARN_LONG_PRIME)
 
-        # Save reservation to database (skip for bot devs)
+        # Save reservation to database (skip for test bookings)
         manager = (
             f"{interaction.user.name}#{interaction.user.discriminator}"
             if interaction.user.discriminator != "0"
             else interaction.user.name
         )
-        if not self.is_bot_dev:
+        if not self.is_test:
             await self.cog.save_reservation(
                 self.team, allocated_pcs, start_time, end_time, manager, is_prime
             )
@@ -2112,7 +2123,7 @@ class ReservationTimeModal(discord.ui.Modal):
         # Send confirmation to user
         prime_time_status = "✨ **Prime Time Reservation**" if is_prime else ""
         test_status = (
-            "🧪 **Test Reservation** (Not saved to database)" if self.is_bot_dev else ""
+            "🧪 **Test Reservation** (Not saved to database)" if self.is_test else ""
         )
         # the booking stands either way, this just says staff are looking at it
         warning_status = (
@@ -2185,7 +2196,7 @@ class ReservationTimeModal(discord.ui.Modal):
                         name="Status", value="✨ Prime Time Reservation", inline=False
                     )
 
-                if self.is_bot_dev:
+                if self.is_test:
                     embed.add_field(
                         name="Status",
                         value="Test Reservation (Not saved to database)",
@@ -2320,7 +2331,7 @@ class BookingWarningsView(discord.ui.View):
                 self.modal.team,
                 self.modal.num_pcs,
                 self.modal.res_type,
-                self.modal.is_bot_dev,
+                self.modal.is_test,
                 date_value=date_value,
                 start_value=start_value,
                 end_value=end_value,
@@ -2412,7 +2423,7 @@ class RemakeBookingView(discord.ui.View):
                 self.modal.team,
                 self.modal.num_pcs,
                 self.modal.res_type,
-                self.modal.is_bot_dev,
+                self.modal.is_test,
                 date_value=date_value,
                 start_value=start_value,
                 end_value=end_value,

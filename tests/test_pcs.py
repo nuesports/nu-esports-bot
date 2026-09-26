@@ -606,12 +606,37 @@ async def test_the_quota_is_read_from_the_team_table(booked, modal):
 
 
 @pytest.mark.asyncio
-async def test_bot_devs_skip_the_quota_check_entirely(booked, modal):
+async def test_a_real_booking_is_saved(booked, modal):
+    saved = []
+
+    async def save(*args):
+        saved.append(args)
+
+    booked.save_reservation = save
+    await run_complete(modal)
+
+    assert len(saved) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_test_booking_is_never_saved(booked, modal):
     async def explode(*args):
-        raise AssertionError("bot devs must not be quota checked")
+        raise AssertionError("test bookings must not be saved")
+
+    booked.save_reservation = explode
+    modal.is_test = True
+    interaction = await run_complete(modal)
+
+    assert "Test Reservation" in interaction.followup.send_calls[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_test_bookings_skip_the_quota_check_entirely(booked, modal):
+    async def explode(*args):
+        raise AssertionError("test bookings must not be quota checked")
 
     booked.check_prime_time_quota = explode
-    modal.is_bot_dev = True
+    modal.is_test = True
 
     interaction = await run_complete(modal)
 
