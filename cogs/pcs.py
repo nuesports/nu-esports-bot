@@ -1,5 +1,7 @@
 import asyncio
+import base64
 import io
+import json
 import os
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -18,6 +20,8 @@ BOT_CHANNEL_ID = 741898302055907388
 GGLEAP_BASE_URL = config.secrets["apis"]["ggleap"]
 PCS_ENDPOINT = f"{GGLEAP_BASE_URL}/machines/uptime"
 RESERVATIONS_ENDPOINT = f"{GGLEAP_BASE_URL}/reservations"
+# the Better ggLeap extension reads the #nue= fragment here and offers to book it
+GGLEAP_BOOKING_GRID_URL = "https://admin.ggleap.com/booking/grid"
 
 # Constants - Use ZoneInfo for proper DST handling
 CENTRAL_TZ = ZoneInfo("America/Chicago")
@@ -1838,6 +1842,28 @@ WARN_LONG_PRIME = "🕑 Prime time reservation longer than 2 hours"
 WARNING_ORDER = [WARN_OUTSIDE_HOURS, WARN_SHORT_NOTICE]
 
 
+def ggleap_booking_url(
+    team: str,
+    pcs: list[int],
+    start_time: datetime,
+    end_time: datetime,
+    email: str | None,
+) -> str:
+    """Booking grid link carrying the reservation in the fragment, so it never reaches
+    ggLeap's servers. Times are Central wall-clock, which is what create_booking takes."""
+    payload = {
+        "v": 1,
+        "team": team,
+        "pcs": sorted(pcs),
+        "start": start_time.astimezone(CENTRAL_TZ).strftime("%Y-%m-%dT%H:%M:%S"),
+        "duration": int((end_time - start_time).total_seconds() // 60),
+        "email": email,
+    }
+    raw = json.dumps(payload, separators=(",", ":")).encode()
+    encoded = base64.urlsafe_b64encode(raw).decode().rstrip("=")
+    return f"{GGLEAP_BOOKING_GRID_URL}#nue={encoded}"
+
+
 def warn_prime_quota(used_count: int, quota: int) -> str:
     return f"✨ Prime time quota exceeded ({used_count}/{quota} used this week)"
 
@@ -2135,10 +2161,10 @@ class ReservationTimeModal(discord.ui.Modal):
                 )
                 embed.add_field(name="Team", value=self.team, inline=False)
                 embed.add_field(name="Res Type", value=self.res_type, inline=False)
-                manager_email = config.gamehead_email(manager) or "Email not found"
+                manager_email = config.gamehead_email(manager)
                 embed.add_field(
                     name="Manager Email",
-                    value=manager_email,
+                    value=manager_email or "Email not found",
                     inline=False,
                 )
                 embed.add_field(name="Manager", value=manager, inline=False)
@@ -2183,6 +2209,21 @@ class ReservationTimeModal(discord.ui.Modal):
                         inline=False,
                     )
 
+                # plain link button: nothing to handle, so it outlives restarts
+                book_view = discord.ui.View(timeout=None)
+                book_view.add_item(
+                    discord.ui.Button(
+                        label="Book in ggLeap",
+                        url=ggleap_booking_url(
+                            self.team,
+                            allocated_pcs,
+                            start_time,
+                            end_time,
+                            manager_email,
+                        ),
+                    )
+                )
+
                 # Ping the next staff member in rotation
                 if STAFF_LIST:
                     staff_id = STAFF_LIST[await self.cog.next_staff_index()]
@@ -2190,7 +2231,10 @@ class ReservationTimeModal(discord.ui.Modal):
                     if staff_role:
                         content += f" // ⚠️ {staff_role.mention}"
                     msg = await reservations_channel.send(
-                        content, embed=embed, allowed_mentions=mentions
+                        content,
+                        embed=embed,
+                        view=book_view,
+                        allowed_mentions=mentions,
                     )
                     # Track for acknowledgment
                     self.cog.pending_acknowledgments[msg.id] = {
@@ -2203,10 +2247,11 @@ class ReservationTimeModal(discord.ui.Modal):
                     await reservations_channel.send(
                         f"⚠️ {staff_role.mention}",
                         embed=embed,
+                        view=book_view,
                         allowed_mentions=mentions,
                     )
                 else:
-                    await reservations_channel.send(embed=embed)
+                    await reservations_channel.send(embed=embed, view=book_view)
         except discord.HTTPException as e:
             print(f"Failed to send notification to nexus-reservations: {e}")
 
