@@ -586,10 +586,6 @@ class PCs(commands.Cog):
             # Available back room PCs in this interval
             back_room_available = len(BACK_ROOM_PCS) - back_room_used
 
-            # Check Tuesday restriction
-            if interval_start.weekday() == 1:  # Tuesday
-                back_room_available = 0  # No back room on Tuesday
-
             # Available main room PCs
             main_room_available = MAX_MAIN_ROOM_PCS - main_room_used
 
@@ -612,13 +608,8 @@ class PCs(commands.Cog):
         # Get all overlapping reservations from database
         overlapping = await self.get_reservations_in_range(start_time, end_time)
 
-        # Check Tuesday restriction
-        is_tuesday = start_time.weekday() == 1
-
         # Determine which PCs are available throughout the entire time range
         all_pcs = BACK_ROOM_PCS + MAIN_ROOM_PCS  # Back room first, then main room
-        if is_tuesday:
-            all_pcs = MAIN_ROOM_PCS  # No back room on Tuesday
 
         available_pcs = []
         for pc in all_pcs:

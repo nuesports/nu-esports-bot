@@ -158,6 +158,27 @@ def test_both_smash_games_are_reservable():
     assert {"Smash Melee", "Smash Ultimate"} <= set(pcs.RESERVABLE_TEAMS)
 
 
+@pytest_asyncio.fixture
+async def empty_room(cog):
+    async def nothing_booked(*args):
+        return []
+
+    cog.get_reservations_in_range = nothing_booked
+    return cog
+
+
+# 2026-09-29 is a tuesday, the back room used to close on it
+TUESDAY_EVENING = (
+    datetime(2026, 9, 29, 19, tzinfo=pcs.CENTRAL_TZ),
+    datetime(2026, 9, 29, 21, tzinfo=pcs.CENTRAL_TZ),
+)
+
+
+@pytest.mark.asyncio
+async def test_tuesday_books_the_back_room_first(empty_room):
+    assert await empty_room.allocate_pcs(*TUESDAY_EVENING, 3) == [14, 15, 0]
+
+
 # --- the confirm embed --------------------------------------------------------
 
 
