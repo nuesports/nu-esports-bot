@@ -47,6 +47,8 @@ TEAM_PRIME_TIME_QUOTA: dict[str, int] = {
     "Apex White": 1,
     "Apex Purple": 1,
     "Rocket League Purple": 1,
+    "Smash Melee": 1,
+    "Smash Ultimate": 1,
     # External events have unlimited prime time quota since they're staff-managed
     "External": 99,
 }

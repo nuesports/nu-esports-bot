@@ -154,6 +154,10 @@ def test_deadlock_is_reservable():
     assert "Deadlock Purple" in pcs.RESERVABLE_TEAMS
 
 
+def test_both_smash_games_are_reservable():
+    assert {"Smash Melee", "Smash Ultimate"} <= set(pcs.RESERVABLE_TEAMS)
+
+
 # --- the confirm embed --------------------------------------------------------
 
 
