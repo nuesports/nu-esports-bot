@@ -29,6 +29,8 @@ ADVANCE_BOOKING_DAYS = 2
 BACK_ROOM_PCS = [0, 14, 15]  # 0 = Streaming, 14 = Back Room 1, 15 = Back Room 2
 MAIN_ROOM_PCS = list(range(1, 11))
 MAX_RESERVABLE_PCS = len(BACK_ROOM_PCS) + len(MAIN_ROOM_PCS)
+# past this a booking still goes through, it just warns the booker and staff
+LARGE_BOOKING_PCS = 5
 PRIME_TIME_WEEKDAY_HOUR = 19  # 7 PM
 PRIME_TIME_WEEKEND_HOUR = 18  # 6 PM
 # Norris locks overnight, so nothing can be booked before it reopens
@@ -1834,10 +1836,11 @@ class PCs(commands.Cog):
 WARN_OUTSIDE_HOURS = "🌃 Outside gameroom hours"
 WARN_SHORT_NOTICE = f"⌛ Booked less than {ADVANCE_BOOKING_DAYS} days in advance"
 WARN_LONG_PRIME = "🕑 Prime time reservation longer than 2 hours"
+WARN_LARGE_BOOKING = f"👥 More than {LARGE_BOOKING_PCS} PCs"
 
 
 # render order for the prompt -- prime time warnings land too late to appear there
-WARNING_ORDER = [WARN_OUTSIDE_HOURS, WARN_SHORT_NOTICE]
+WARNING_ORDER = [WARN_OUTSIDE_HOURS, WARN_SHORT_NOTICE, WARN_LARGE_BOOKING]
 
 
 def ggleap_booking_url(
@@ -2014,6 +2017,8 @@ class ReservationTimeModal(discord.ui.Modal):
             warnings.append(WARN_OUTSIDE_HOURS)
         if not self.cog.validate_advance_booking(start_time):
             warnings.append(WARN_SHORT_NOTICE)
+        if self.num_pcs > LARGE_BOOKING_PCS:
+            warnings.append(WARN_LARGE_BOOKING)
 
         # what the edit cleared, so the booker sees the fix land
         resolved = [w for w in previous_warnings if w not in warnings]

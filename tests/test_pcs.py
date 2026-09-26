@@ -501,6 +501,34 @@ async def test_a_clean_slot_books_without_a_prompt(modal):
 
 
 @pytest.mark.asyncio
+async def test_a_big_booking_is_held_for_confirmation(modal):
+    modal.num_pcs = pcs.LARGE_BOOKING_PCS + 1
+    far_off = (datetime.now(pcs.CENTRAL_TZ) + timedelta(days=5)).strftime("%Y-%m-%d")
+
+    interaction = await submit(modal, far_off, "3:00PM", "5:00PM")
+
+    assert interaction.followup.send_calls[0]["view"].warnings == [
+        pcs.WARN_LARGE_BOOKING
+    ]
+
+
+@pytest.mark.asyncio
+async def test_booking_right_at_the_threshold_does_not_warn(modal):
+    seen = {}
+
+    async def fake_complete(interaction, start_time, end_time, warnings):
+        seen["warnings"] = warnings
+
+    modal.complete = fake_complete
+    modal.num_pcs = pcs.LARGE_BOOKING_PCS
+    far_off = (datetime.now(pcs.CENTRAL_TZ) + timedelta(days=5)).strftime("%Y-%m-%d")
+
+    await submit(modal, far_off, "3:00PM", "5:00PM")
+
+    assert seen["warnings"] == []
+
+
+@pytest.mark.asyncio
 async def test_an_edit_that_clears_one_warning_still_confirms(modal, view):
     # editing out of hours while still short-notice must not book on the booker's behalf
     modal.origin_view = view
