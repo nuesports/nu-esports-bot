@@ -1,3 +1,5 @@
+import base64
+import json
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -671,6 +673,53 @@ async def test_a_clean_booking_pings_only_the_rotation(booked, modal, monkeypatc
     posted = channel.sent[0]
     assert posted["content"] == "<@99>"
     assert not [f for f in posted["embed"].fields if f.name == "⚠️ Notes"]
+
+
+def decode_booking_url(url):
+    base, fragment = url.split("#nue=")
+    padded = fragment + "=" * (-len(fragment) % 4)
+    return base, json.loads(base64.urlsafe_b64decode(padded))
+
+
+def test_booking_url_carries_the_reservation_in_the_fragment(cog):
+    start, end = cog.parse_time_range("2026-09-29 5:15PM-6:45PM")
+    url = pcs.ggleap_booking_url("Valorant White", [3, 1, 0], start, end, "a@b.edu")
+
+    base, payload = decode_booking_url(url)
+    assert base == pcs.GGLEAP_BOOKING_GRID_URL
+    assert payload == {
+        "v": 1,
+        "team": "Valorant White",
+        "pcs": [0, 1, 3],
+        "start": "2026-09-29T17:15:00",
+        "duration": 90,
+        "email": "a@b.edu",
+    }
+
+
+def test_booking_url_fits_in_a_discord_button(cog):
+    start, end = cog.parse_time_range("2026-09-29 12PM-11:59PM")
+    every_pc = pcs.BACK_ROOM_PCS + pcs.MAIN_ROOM_PCS
+    email = "someone.with.a.long.name2029@u.northwestern.edu"
+    assert (
+        len(pcs.ggleap_booking_url("Rocket League Purple", every_pc, start, end, email))
+        <= 512
+    )
+
+
+@pytest.mark.asyncio
+async def test_staff_get_a_book_in_ggleap_button(booked, modal, monkeypatch):
+    channel = FakeReservationsChannel()
+    booked.bot = SimpleNamespace(get_channel=lambda channel_id: channel)
+    monkeypatch.setattr(pcs.config, "gamehead_email", lambda username: "lilac@u.edu")
+
+    await run_complete(modal, times="12:00PM-2:00PM")
+
+    [button] = channel.sent[0]["view"].children
+    assert button.label == "Book in ggLeap"
+    _, payload = decode_booking_url(button.url)
+    assert payload["pcs"] == [1, 2]
+    assert payload["email"] == "lilac@u.edu"
 
 
 # --- /reserve-external ---------------------------------------------------------
