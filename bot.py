@@ -1,10 +1,14 @@
 import discord
 
-from utils import config, db, migrate
+from utils import config, config_schema, db, migrate
 
 TOKEN = config.secrets["discord"]["token"]
 
 bot = discord.Bot(intents=discord.Intents.all())
+
+# loud but not fatal, a bad value shouldn't take down every cog that doesn't read it
+for problem in config_schema.problems(config.config):
+    print(f"[config] {problem}")
 
 
 @bot.event
