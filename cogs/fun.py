@@ -8,7 +8,6 @@ from discord.ext import commands
 from utils import config
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
-TYST_STICKER_ID = config.config["fun"]["stickers"]["TYST"]
 
 
 class Fun(commands.Cog):
@@ -316,7 +315,9 @@ async def ty_stan(message: discord.Message) -> str | bool | None:
     if random.randint(1, 100) <= 10 and (
         "thank you shannon tan" in lower_content or "tyst" in lower_content
     ):
-        sticker = discord.utils.get(message.guild.stickers, id=TYST_STICKER_ID)
+        sticker = discord.utils.get(
+            message.guild.stickers, id=config.config["fun"]["stickers"]["TYST"]
+        )
         if sticker is not None:
             await message.reply(
                 "THANK YOU SHANNON TAN THANK YOU SHANNON TAN", stickers=[sticker]

@@ -543,7 +543,7 @@ async def booked(cog, modal, monkeypatch):
     cog.team_prime_time_quota = pcs.TEAM_PRIME_TIME_QUOTA
     cog.pending_acknowledgments = {}
     cog.bot = SimpleNamespace(get_channel=lambda channel_id: None)
-    monkeypatch.setattr(pcs, "STAFF_LIST", [])
+    monkeypatch.setattr(pcs, "staff_list", list)
     return cog
 
 
@@ -640,7 +640,7 @@ async def test_staff_get_the_warnings_and_a_role_ping(booked, modal, monkeypatch
     role = FakeRole()
     channel = FakeReservationsChannel(role)
     booked.bot = SimpleNamespace(get_channel=lambda channel_id: channel)
-    monkeypatch.setattr(pcs, "STAFF_LIST", [99])
+    monkeypatch.setattr(pcs, "staff_list", lambda: [99])
 
     async def rotation():
         return 0
@@ -661,7 +661,7 @@ async def test_staff_get_the_warnings_and_a_role_ping(booked, modal, monkeypatch
 async def test_a_clean_booking_pings_only_the_rotation(booked, modal, monkeypatch):
     channel = FakeReservationsChannel(FakeRole())
     booked.bot = SimpleNamespace(get_channel=lambda channel_id: channel)
-    monkeypatch.setattr(pcs, "STAFF_LIST", [99])
+    monkeypatch.setattr(pcs, "staff_list", lambda: [99])
 
     async def rotation():
         return 0

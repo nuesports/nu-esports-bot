@@ -84,9 +84,17 @@ class GithubBacklog(commands.Cog):
 
     def __init__(self, bot: discord.Bot) -> None:
         self.bot: discord.Bot = bot
+        self.load_settings()
+
+    def load_settings(self) -> None:
+        """Rerun on config_changed, so /config edits land without reloading the cog."""
         cfg = config.config["github_backlog"]
         self.pr_channel_id: int = cfg["pr_channel"]
         self.issue_channel_id: int = cfg["issue_channel"]
+
+    @commands.Cog.listener()
+    async def on_config_changed(self) -> None:
+        self.load_settings()
 
     async def post_and_pin(
         self, channel_id: int, repo: str, number: int, kind: str, embed: discord.Embed
