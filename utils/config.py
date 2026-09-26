@@ -1,16 +1,26 @@
+import os
 from pathlib import Path
 
 import discord
 import yaml
 
+# prod points this into a writable mount, since /config saves over it
+CONFIG_PATH = Path(os.environ.get("CONFIG_PATH", "config.yaml"))
+
 
 def load_config() -> dict:
     """Load config from config.yaml file."""
-    config_file = Path("config.yaml")
-    if not config_file.exists():
-        raise FileNotFoundError("config.yaml not found in local directory")
-    with open(config_file, "r", encoding="utf-8") as f:
+    if not CONFIG_PATH.exists():
+        raise FileNotFoundError(f"{CONFIG_PATH} not found")
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def replace_config(new: dict) -> None:
+    """Swap in a new config without a restart."""
+    # in place, since every cog holds a reference to this same dict
+    config.clear()
+    config.update(new)
 
 
 def load_secrets() -> dict:
@@ -96,8 +106,9 @@ def _in_role_group(member: discord.Member, group: dict) -> bool:
     return bool(member_role_ids & _role_ids(group.get("role")))
 
 
-def is_bot_dev(member: discord.Member) -> bool:
-    return _in_role_group(member, config["roles"]["bot_devs"])
+def is_bot_dev(member: discord.Member, cfg: dict | None = None) -> bool:
+    """cfg checks against a proposed config instead of the live one."""
+    return _in_role_group(member, (config if cfg is None else cfg)["roles"]["bot_devs"])
 
 
 def is_gameroom_staff(member: discord.Member) -> bool:

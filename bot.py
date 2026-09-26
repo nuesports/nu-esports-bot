@@ -41,6 +41,7 @@ cogs_list = [
     "leaderboard",
     "github_backlog",
     "sushi",
+    "config_editor",
 ]
 
 for cog in cogs_list:
