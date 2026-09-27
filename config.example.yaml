@@ -50,6 +50,9 @@ reservations:
   channel: #<channel_id>
 
 gameheads:
+  # gameroom workers, so their reservations carry an email too
+  attendants:
+    #<discord_username>: "<email>"
   valorant:
     #<discord_username>: "<email>"
   league:

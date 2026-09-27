@@ -154,6 +154,50 @@ def test_deadlock_is_reservable():
     assert "Deadlock Purple" in pcs.RESERVABLE_TEAMS
 
 
+def test_both_smash_games_are_reservable():
+    assert {"Smash Melee", "Smash Ultimate"} <= set(pcs.RESERVABLE_TEAMS)
+
+
+@pytest_asyncio.fixture
+async def empty_room(cog):
+    async def nothing_booked(*args):
+        return []
+
+    cog.get_reservations_in_range = nothing_booked
+    return cog
+
+
+# 2026-09-29 is a tuesday, the back room used to close on it
+TUESDAY_EVENING = (
+    datetime(2026, 9, 29, 19, tzinfo=pcs.CENTRAL_TZ),
+    datetime(2026, 9, 29, 21, tzinfo=pcs.CENTRAL_TZ),
+)
+
+
+@pytest.mark.asyncio
+async def test_the_cap_is_exactly_what_the_allocator_can_hand_out(empty_room):
+    assert pcs.MAX_RESERVABLE_PCS == 13
+    most = await empty_room.allocate_pcs(*TUESDAY_EVENING, pcs.MAX_RESERVABLE_PCS)
+    assert len(most) == pcs.MAX_RESERVABLE_PCS
+    assert (
+        await empty_room.allocate_pcs(*TUESDAY_EVENING, pcs.MAX_RESERVABLE_PCS + 1)
+        == []
+    )
+
+
+@pytest.mark.asyncio
+async def test_tuesday_books_the_back_room_first(empty_room):
+    assert await empty_room.allocate_pcs(*TUESDAY_EVENING, 3) == [14, 15, 0]
+
+
+@pytest.mark.asyncio
+async def test_tuesday_conflicts_count_the_back_room(empty_room):
+    clash, _, _ = await empty_room.check_conflicts(
+        *TUESDAY_EVENING, pcs.MAX_RESERVABLE_PCS
+    )
+    assert not clash
+
+
 # --- the confirm embed --------------------------------------------------------
 
 
@@ -457,6 +501,34 @@ async def test_a_clean_slot_books_without_a_prompt(modal):
 
 
 @pytest.mark.asyncio
+async def test_a_big_booking_is_held_for_confirmation(modal):
+    modal.num_pcs = pcs.LARGE_BOOKING_PCS + 1
+    far_off = (datetime.now(pcs.CENTRAL_TZ) + timedelta(days=5)).strftime("%Y-%m-%d")
+
+    interaction = await submit(modal, far_off, "3:00PM", "5:00PM")
+
+    assert interaction.followup.send_calls[0]["view"].warnings == [
+        pcs.WARN_LARGE_BOOKING
+    ]
+
+
+@pytest.mark.asyncio
+async def test_booking_right_at_the_threshold_does_not_warn(modal):
+    seen = {}
+
+    async def fake_complete(interaction, start_time, end_time, warnings):
+        seen["warnings"] = warnings
+
+    modal.complete = fake_complete
+    modal.num_pcs = pcs.LARGE_BOOKING_PCS
+    far_off = (datetime.now(pcs.CENTRAL_TZ) + timedelta(days=5)).strftime("%Y-%m-%d")
+
+    await submit(modal, far_off, "3:00PM", "5:00PM")
+
+    assert seen["warnings"] == []
+
+
+@pytest.mark.asyncio
 async def test_an_edit_that_clears_one_warning_still_confirms(modal, view):
     # editing out of hours while still short-notice must not book on the booker's behalf
     modal.origin_view = view
@@ -606,12 +678,37 @@ async def test_the_quota_is_read_from_the_team_table(booked, modal):
 
 
 @pytest.mark.asyncio
-async def test_bot_devs_skip_the_quota_check_entirely(booked, modal):
+async def test_a_real_booking_is_saved(booked, modal):
+    saved = []
+
+    async def save(*args):
+        saved.append(args)
+
+    booked.save_reservation = save
+    await run_complete(modal)
+
+    assert len(saved) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_test_booking_is_never_saved(booked, modal):
     async def explode(*args):
-        raise AssertionError("bot devs must not be quota checked")
+        raise AssertionError("test bookings must not be saved")
+
+    booked.save_reservation = explode
+    modal.is_test = True
+    interaction = await run_complete(modal)
+
+    assert "Test Reservation" in interaction.followup.send_calls[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_test_bookings_skip_the_quota_check_entirely(booked, modal):
+    async def explode(*args):
+        raise AssertionError("test bookings must not be quota checked")
 
     booked.check_prime_time_quota = explode
-    modal.is_bot_dev = True
+    modal.is_test = True
 
     interaction = await run_complete(modal)
 

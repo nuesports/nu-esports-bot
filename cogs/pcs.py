@@ -26,9 +26,11 @@ GGLEAP_BOOKING_GRID_URL = "https://admin.ggleap.com/booking/grid"
 # Constants - Use ZoneInfo for proper DST handling
 CENTRAL_TZ = ZoneInfo("America/Chicago")
 ADVANCE_BOOKING_DAYS = 2
-MAX_MAIN_ROOM_PCS = 5
 BACK_ROOM_PCS = [0, 14, 15]  # 0 = Streaming, 14 = Back Room 1, 15 = Back Room 2
 MAIN_ROOM_PCS = list(range(1, 11))
+MAX_RESERVABLE_PCS = len(BACK_ROOM_PCS) + len(MAIN_ROOM_PCS)
+# past this a booking still goes through, it just warns the booker and staff
+LARGE_BOOKING_PCS = 5
 PRIME_TIME_WEEKDAY_HOUR = 19  # 7 PM
 PRIME_TIME_WEEKEND_HOUR = 18  # 6 PM
 # Norris locks overnight, so nothing can be booked before it reopens
@@ -47,6 +49,8 @@ TEAM_PRIME_TIME_QUOTA: dict[str, int] = {
     "Apex White": 1,
     "Apex Purple": 1,
     "Rocket League Purple": 1,
+    "Smash Melee": 1,
+    "Smash Ultimate": 1,
     # External events have unlimited prime time quota since they're staff-managed
     "External": 99,
 }
@@ -579,17 +583,12 @@ class PCs(commands.Cog):
 
             # Check if we can fit the requested PCs
             # We have: back room (14, 15, streaming) = 3 PCs, main room = 10 PCs
-            # Max main room at once = 5
 
             # Available back room PCs in this interval
             back_room_available = len(BACK_ROOM_PCS) - back_room_used
 
-            # Check Tuesday restriction
-            if interval_start.weekday() == 1:  # Tuesday
-                back_room_available = 0  # No back room on Tuesday
-
             # Available main room PCs
-            main_room_available = MAX_MAIN_ROOM_PCS - main_room_used
+            main_room_available = len(MAIN_ROOM_PCS) - main_room_used
 
             # Can we fit num_pcs?
             total_available = back_room_available + main_room_available
@@ -610,13 +609,8 @@ class PCs(commands.Cog):
         # Get all overlapping reservations from database
         overlapping = await self.get_reservations_in_range(start_time, end_time)
 
-        # Check Tuesday restriction
-        is_tuesday = start_time.weekday() == 1
-
         # Determine which PCs are available throughout the entire time range
         all_pcs = BACK_ROOM_PCS + MAIN_ROOM_PCS  # Back room first, then main room
-        if is_tuesday:
-            all_pcs = MAIN_ROOM_PCS  # No back room on Tuesday
 
         available_pcs = []
         for pc in all_pcs:
@@ -656,11 +650,6 @@ class PCs(commands.Cog):
             for pc in main_room_group2:
                 if len(allocated) < num_pcs:
                     allocated.append(pc)
-
-        # Verify we don't exceed max main room PCs
-        main_room_allocated = [pc for pc in allocated if pc in MAIN_ROOM_PCS]
-        if len(main_room_allocated) > MAX_MAIN_ROOM_PCS:
-            return []  # Can't allocate
 
         return allocated
 
@@ -1514,9 +1503,9 @@ class PCs(commands.Cog):
         num_pcs: int = discord.Option(
             int,
             name="num_pcs",
-            description="Number of PCs to reserve (1-8)",
+            description=f"Number of PCs to reserve (1-{MAX_RESERVABLE_PCS})",
             min_value=1,
-            max_value=8,
+            max_value=MAX_RESERVABLE_PCS,
             required=True,
         ),
         res_type: str = discord.Option(
@@ -1525,9 +1514,13 @@ class PCs(commands.Cog):
             choices=["Scrim", "Match"],
             required=True,
         ),
+        test: bool = discord.Option(
+            bool,
+            name="test",
+            description="Bot devs only: walk the flow without saving",
+            default=False,
+        ),
     ) -> None:
-        is_bot_dev = config.is_bot_dev(ctx.author)
-
         if not config.can_reserve(ctx.author):
             await ctx.respond(
                 "❌ You don't have permission to reserve PCs. Contact a team manager.",
@@ -1535,8 +1528,15 @@ class PCs(commands.Cog):
             )
             return
 
+        # opt-in, since bot devs and admins also book real slots as staff
+        if test and not config.is_bot_dev(ctx.author):
+            await ctx.respond(
+                "❌ Only bot devs can make test reservations.", ephemeral=True
+            )
+            return
+
         # Show modal for time input
-        modal = ReservationTimeModal(self, team, num_pcs, res_type, is_bot_dev)
+        modal = ReservationTimeModal(self, team, num_pcs, res_type, test)
         await ctx.send_modal(modal)
 
     @commands.slash_command(
@@ -1836,10 +1836,11 @@ class PCs(commands.Cog):
 WARN_OUTSIDE_HOURS = "🌃 Outside gameroom hours"
 WARN_SHORT_NOTICE = f"⌛ Booked less than {ADVANCE_BOOKING_DAYS} days in advance"
 WARN_LONG_PRIME = "🕑 Prime time reservation longer than 2 hours"
+WARN_LARGE_BOOKING = f"👥 More than {LARGE_BOOKING_PCS} PCs"
 
 
 # render order for the prompt -- prime time warnings land too late to appear there
-WARNING_ORDER = [WARN_OUTSIDE_HOURS, WARN_SHORT_NOTICE]
+WARNING_ORDER = [WARN_OUTSIDE_HOURS, WARN_SHORT_NOTICE, WARN_LARGE_BOOKING]
 
 
 def ggleap_booking_url(
@@ -1919,7 +1920,7 @@ class ReservationTimeModal(discord.ui.Modal):
         team: str,
         num_pcs: int,
         res_type: str,
-        is_bot_dev: bool = False,
+        is_test: bool = False,
         date_value: str = "",
         start_value: str = "",
         end_value: str = "",
@@ -1930,7 +1931,7 @@ class ReservationTimeModal(discord.ui.Modal):
         self.team: str = team
         self.num_pcs: int = num_pcs
         self.res_type: str = res_type
-        self.is_bot_dev: bool = is_bot_dev
+        self.is_test: bool = is_test
         self.origin_view: BookingWarningsView | None = origin_view
 
         # Calculate example date as today + 2 days (minimum advance booking)
@@ -2016,6 +2017,8 @@ class ReservationTimeModal(discord.ui.Modal):
             warnings.append(WARN_OUTSIDE_HOURS)
         if not self.cog.validate_advance_booking(start_time):
             warnings.append(WARN_SHORT_NOTICE)
+        if self.num_pcs > LARGE_BOOKING_PCS:
+            warnings.append(WARN_LARGE_BOOKING)
 
         # what the edit cleared, so the booker sees the fix land
         resolved = [w for w in previous_warnings if w not in warnings]
@@ -2081,8 +2084,8 @@ class ReservationTimeModal(discord.ui.Modal):
         if end_time > start_time + timedelta(hours=2):
             is_over_2_hours = True
 
-        # If prime time, check quota (skip for bot devs)
-        if is_prime and not self.is_bot_dev:
+        # If prime time, check quota (skip for test bookings)
+        if is_prime and not self.is_test:
             has_quota, used_count = await self.cog.check_prime_time_quota(
                 self.team, start_time
             )
@@ -2093,13 +2096,13 @@ class ReservationTimeModal(discord.ui.Modal):
         if is_prime and is_over_2_hours:
             warnings.append(WARN_LONG_PRIME)
 
-        # Save reservation to database (skip for bot devs)
+        # Save reservation to database (skip for test bookings)
         manager = (
             f"{interaction.user.name}#{interaction.user.discriminator}"
             if interaction.user.discriminator != "0"
             else interaction.user.name
         )
-        if not self.is_bot_dev:
+        if not self.is_test:
             await self.cog.save_reservation(
                 self.team, allocated_pcs, start_time, end_time, manager, is_prime
             )
@@ -2112,7 +2115,7 @@ class ReservationTimeModal(discord.ui.Modal):
         # Send confirmation to user
         prime_time_status = "✨ **Prime Time Reservation**" if is_prime else ""
         test_status = (
-            "🧪 **Test Reservation** (Not saved to database)" if self.is_bot_dev else ""
+            "🧪 **Test Reservation** (Not saved to database)" if self.is_test else ""
         )
         # the booking stands either way, this just says staff are looking at it
         warning_status = (
@@ -2185,7 +2188,7 @@ class ReservationTimeModal(discord.ui.Modal):
                         name="Status", value="✨ Prime Time Reservation", inline=False
                     )
 
-                if self.is_bot_dev:
+                if self.is_test:
                     embed.add_field(
                         name="Status",
                         value="Test Reservation (Not saved to database)",
@@ -2320,7 +2323,7 @@ class BookingWarningsView(discord.ui.View):
                 self.modal.team,
                 self.modal.num_pcs,
                 self.modal.res_type,
-                self.modal.is_bot_dev,
+                self.modal.is_test,
                 date_value=date_value,
                 start_value=start_value,
                 end_value=end_value,
@@ -2412,7 +2415,7 @@ class RemakeBookingView(discord.ui.View):
                 self.modal.team,
                 self.modal.num_pcs,
                 self.modal.res_type,
-                self.modal.is_bot_dev,
+                self.modal.is_test,
                 date_value=date_value,
                 start_value=start_value,
                 end_value=end_value,
