@@ -143,7 +143,7 @@ def test_chess_none_when_not_mentioned(fun_config):
 @pytest.mark.asyncio
 async def test_ty_stan_replies_with_sticker_and_returns_none(monkeypatch):
     monkeypatch.setattr(fun.random, "randint", lambda a, b: 1)
-    sticker = FakeSticker(fun.TYST_STICKER_ID)
+    sticker = FakeSticker(fun.config.config["fun"]["stickers"]["TYST"])
     message = FakeMessage(content="thank you shannon tan", guild=FakeGuild([sticker]))
 
     result = await fun.ty_stan(message)

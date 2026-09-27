@@ -36,7 +36,11 @@ PRIME_TIME_WEEKEND_HOUR = 18  # 6 PM
 # Norris locks overnight, so nothing can be booked before it reopens
 NORRIS_OPEN_HOUR = 8
 
-STAFF_LIST = config.config["roles"]["gameroom_staff"]["users"]
+
+def staff_list() -> list[int]:
+    """Read per call, so a /config edit to the rotation takes effect immediately."""
+    return config.config["roles"]["gameroom_staff"].get("users") or []
+
 
 # also the source of the /reserve team list, so the two can't drift
 TEAM_PRIME_TIME_QUOTA: dict[str, int] = {
@@ -146,8 +150,8 @@ class PCs(commands.Cog):
             )
             self.staff_ping_index = int(row[0]) if row else 0
 
-        current = self.staff_ping_index % len(STAFF_LIST)
-        self.staff_ping_index = (current + 1) % len(STAFF_LIST)
+        current = self.staff_ping_index % len(staff_list())
+        self.staff_ping_index = (current + 1) % len(staff_list())
         await db.perform_one(
             "UPDATE bot_state SET value = %s WHERE key = 'staff_ping_index'",
             (str(self.staff_ping_index),),
@@ -371,8 +375,8 @@ class PCs(commands.Cog):
                 )
 
             # Ping the next staff member in rotation
-            if STAFF_LIST:
-                staff_id = STAFF_LIST[await self.next_staff_index()]
+            if staff_list():
+                staff_id = staff_list()[await self.next_staff_index()]
                 await reservations_channel.send(f"<@{staff_id}>", embed=embed)
             else:
                 await reservations_channel.send(embed=embed)
@@ -2228,8 +2232,8 @@ class ReservationTimeModal(discord.ui.Modal):
                 )
 
                 # Ping the next staff member in rotation
-                if STAFF_LIST:
-                    staff_id = STAFF_LIST[await self.cog.next_staff_index()]
+                if staff_list():
+                    staff_id = staff_list()[await self.cog.next_staff_index()]
                     content = f"<@{staff_id}>"
                     if staff_role:
                         content += f" // ⚠️ {staff_role.mention}"

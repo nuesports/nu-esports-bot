@@ -334,6 +334,12 @@ class AntiScam(commands.Cog):
 
     def __init__(self, bot: discord.Bot) -> None:
         self.bot: discord.Bot = bot
+        self.load_settings()
+        # Members with a case already open.
+        self._held: set[int] = set()
+
+    def load_settings(self) -> None:
+        """Rerun on config_changed, so /config edits land without reloading the cog."""
         cfg = config.config["antiscam"]
         self.alert_channel_id = cfg["alert_channel"]
         self.staff_role_id = config.staff_role_id()
@@ -347,8 +353,10 @@ class AntiScam(commands.Cog):
             print(
                 f"[antiscam] TESTING: {len(self.test_ages)} account(s) have a faked age"
             )
-        # Members with a case already open.
-        self._held: set[int] = set()
+
+    @commands.Cog.listener()
+    async def on_config_changed(self) -> None:
+        self.load_settings()
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
