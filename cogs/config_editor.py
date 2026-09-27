@@ -30,6 +30,15 @@ def fit(header: str, snippet: str) -> str:
     return f"{header}\n{snippet[:room]}\n...\n```"
 
 
+def clip(content: str) -> str:
+    """Cut a plain reply to one message, saying there's more."""
+    if len(content) <= DISCORD_LIMIT:
+        return content
+    return content[: DISCORD_LIMIT - len("\n...narrow the path to see the rest")] + (
+        "\n...narrow the path to see the rest"
+    )
+
+
 def undo_view(revision_id: int, disabled: bool = False) -> discord.ui.View:
     view = discord.ui.View(timeout=None)
     view.add_item(
@@ -75,17 +84,36 @@ def path_autocomplete(
 
     async def complete(ctx: discord.AutocompleteContext) -> list[str]:
         typed = (ctx.value or "").lower()
-        paths = []
-        for setting in config_schema.SETTINGS:
-            if kinds and setting.kind not in kinds:
-                continue
-            if "*" in setting.path:
-                paths += config_schema.concrete_paths(config.config, setting)
-            else:
-                paths.append(setting.path)
+        paths = [
+            path
+            for setting, path in live_settings()
+            if not kinds or setting.kind in kinds
+        ]
         return [path for path in paths if typed in path.lower()][:25]
 
     return complete
+
+
+def live_settings() -> list[tuple[config_schema.Setting, str]]:
+    """Every editable path in the running config, wildcards expanded."""
+    found = []
+    for setting in config_schema.SETTINGS:
+        if "*" in setting.path:
+            paths = config_schema.concrete_paths(config.config, setting)
+        else:
+            paths = [setting.path]
+        found += [(setting, path) for path in paths]
+    return found
+
+
+async def view_autocomplete(ctx: discord.AutocompleteContext) -> list[str]:
+    """Settings plus the sections that hold them, so a whole roster list is one pick."""
+    typed = (ctx.value or "").lower()
+    paths: set[str] = set()
+    for _, path in live_settings():
+        parts = path.split(".")
+        paths.update(".".join(parts[:end]) for end in range(1, len(parts) + 1))
+    return [path for path in sorted(paths) if typed in path.lower()][:25]
 
 
 async def roster_autocomplete(ctx: discord.AutocompleteContext) -> list[str]:
@@ -238,26 +266,41 @@ class ConfigEditor(commands.Cog):
             await config_history.mark_undone(revision_id, new_revision)
         return saved, new_revision
 
-    @config_group.command(name="get", description="Show a setting's current value")
-    async def get(
+    @config_group.command(name="view", description="Show a setting or a whole section")
+    async def view(
         self,
         ctx: discord.ApplicationContext,
         path: str = discord.Option(
-            name="path", description="Setting", autocomplete=path_autocomplete()
+            name="path",
+            description="A setting, or a section like gameheads",
+            autocomplete=view_autocomplete,
         ),
     ) -> None:
         if not await self.allowed(ctx):
             return
+        path = unquote(path).strip(".")
         setting = config_schema.find(path)
-        if setting is None:
-            await ctx.respond(f"❌ `{path}` isn't an editable setting.", ephemeral=True)
-            return
-        value = config_schema.lookup(config.config, path)
-        await ctx.respond(
-            f"**{path}** ({setting.kind}): {setting.description}\n{show(setting, value)}",
-            ephemeral=True,
-            allowed_mentions=QUIET,
-        )
+        if setting is not None:
+            value = config_schema.lookup(config.config, path)
+            content = f"**{path}** ({setting.kind}): {setting.description}\n"
+            content += show(setting, value)
+        else:
+            inside = [
+                (found, full)
+                for found, full in live_settings()
+                if full.startswith(f"{path}.")
+            ]
+            if not inside:
+                await ctx.respond(f"❌ Nothing to show under `{path}`.", ephemeral=True)
+                return
+            lines = []
+            for found, full in inside:
+                shown = show(found, config_schema.lookup(config.config, full))
+                # a roster of several people reads better starting on its own line
+                gap = "\n" if "\n" in shown else " "
+                lines.append(f"**{full}**:{gap}{shown}")
+            content = "\n".join(lines)
+        await ctx.respond(clip(content), ephemeral=True, allowed_mentions=QUIET)
 
     @edit_group.command(name="role", description="Point a setting at a role")
     async def edit_role(

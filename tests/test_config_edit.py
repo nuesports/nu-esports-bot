@@ -290,7 +290,7 @@ async def test_only_bot_devs_get_in(live_config):
     ctx = FakeApplicationContext(FakeMember(id=5))
     cog = config_editor.ConfigEditor(FakeBot())
 
-    await config_editor.ConfigEditor.get.callback(cog, ctx, "roles.staff_role")
+    await config_editor.ConfigEditor.view.callback(cog, ctx, "roles.staff_role")
 
     assert "Only bot devs" in ctx.replies[-1]
 
@@ -714,3 +714,52 @@ def test_a_roster_addition_stays_inside_its_roster():
     assert config_edit.snippet(old, new) == lines(
         "  valorant:", "    a: x", bold("    c: z")
     )
+
+
+# --- viewing ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_view_shows_one_roster(live_config):
+    ctx = FakeApplicationContext(FakeMember())
+
+    await config_editor.ConfigEditor.view.callback(editor(), ctx, "gameheads.valorant")
+
+    assert ctx.replies[-1].endswith("`someone`: someone@u.northwestern.edu")
+
+
+@pytest.mark.asyncio
+async def test_view_shows_a_whole_section(live_config):
+    ctx = FakeApplicationContext(FakeMember())
+
+    await config_editor.ConfigEditor.view.callback(editor(), ctx, "gameheads")
+
+    assert ctx.replies[-1].splitlines() == [
+        "**gameheads.smash**: *unset*",
+        "**gameheads.valorant**: `someone`: someone@u.northwestern.edu",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_view_of_something_unknown_says_so(live_config):
+    ctx = FakeApplicationContext(FakeMember())
+
+    await config_editor.ConfigEditor.view.callback(editor(), ctx, "discord")
+
+    assert "Nothing to show under `discord`" in ctx.replies[-1]
+
+
+@pytest.mark.asyncio
+async def test_view_offers_sections_too(live_config):
+    ctx = SimpleNamespace(value="gameheads", options={})
+
+    offered = await config_editor.view_autocomplete(ctx)
+
+    assert offered[:3] == ["gameheads", "gameheads.smash", "gameheads.valorant"]
+    assert "roles.gameheads" in offered
+
+
+def test_a_long_view_is_clipped():
+    content = config_editor.clip("x" * 5000)
+    assert len(content) <= config_editor.DISCORD_LIMIT
+    assert content.endswith("narrow the path to see the rest")
