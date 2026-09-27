@@ -10,6 +10,7 @@ config.yaml
 # what /config leaves beside it when it saves
 config.yaml.prev
 config.yaml.tmp
+config.yaml.broken
 # Real config file for Railway
 config.real.yaml
 secrets.yaml

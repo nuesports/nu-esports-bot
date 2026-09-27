@@ -16,6 +16,31 @@ def load_config() -> dict:
         return yaml.safe_load(f)
 
 
+def load_config_or_fallback() -> tuple[dict, str | None]:
+    """The config, or the last good one from the database if config.yaml won't load.
+    Returns why it fell back, so the bot can say so once it's online."""
+    try:
+        data = load_config()
+        if isinstance(data, dict):
+            return data, None
+        reason = "it isn't a set of settings"
+    except (OSError, yaml.YAMLError) as error:
+        reason = str(error)
+
+    # imported here since config_history needs secrets, which load after this module
+    from utils import config_history
+
+    fallback = config_history.latest_text_before_startup()
+    if fallback is None:
+        raise RuntimeError(f"{CONFIG_PATH} won't load ({reason}) and none is saved")
+    print(f"[config] {CONFIG_PATH} won't load ({reason}), using the last saved copy")
+    # kept aside for whoever fixes it, then replaced so /config works again
+    if CONFIG_PATH.exists():
+        CONFIG_PATH.replace(CONFIG_PATH.with_name(CONFIG_PATH.name + ".broken"))
+    CONFIG_PATH.write_text(fallback, encoding="utf-8", newline="\n")
+    return yaml.safe_load(fallback), reason
+
+
 def replace_config(new: dict) -> None:
     """Swap in a new config without a restart."""
     # in place, since every cog holds a reference to this same dict
@@ -78,8 +103,9 @@ def load_antiscam_data() -> dict:
         return yaml.safe_load(f)
 
 
-config = load_config()
 secrets = load_secrets()
+# set when config.yaml wouldn't load and the last saved one was used instead
+config, config_fallback_reason = load_config_or_fallback()
 game_data = load_game_data()
 gameroom_data = load_gameroom_data()
 matchmaking_data = load_matchmaking_data()

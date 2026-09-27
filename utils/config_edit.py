@@ -1,6 +1,7 @@
 """Writes to config.yaml from Discord: comment-preserving, validated, then applied live."""
 
 import asyncio
+import copy
 import difflib
 import io
 import os
@@ -27,28 +28,82 @@ class Saved(NamedTuple):
     old: Any
     new: Any
     snippet: str
+    before_text: str
+    after_text: str
+
+
+class Reloaded(NamedTuple):
+    problems: list[str]
+    text: str
+
+
+# returned by a change to drop the key entirely, how undo takes back a new roster
+REMOVE = object()
 
 
 # discord's ansi code blocks keep yaml's indentation and #/- lines intact
 BOLD, RED, RESET = "\x1b[1m", "\x1b[31m", "\x1b[0m"
 
 
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def _sections(lines: list[str]) -> list[int]:
+    """Which top-level key each line falls under, as that key's line number."""
+    owners, current = [], -1
+    for number, line in enumerate(lines):
+        if line.strip() and not _indent(line) and not line.startswith("#"):
+            current = number
+        owners.append(current)
+    return owners
+
+
+def _context(lines: list[str], start: int, stop: int, limit: int) -> tuple[list, list]:
+    """Up to limit lines either side of lines[start:stop] that belong with them:
+    same section, same block, with the parent key shown once on the way up."""
+    depth = min(
+        (_indent(line) for line in lines[start:stop] if line.strip()), default=0
+    )
+    section = _sections(lines)
+    above: list[str] = []
+    for number in range(start - 1, -1, -1):
+        line = lines[number]
+        if len(above) == limit or not line.strip() or section[number] != section[start]:
+            break
+        if _indent(line) < depth:
+            # the parent key, not a stray comment sitting further out
+            if not line.lstrip().startswith("#"):
+                above.insert(0, line)
+            break
+        above.insert(0, line)
+    below: list[str] = []
+    for number in range(stop, len(lines)):
+        line = lines[number]
+        if len(below) == limit or not line.strip() or section[number] != section[start]:
+            break
+        if _indent(line) < depth:
+            break
+        below.append(line)
+    return above, below
+
+
 def snippet(old_text: str, new_text: str, context: int = 2) -> str:
-    """The changed lines with two either side, new lines bold, pure removals red."""
+    """The changed lines with what belongs around them, new lines bold, removals red."""
     old_lines, new_lines = old_text.splitlines(), new_text.splitlines()
     matcher = difflib.SequenceMatcher(a=old_lines, b=new_lines)
     parts = []
-    for group in matcher.get_grouped_opcodes(context):
-        lines = []
-        for tag, i1, i2, j1, j2 in group:
-            if tag == "equal":
-                lines += new_lines[j1:j2]
-                continue
-            # a pure removal has no new line to point at, so show what went
-            if tag == "delete":
-                lines += [f"{RED}{line}{RESET}" for line in old_lines[i1:i2]]
-            lines += [f"{BOLD}{line}{RESET}" for line in new_lines[j1:j2]]
-        parts.append("\n".join(lines))
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        # a pure removal has no new line to point at, so show what went
+        if tag == "delete":
+            side, start, stop, style = old_lines, i1, i2, RED
+        else:
+            side, start, stop, style = new_lines, j1, j2, BOLD
+        above, below = _context(side, start, stop, context)
+        changed = [f"{style}{line}{RESET}" for line in side[start:stop]]
+        parts.append("\n".join(above + changed + below))
     return "```ansi\n" + "\n...\n".join(parts) + "\n```"
 
 
@@ -105,11 +160,17 @@ async def edit(
             # someone broke it over ssh -- fix it there, not on top of it
             raise EditRefused(f"the file on disk doesn't parse ({error})") from error
         parent, key = _parent(doc, path)
-        parent[key] = change(parent.get(key))
+        value = change(parent.get(key))
+        if value is REMOVE:
+            parent.pop(key, None)
+        else:
+            parent[key] = value
 
         buffer = io.StringIO()
         y.dump(doc, buffer)
         new_text = buffer.getvalue()
+        if new_text == old_text:
+            raise EditRefused(f"`{path}` is already set to that")
 
         before = yaml.safe_load(old_text)
         after = yaml.safe_load(new_text)
@@ -127,15 +188,33 @@ async def edit(
         config_schema.lookup(before, path),
         config_schema.lookup(after, path),
         snippet(old_text, new_text),
+        old_text,
+        new_text,
     )
 
 
-async def reload() -> list[str]:
+async def revert(member: discord.Member, path: str, before_text: str) -> Saved:
+    """Put path back how before_text had it, leaving every other setting alone."""
+    node: Any = _round_trip(before_text).load(before_text)
+    for part in path.split("."):
+        if not isinstance(node, dict) or part not in node:
+            node = REMOVE
+            break
+        node = node[part]
+    # copied whole so a restored roster keeps its quotes and comments
+    value = node if node is REMOVE else copy.deepcopy(node)
+    return await edit(member, path, lambda _: value)
+
+
+async def reload() -> Reloaded:
     """Pick up edits made on disk, returning any problems the file has."""
     async with _lock:
         try:
-            fresh = config.load_config()
+            text = config.CONFIG_PATH.read_text(encoding="utf-8")
+            fresh = yaml.safe_load(text)
         except (OSError, yaml.YAMLError) as error:
             raise EditRefused(f"the file can't be read ({error})") from error
+        if not isinstance(fresh, dict):
+            raise EditRefused("the file isn't a set of settings")
         config.replace_config(fresh)
-    return config_schema.problems(fresh)
+    return Reloaded(config_schema.problems(fresh), text)

@@ -1,18 +1,68 @@
+import asyncio
 from collections.abc import Callable, Coroutine
 from typing import Any
 
 import discord
+import psycopg
 from discord.ext import commands
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 
-from utils import config, config_edit, config_schema
+from utils import config, config_edit, config_history, config_schema, db
 from utils.config_schema import Kind
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
 
 # mentions render as names in the reply without pinging anyone
 QUIET = discord.AllowedMentions.none()
+
+# answered by on_interaction rather than a registered view, so it outlives restarts
+UNDO_PREFIX = "config-undo:"
+DISCORD_LIMIT = 2000
+
+
+def fit(header: str, snippet: str) -> str:
+    """header + snippet, cut short to fit one message if a hand edit made it huge."""
+    content = f"{header}\n{snippet}"
+    if len(content) <= DISCORD_LIMIT:
+        return content
+    room = DISCORD_LIMIT - len(header) - len("\n\n...\n```")
+    return f"{header}\n{snippet[:room]}\n...\n```"
+
+
+def clip(content: str) -> str:
+    """Cut a plain reply to one message, saying there's more."""
+    if len(content) <= DISCORD_LIMIT:
+        return content
+    return content[: DISCORD_LIMIT - len("\n...narrow the path to see the rest")] + (
+        "\n...narrow the path to see the rest"
+    )
+
+
+def undo_view(revision_id: int, disabled: bool = False) -> discord.ui.View:
+    view = discord.ui.View(timeout=None)
+    view.add_item(
+        discord.ui.Button(
+            label="Undo",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"{UNDO_PREFIX}{revision_id}",
+            disabled=disabled,
+        )
+    )
+    return view
+
+
+async def undoable_autocomplete(
+    ctx: discord.AutocompleteContext,
+) -> list[discord.OptionChoice]:
+    typed = str(ctx.value or "").lstrip("#")
+    revisions = [r for r in await config_history.recent(25) if r.undoable]
+    return [
+        discord.OptionChoice(f"#{r.id} {r.user_name} {r.action} {r.path}"[:100], r.id)
+        for r in revisions
+        if typed in str(r.id)
+    ]
+
 
 # straight and the curly ones phone keyboards swap in
 QUOTE_PAIRS = {'"': '"', "'": "'", "“": "”", "‘": "’"}
@@ -34,17 +84,36 @@ def path_autocomplete(
 
     async def complete(ctx: discord.AutocompleteContext) -> list[str]:
         typed = (ctx.value or "").lower()
-        paths = []
-        for setting in config_schema.SETTINGS:
-            if kinds and setting.kind not in kinds:
-                continue
-            if "*" in setting.path:
-                paths += config_schema.concrete_paths(config.config, setting)
-            else:
-                paths.append(setting.path)
+        paths = [
+            path
+            for setting, path in live_settings()
+            if not kinds or setting.kind in kinds
+        ]
         return [path for path in paths if typed in path.lower()][:25]
 
     return complete
+
+
+def live_settings() -> list[tuple[config_schema.Setting, str]]:
+    """Every editable path in the running config, wildcards expanded."""
+    found = []
+    for setting in config_schema.SETTINGS:
+        if "*" in setting.path:
+            paths = config_schema.concrete_paths(config.config, setting)
+        else:
+            paths = [setting.path]
+        found += [(setting, path) for path in paths]
+    return found
+
+
+async def view_autocomplete(ctx: discord.AutocompleteContext) -> list[str]:
+    """Settings plus the sections that hold them, so a whole roster list is one pick."""
+    typed = (ctx.value or "").lower()
+    paths: set[str] = set()
+    for _, path in live_settings():
+        parts = path.split(".")
+        paths.update(".".join(parts[:end]) for end in range(1, len(parts) + 1))
+    return [path for path in sorted(paths) if typed in path.lower()][:25]
 
 
 async def roster_autocomplete(ctx: discord.AutocompleteContext) -> list[str]:
@@ -85,6 +154,8 @@ def _as_map(current: Any) -> CommentedMap:
 class ConfigEditor(commands.Cog):
     def __init__(self, bot: discord.Bot) -> None:
         self.bot: discord.Bot = bot
+        # on_ready fires again on every reconnect, the snapshot only needs the first
+        self.snapshotted = False
 
     config_group = discord.SlashCommandGroup(
         "config", "View and change the bot's config", guild_ids=[GUILD_ID]
@@ -129,32 +200,107 @@ class ConfigEditor(commands.Cog):
             # prod's config mount has to be writable for this to work at all
             await ctx.respond(f"❌ Couldn't write the config: {error}", ephemeral=True)
             return
-        self.bot.dispatch("config_changed")
         print(
             f"[config] {ctx.author.name} changed {path}: {saved.old!r} -> {saved.new!r}"
         )
-        await ctx.respond(f"✅ Saved **{path}**\n{saved.snippet}", ephemeral=True)
+        revision = await self.committed(ctx.author, "edit", path, saved)
+        await ctx.respond(
+            fit(f"✅ Saved **{path}**{revision_tag(revision)}", saved.snippet),
+            ephemeral=True,
+        )
 
-    @config_group.command(name="get", description="Show a setting's current value")
-    async def get(
+    async def committed(
+        self,
+        member: discord.abc.User,
+        action: str,
+        path: str,
+        saved: config_edit.Saved,
+        note: str = "changed",
+    ) -> int | None:
+        """Everything after a save: tell the cogs, keep the revision, post the log."""
+        self.bot.dispatch("config_changed")
+        try:
+            revision = await config_history.record(
+                action, saved.after_text, saved.before_text, path, member
+            )
+        except psycopg.Error as error:
+            # the save already landed, losing its history entry shouldn't undo that
+            print(f"[config] couldn't record {path} in history: {error}")
+            return None
+        await self.log(
+            fit(f"📝 **{member.name}** {note} **{path}** · #{revision}", saved.snippet),
+            undo_view(revision),
+        )
+        return revision
+
+    async def log(self, content: str, view: discord.ui.View | None = None) -> None:
+        channel_id = (config.config.get("config_log") or {}).get("channel")
+        channel = self.bot.get_channel(channel_id) if channel_id else None
+        if channel is None:
+            return
+        if view is None:
+            await channel.send(content, allowed_mentions=QUIET)
+        else:
+            await channel.send(content, view=view, allowed_mentions=QUIET)
+
+    async def undo(
+        self, member: discord.Member, revision_id: int
+    ) -> tuple[config_edit.Saved, int | None]:
+        """Put one edit's setting back how it was before, as a new revision."""
+        revision = await config_history.get(revision_id)
+        if revision is None:
+            raise config_edit.EditRefused(f"there's no revision #{revision_id}")
+        if revision.undone_by is not None:
+            raise config_edit.EditRefused(
+                f"#{revision_id} was already undone by #{revision.undone_by}"
+            )
+        if not revision.undoable or not revision.path or revision.before_text is None:
+            raise config_edit.EditRefused(
+                f"#{revision_id} was a {revision.action}, only /config changes undo"
+            )
+        saved = await config_edit.revert(member, revision.path, revision.before_text)
+        new_revision = await self.committed(
+            member, "undo", revision.path, saved, note=f"undid #{revision_id} on"
+        )
+        if new_revision is not None:
+            await config_history.mark_undone(revision_id, new_revision)
+        return saved, new_revision
+
+    @config_group.command(name="view", description="Show a setting or a whole section")
+    async def view(
         self,
         ctx: discord.ApplicationContext,
         path: str = discord.Option(
-            name="path", description="Setting", autocomplete=path_autocomplete()
+            name="path",
+            description="A setting, or a section like gameheads",
+            autocomplete=view_autocomplete,
         ),
     ) -> None:
         if not await self.allowed(ctx):
             return
+        path = unquote(path).strip(".")
         setting = config_schema.find(path)
-        if setting is None:
-            await ctx.respond(f"❌ `{path}` isn't an editable setting.", ephemeral=True)
-            return
-        value = config_schema.lookup(config.config, path)
-        await ctx.respond(
-            f"**{path}** ({setting.kind}): {setting.description}\n{show(setting, value)}",
-            ephemeral=True,
-            allowed_mentions=QUIET,
-        )
+        if setting is not None:
+            value = config_schema.lookup(config.config, path)
+            content = f"**{path}** ({setting.kind}): {setting.description}\n"
+            content += show(setting, value)
+        else:
+            inside = [
+                (found, full)
+                for found, full in live_settings()
+                if full.startswith(f"{path}.")
+            ]
+            if not inside:
+                await ctx.respond(f"❌ Nothing to show under `{path}`.", ephemeral=True)
+                return
+            lines = []
+            for found, full in inside:
+                shown = show(found, config_schema.lookup(config.config, full))
+                # a roster of several people reads better starting on its own line
+                gap = "\n" if "\n" in shown else " "
+                lines.append(f"**{full}**:{gap}{shown}")
+            content = "\n".join(lines)
+        await ctx.respond(clip(content), ephemeral=True, allowed_mentions=QUIET)
 
     @edit_group.command(name="role", description="Point a setting at a role")
     async def edit_role(
@@ -360,16 +506,136 @@ class ConfigEditor(commands.Cog):
         if not await self.allowed(ctx):
             return
         try:
-            problems = await config_edit.reload()
+            reloaded = await config_edit.reload()
         except config_edit.EditRefused as refused:
             await ctx.respond(f"❌ Kept the running config: {refused}", ephemeral=True)
             return
         self.bot.dispatch("config_changed")
-        if problems:
-            listed = "\n".join(f"- {problem}" for problem in problems)
+        await self.snapshot("reload", reloaded.text, ctx.author)
+        if reloaded.problems:
+            listed = "\n".join(f"- {problem}" for problem in reloaded.problems)
             await ctx.respond(f"⚠️ Reloaded, but:\n{listed}", ephemeral=True)
             return
         await ctx.respond("✅ Reloaded.", ephemeral=True)
+
+    @config_group.command(name="undo", description="Take back a /config change")
+    async def undo_command(
+        self,
+        ctx: discord.ApplicationContext,
+        revision: int = discord.Option(
+            int,
+            name="revision",
+            description="The change's number, from /config history",
+            autocomplete=undoable_autocomplete,
+        ),
+    ) -> None:
+        if not await self.allowed(ctx):
+            return
+        try:
+            saved, new_revision = await self.undo(ctx.author, revision)
+        except config_edit.EditRefused as refused:
+            await ctx.respond(f"❌ Not undone: {refused}", ephemeral=True)
+            return
+        except OSError as error:
+            await ctx.respond(f"❌ Couldn't write the config: {error}", ephemeral=True)
+            return
+        await ctx.respond(
+            fit(f"↩️ Undid #{revision}{revision_tag(new_revision)}", saved.snippet),
+            ephemeral=True,
+        )
+
+    @config_group.command(name="history", description="Recent config changes")
+    async def history(
+        self,
+        ctx: discord.ApplicationContext,
+        path: str = discord.Option(
+            name="path",
+            description="Only this setting",
+            autocomplete=path_autocomplete(),
+            default=None,
+        ),
+    ) -> None:
+        if not await self.allowed(ctx):
+            return
+        revisions = await config_history.recent(15, path)
+        if not revisions:
+            await ctx.respond("No changes recorded yet.", ephemeral=True)
+            return
+        await ctx.respond(
+            "\n".join(describe(revision) for revision in revisions), ephemeral=True
+        )
+
+    async def snapshot(
+        self, action: str, text: str, member: discord.abc.User | None = None
+    ) -> None:
+        """Keep text as a revision if it isn't what history already ends on."""
+        latest = await config_history.latest_text()
+        if text == latest:
+            return
+        revision = await config_history.record(action, text, latest, member=member)
+        # the very first snapshot is just the baseline, nothing to compare it with
+        if latest is not None:
+            who = f"**{member.name}** reloaded" if member else "Changed while offline:"
+            await self.log(
+                fit(
+                    f"📄 {who} config.yaml · #{revision}",
+                    config_edit.snippet(latest, text),
+                )
+            )
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        if self.snapshotted:
+            return
+        self.snapshotted = True
+        # bot.py opens the pool in its own on_ready, which may not have run yet
+        while db.pool.closed:
+            await asyncio.sleep(0.5)
+        await self.snapshot("startup", config.CONFIG_PATH.read_text(encoding="utf-8"))
+        if config.config_fallback_reason:
+            await self.log(
+                f"🚨 config.yaml wouldn't load ({config.config_fallback_reason}), so "
+                "the bot started on the last saved copy. The broken one is "
+                "config.yaml.broken."
+            )
+
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction) -> None:
+        custom_id = (interaction.data or {}).get("custom_id", "")
+        if not custom_id.startswith(UNDO_PREFIX):
+            return
+        if not config.is_bot_dev(interaction.user):
+            await interaction.response.send_message(
+                "❌ Only bot devs can use /config.", ephemeral=True
+            )
+            return
+        revision = int(custom_id.removeprefix(UNDO_PREFIX))
+        try:
+            saved, new_revision = await self.undo(interaction.user, revision)
+        except (config_edit.EditRefused, OSError) as refused:
+            await interaction.response.send_message(
+                f"❌ Not undone: {refused}", ephemeral=True
+            )
+            return
+        await interaction.response.send_message(
+            fit(f"↩️ Undid #{revision}{revision_tag(new_revision)}", saved.snippet),
+            ephemeral=True,
+        )
+        if interaction.message is not None:
+            await interaction.message.edit(view=undo_view(revision, disabled=True))
+
+
+def revision_tag(revision: int | None) -> str:
+    return f" · #{revision}" if revision is not None else " (not in history)"
+
+
+def describe(revision: config_history.Revision) -> str:
+    """One line of /config history."""
+    when = f"<t:{int(revision.changed_at.timestamp())}:R>"
+    who = revision.user_name or "the bot"
+    what = f"{revision.action} `{revision.path}`" if revision.path else revision.action
+    undone = f" · undone by #{revision.undone_by}" if revision.undone_by else ""
+    return f"`#{revision.id}` {when} **{who}** {what}{undone}"
 
 
 def setup(bot: discord.Bot) -> None:

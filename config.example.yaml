@@ -76,6 +76,10 @@ gameheads:
   apex:
     #<discord_username>: "<email>"
 
+config_log:
+  # where /config changes get posted, each with an undo button
+  channel: #<channel_id>
+
 github_backlog:
   pr_channel: #<channel_id>
   issue_channel: #<channel_id>
