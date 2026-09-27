@@ -681,3 +681,36 @@ def test_nothing_to_fall_back_on_fails_loudly(live_config, monkeypatch):
 
     with pytest.raises(RuntimeError, match="none is saved"):
         config.load_config_or_fallback()
+
+
+# --- what the snippet shows around a change -----------------------------------
+
+
+def lines(*parts):
+    return "```ansi\n" + "\n".join(parts) + "\n```"
+
+
+def bold(line):
+    return f"{config_edit.BOLD}{line}{config_edit.RESET}"
+
+
+def test_a_new_section_shows_only_itself():
+    old = "antiscam:\n  purge_window_minutes: 60\n  exempt_staff: true\n"
+    new = old + "config_log:\n  channel: 5\n"
+    assert config_edit.snippet(old, new) == lines(
+        bold("config_log:"), bold("  channel: 5")
+    )
+
+
+def test_a_change_under_another_section_ignores_it():
+    old = "antiscam:\n  exempt_staff: true\nconfig_log:\n  channel: 1\n"
+    new = old.replace("channel: 1", "channel: 2")
+    assert config_edit.snippet(old, new) == lines("config_log:", bold("  channel: 2"))
+
+
+def test_a_roster_addition_stays_inside_its_roster():
+    old = "gameheads:\n  valorant:\n    a: x\n  smash:\n    b: y\n"
+    new = old.replace("    a: x\n", "    a: x\n    c: z\n")
+    assert config_edit.snippet(old, new) == lines(
+        "  valorant:", "    a: x", bold("    c: z")
+    )
