@@ -1,6 +1,7 @@
 """Writes to config.yaml from Discord: comment-preserving, validated, then applied live."""
 
 import asyncio
+import copy
 import difflib
 import io
 import os
@@ -27,6 +28,17 @@ class Saved(NamedTuple):
     old: Any
     new: Any
     snippet: str
+    before_text: str
+    after_text: str
+
+
+class Reloaded(NamedTuple):
+    problems: list[str]
+    text: str
+
+
+# returned by a change to drop the key entirely, how undo takes back a new roster
+REMOVE = object()
 
 
 # discord's ansi code blocks keep yaml's indentation and #/- lines intact
@@ -105,11 +117,17 @@ async def edit(
             # someone broke it over ssh -- fix it there, not on top of it
             raise EditRefused(f"the file on disk doesn't parse ({error})") from error
         parent, key = _parent(doc, path)
-        parent[key] = change(parent.get(key))
+        value = change(parent.get(key))
+        if value is REMOVE:
+            parent.pop(key, None)
+        else:
+            parent[key] = value
 
         buffer = io.StringIO()
         y.dump(doc, buffer)
         new_text = buffer.getvalue()
+        if new_text == old_text:
+            raise EditRefused(f"`{path}` is already set to that")
 
         before = yaml.safe_load(old_text)
         after = yaml.safe_load(new_text)
@@ -127,15 +145,33 @@ async def edit(
         config_schema.lookup(before, path),
         config_schema.lookup(after, path),
         snippet(old_text, new_text),
+        old_text,
+        new_text,
     )
 
 
-async def reload() -> list[str]:
+async def revert(member: discord.Member, path: str, before_text: str) -> Saved:
+    """Put path back how before_text had it, leaving every other setting alone."""
+    node: Any = _round_trip(before_text).load(before_text)
+    for part in path.split("."):
+        if not isinstance(node, dict) or part not in node:
+            node = REMOVE
+            break
+        node = node[part]
+    # copied whole so a restored roster keeps its quotes and comments
+    value = node if node is REMOVE else copy.deepcopy(node)
+    return await edit(member, path, lambda _: value)
+
+
+async def reload() -> Reloaded:
     """Pick up edits made on disk, returning any problems the file has."""
     async with _lock:
         try:
-            fresh = config.load_config()
+            text = config.CONFIG_PATH.read_text(encoding="utf-8")
+            fresh = yaml.safe_load(text)
         except (OSError, yaml.YAMLError) as error:
             raise EditRefused(f"the file can't be read ({error})") from error
+        if not isinstance(fresh, dict):
+            raise EditRefused("the file isn't a set of settings")
         config.replace_config(fresh)
-    return config_schema.problems(fresh)
+    return Reloaded(config_schema.problems(fresh), text)
