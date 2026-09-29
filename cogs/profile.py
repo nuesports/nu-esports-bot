@@ -390,8 +390,8 @@ class Profile(commands.Cog):
             inline=True,
         )
         embed.add_field(
-            name="📝 /profile edit",
-            value="Edit your profile page-by-page.",
+            name="📝 /profile setup",
+            value="Set up/edit your profile page-by-page.",
             inline=True,
         )
         embed.add_field(
