@@ -2024,6 +2024,21 @@ def format_slot(start_time: datetime, end_time: datetime) -> str:
     )
 
 
+def round_to_quarter_hour(moment: datetime) -> datetime:
+    """Nearest 15 minutes, halves rounding up, with seconds dropped."""
+    quarters = (moment.minute * 60 + moment.second + 450) // 900
+    # wall-clock arithmetic, so the hour and midnight roll over in central time
+    return moment.replace(minute=0, second=0, microsecond=0) + timedelta(
+        minutes=15 * quarters
+    )
+
+
+def round_slot(start_time: datetime, end_time: datetime) -> tuple[datetime, datetime]:
+    """The slot staff book in ggLeap, on quarter hours and never empty."""
+    start, end = round_to_quarter_hour(start_time), round_to_quarter_hour(end_time)
+    return start, max(end, start + timedelta(minutes=15))
+
+
 def build_warnings_embed(
     cog: PCs,
     start_time: datetime,
@@ -2254,6 +2269,9 @@ class ReservationTimeModal(discord.ui.Modal):
                 self.team, allocated_pcs, start_time, end_time, manager, is_prime
             )
 
+        # staff book ggLeap in quarter hours, everything else keeps the exact request
+        staff_start, staff_end = round_slot(start_time, end_time)
+
         # Format PC list for display
         pc_list = ", ".join(
             PCs.format_pc(pc) for pc in sorted(allocated_pcs, key=lambda x: (x == 0, x))
@@ -2290,7 +2308,9 @@ class ReservationTimeModal(discord.ui.Modal):
             reservations_channel = self.cog.bot.get_channel(channel_id)
 
             if reservations_channel:
-                fields = booking_fields(self.team, allocated_pcs, start_time, end_time)
+                fields = booking_fields(
+                    self.team, allocated_pcs, staff_start, staff_end
+                )
                 embed = discord.Embed(
                     title="🎮 New PC Reservation",
                     color=discord.Color.from_rgb(78, 42, 132),
@@ -2340,7 +2360,7 @@ class ReservationTimeModal(discord.ui.Modal):
 
                 book_view = booking_view(
                     ggleap_booking_url(
-                        self.team, allocated_pcs, start_time, end_time, manager_email
+                        self.team, allocated_pcs, staff_start, staff_end, manager_email
                     )
                 )
 
