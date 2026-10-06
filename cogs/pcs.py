@@ -4,6 +4,7 @@ import io
 import json
 import os
 from datetime import UTC, date, datetime, timedelta
+from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
 import aiohttp
@@ -22,6 +23,11 @@ PCS_ENDPOINT = f"{GGLEAP_BASE_URL}/machines/uptime"
 RESERVATIONS_ENDPOINT = f"{GGLEAP_BASE_URL}/reservations"
 # the Better ggLeap extension reads the #nue= fragment here and offers to book it
 GGLEAP_BOOKING_GRID_URL = "https://admin.ggleap.com/booking/grid"
+# discord refuses a link button whose url runs past this
+LINK_BUTTON_URL_LIMIT = 512
+# answered by on_interaction rather than a registered view, so it outlives restarts
+EDIT_BOOKING_ID = "pcs-edit-booking"
+BACK_ROOM_SKIPPED_LINE = "Back Room: skipped"
 
 # Constants - Use ZoneInfo for proper DST handling
 CENTRAL_TZ = ZoneInfo("America/Chicago")
@@ -40,6 +46,11 @@ NORRIS_OPEN_HOUR = 8
 def staff_list() -> list[int]:
     """Read per call, so a /config edit to the rotation takes effect immediately."""
     return config.config["roles"]["gameroom_staff"].get("users") or []
+
+
+def reservable_pcs(include_back_room: bool = True) -> list[int]:
+    """Back room first, since allocation fills it before the main room."""
+    return (BACK_ROOM_PCS if include_back_room else []) + MAIN_ROOM_PCS
 
 
 # also the source of the /reserve team list, so the two can't drift
@@ -167,6 +178,23 @@ class PCs(commands.Cog):
             return
         if reaction.message.id in self.pending_acknowledgments:
             del self.pending_acknowledgments[reaction.message.id]
+
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction) -> None:
+        """Open the edit modal from a staff ping, prefilled from its Book link."""
+        if (interaction.data or {}).get("custom_id") != EDIT_BOOKING_ID:
+            return
+        if not config.is_gameroom_staff(interaction.user):
+            await interaction.response.send_message(
+                "❌ Only gameroom staff can edit a booking.", ephemeral=True
+            )
+            return
+        try:
+            booking = decode_ggleap_booking_url(booking_link(interaction.message))
+        except ValueError as e:
+            await interaction.response.send_message(f"❌ {e!s}", ephemeral=True)
+            return
+        await interaction.response.send_modal(EditBookingModal(self, booking))
 
     @tasks.loop(hours=1)
     async def check_pending_acknowledgments(self) -> None:
@@ -534,7 +562,11 @@ class PCs(commands.Cog):
         return used_count < quota, used_count
 
     async def check_conflicts(
-        self, start_time: datetime, end_time: datetime, num_pcs: int
+        self,
+        start_time: datetime,
+        end_time: datetime,
+        num_pcs: int,
+        include_back_room: bool = True,
     ) -> tuple[bool, str | None, str | None]:
         """
         Check for conflicts with existing reservations.
@@ -542,6 +574,8 @@ class PCs(commands.Cog):
         """
         # Get all overlapping reservations from database
         overlapping = await self.get_reservations_in_range(start_time, end_time)
+        # a skipped back room is neither spare capacity nor someone in the way
+        pool = reservable_pcs(include_back_room)
 
         # For each time slot in the requested range, check if we can fit the PCs
         # We need to ensure at most 5 main room PCs are in use at any given time
@@ -565,9 +599,7 @@ class PCs(commands.Cog):
             if interval_end <= start_time or interval_start >= end_time:
                 continue
 
-            # Count how many main room and back room PCs are already reserved in this interval
-            main_room_used = 0
-            back_room_used = 0
+            used = 0
             conflicting_team = None
             conflicting_manager = None
 
@@ -576,37 +608,28 @@ class PCs(commands.Cog):
                     res["start_time"] < interval_end
                     and res["end_time"] > interval_start
                 ):
-                    for pc in res["pcs"]:
-                        if pc in MAIN_ROOM_PCS:
-                            main_room_used += 1
-                        elif pc in BACK_ROOM_PCS:
-                            back_room_used += 1
-                    if conflicting_team is None:
+                    held = sum(pc in pool for pc in res["pcs"])
+                    used += held
+                    if held and conflicting_team is None:
                         conflicting_team = res["team"]
                         conflicting_manager = res["manager"]
 
-            # Check if we can fit the requested PCs
-            # We have: back room (14, 15, streaming) = 3 PCs, main room = 10 PCs
-
-            # Available back room PCs in this interval
-            back_room_available = len(BACK_ROOM_PCS) - back_room_used
-
-            # Available main room PCs
-            main_room_available = len(MAIN_ROOM_PCS) - main_room_used
-
             # Can we fit num_pcs?
-            total_available = back_room_available + main_room_available
-
-            if total_available < num_pcs:
+            if len(pool) - used < num_pcs:
                 return True, conflicting_team, conflicting_manager
 
         return False, None, None
 
     async def allocate_pcs(
-        self, start_time: datetime, end_time: datetime, num_pcs: int
+        self,
+        start_time: datetime,
+        end_time: datetime,
+        num_pcs: int,
+        include_back_room: bool = True,
     ) -> list[int]:
         """
         Allocate PCs optimally: back room first (14, 15, streaming), then main room (contiguous).
+        Without the back room, only the main room is drawn from.
         Returns list of PC numbers, or empty list if can't allocate.
         PC numbers: 1-10 (main room), 14, 15 (back room), 0 (streaming, treated as back room)
         """
@@ -614,7 +637,7 @@ class PCs(commands.Cog):
         overlapping = await self.get_reservations_in_range(start_time, end_time)
 
         # Determine which PCs are available throughout the entire time range
-        all_pcs = BACK_ROOM_PCS + MAIN_ROOM_PCS  # Back room first, then main room
+        all_pcs = reservable_pcs(include_back_room)
 
         available_pcs = []
         for pc in all_pcs:
@@ -1518,6 +1541,13 @@ class PCs(commands.Cog):
             choices=["Scrim", "Match"],
             required=True,
         ),
+        skip_backroom: str = discord.Option(
+            str,
+            name="skip_backroom",
+            description="Skip the back room (14, 15, stream)",
+            choices=["yes", "no"],
+            default="no",
+        ),
         test: bool = discord.Option(
             bool,
             name="test",
@@ -1539,8 +1569,18 @@ class PCs(commands.Cog):
             )
             return
 
+        # num_pcs' max counts the back room, so refuse before the modal asks for times
+        back_room = skip_backroom == "no"
+        cap = len(reservable_pcs(back_room))
+        if num_pcs > cap:
+            await ctx.respond(
+                f"❌ Only {cap} PCs can be reserved without the back room.",
+                ephemeral=True,
+            )
+            return
+
         # Show modal for time input
-        modal = ReservationTimeModal(self, team, num_pcs, res_type, test)
+        modal = ReservationTimeModal(self, team, num_pcs, res_type, test, back_room)
         await ctx.send_modal(modal)
 
     @commands.slash_command(
@@ -1869,6 +1909,133 @@ def ggleap_booking_url(
     return f"{GGLEAP_BOOKING_GRID_URL}#nue={encoded}"
 
 
+class GgleapBooking(NamedTuple):
+    """ggleap_booking_url's arguments, so a decoded link can be passed straight back."""
+
+    team: str
+    pcs: list[int]
+    start_time: datetime
+    end_time: datetime
+    email: str | None
+
+
+def decode_ggleap_booking_url(url: str) -> GgleapBooking:
+    """ggleap_booking_url in reverse. Raises ValueError for anything it didn't write."""
+    _, marker, encoded = url.partition("#nue=")
+    if not marker:
+        raise ValueError("Not a ggLeap booking link")
+    try:
+        payload = json.loads(
+            base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        )
+        if payload["v"] != 1:
+            raise ValueError(f"Unknown booking link version {payload['v']!r}")
+        start_time = datetime.strptime(payload["start"], "%Y-%m-%dT%H:%M:%S").replace(
+            tzinfo=CENTRAL_TZ
+        )
+        return GgleapBooking(
+            payload["team"],
+            payload["pcs"],
+            start_time,
+            start_time + timedelta(minutes=payload["duration"]),
+            payload["email"],
+        )
+    except (KeyError, TypeError) as e:
+        raise ValueError("Booking link is malformed") from e
+
+
+def booking_link(message: discord.Message | None) -> str:
+    """The Book in ggLeap url off a staff ping -- the edit button's only record."""
+    for row in message.components if message else []:
+        for component in getattr(row, "children", [row]):
+            url = getattr(component, "url", None)
+            if url and "#nue=" in url:
+                return url
+    raise ValueError("No ggLeap booking link on this message")
+
+
+def booking_view(url: str) -> discord.ui.View:
+    """Staff ping buttons. The link needs no handler and the edit is on_interaction's."""
+    view = discord.ui.View(timeout=None)
+    view.add_item(discord.ui.Button(label="Book in ggLeap", url=url))
+    view.add_item(
+        discord.ui.Button(
+            label="Edit booking",
+            style=discord.ButtonStyle.secondary,
+            custom_id=EDIT_BOOKING_ID,
+        )
+    )
+    return view
+
+
+def format_rooms(pcs: list[int], back_room_skipped: bool = False) -> str:
+    """The staff ping's PCs field, one line per room."""
+    lines = []
+    back_room_pcs = sorted(pc for pc in pcs if pc in BACK_ROOM_PCS)
+    main_room_pcs = sorted(pc for pc in pcs if pc in MAIN_ROOM_PCS)
+    if back_room_pcs:
+        lines.append(
+            f"Back Room: {', '.join(PCs.format_pc(pc) for pc in back_room_pcs)}"
+        )
+    elif back_room_skipped:
+        lines.append(BACK_ROOM_SKIPPED_LINE)
+    if main_room_pcs:
+        lines.append(
+            f"Main Room: {', '.join(PCs.format_pc(pc) for pc in main_room_pcs)}"
+        )
+    return "\n".join(lines)
+
+
+def booking_fields(
+    team: str,
+    pcs: list[int],
+    start_time: datetime,
+    end_time: datetime,
+    back_room_skipped: bool = False,
+) -> dict[str, str]:
+    """The staff ping fields an edit can change, so posting and editing agree."""
+    return {
+        "Team": team,
+        "Date": start_time.strftime("%A, %B %d, %Y"),
+        "Time": f"{start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')} CST",
+        "PCs": format_rooms(pcs, back_room_skipped),
+    }
+
+
+def set_field(embed: discord.Embed, name: str, value: str) -> None:
+    """Overwrite a field in place by name, or add it at the end."""
+    for index, field in enumerate(embed.fields):
+        if field.name == name:
+            embed.set_field_at(index, name=name, value=value, inline=field.inline)
+            return
+    embed.add_field(name=name, value=value, inline=False)
+
+
+def parse_pc_list(value: str) -> list[int]:
+    """Read a typed list like '1, 2, 0', refusing PCs the gameroom doesn't have."""
+    every_pc = sorted(BACK_ROOM_PCS + MAIN_ROOM_PCS)
+    try:
+        pcs = [int(part) for part in value.replace(",", " ").split()]
+    except ValueError:
+        raise ValueError(
+            "PCs must be numbers separated by commas, like `1, 2, 0` (0 is Streaming)."
+        ) from None
+    if not pcs:
+        raise ValueError("List at least one PC.")
+    unknown = sorted({pc for pc in pcs if pc not in every_pc})
+    if unknown:
+        raise ValueError(
+            f"There's no PC {', '.join(str(pc) for pc in unknown)}. "
+            "Pick from 1-10, 14, 15, 0."
+        )
+    repeated = sorted({pc for pc in pcs if pcs.count(pc) > 1})
+    if repeated:
+        raise ValueError(
+            f"{', '.join(PCs.format_pc(pc) for pc in repeated)} is listed more than once."
+        )
+    return sorted(pcs)
+
+
 def warn_prime_quota(used_count: int, quota: int) -> str:
     return f"✨ Prime time quota exceeded ({used_count}/{quota} used this week)"
 
@@ -1879,6 +2046,21 @@ def format_slot(start_time: datetime, end_time: datetime) -> str:
         f"{start_time.strftime('%A, %B %d, %Y')}\n"
         f"{start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')}"
     )
+
+
+def round_to_quarter_hour(moment: datetime) -> datetime:
+    """Nearest 15 minutes, halves rounding up, with seconds dropped."""
+    quarters = (moment.minute * 60 + moment.second + 450) // 900
+    # wall-clock arithmetic, so the hour and midnight roll over in central time
+    return moment.replace(minute=0, second=0, microsecond=0) + timedelta(
+        minutes=15 * quarters
+    )
+
+
+def round_slot(start_time: datetime, end_time: datetime) -> tuple[datetime, datetime]:
+    """The slot staff book in ggLeap, on quarter hours and never empty."""
+    start, end = round_to_quarter_hour(start_time), round_to_quarter_hour(end_time)
+    return start, max(end, start + timedelta(minutes=15))
 
 
 def build_warnings_embed(
@@ -1925,6 +2107,7 @@ class ReservationTimeModal(discord.ui.Modal):
         num_pcs: int,
         res_type: str,
         is_test: bool = False,
+        include_back_room: bool = True,
         date_value: str = "",
         start_value: str = "",
         end_value: str = "",
@@ -1936,6 +2119,7 @@ class ReservationTimeModal(discord.ui.Modal):
         self.num_pcs: int = num_pcs
         self.res_type: str = res_type
         self.is_test: bool = is_test
+        self.include_back_room: bool = include_back_room
         self.origin_view: BookingWarningsView | None = origin_view
 
         # Calculate example date as today + 2 days (minimum advance booking)
@@ -2063,7 +2247,9 @@ class ReservationTimeModal(discord.ui.Modal):
             has_conflict,
             conflicting_team,
             conflicting_manager,
-        ) = await self.cog.check_conflicts(start_time, end_time, self.num_pcs)
+        ) = await self.cog.check_conflicts(
+            start_time, end_time, self.num_pcs, self.include_back_room
+        )
         if has_conflict:
             await interaction.followup.send(
                 f"❌ Conflict with team **{conflicting_team}**. Please contact **{conflicting_manager}** to resolve.",
@@ -2072,7 +2258,9 @@ class ReservationTimeModal(discord.ui.Modal):
             return
 
         # Allocate PCs
-        allocated_pcs = await self.cog.allocate_pcs(start_time, end_time, self.num_pcs)
+        allocated_pcs = await self.cog.allocate_pcs(
+            start_time, end_time, self.num_pcs, self.include_back_room
+        )
         if not allocated_pcs:
             await interaction.followup.send(
                 f"❌ Unable to allocate {self.num_pcs} PCs for the requested time slot. Please try a different time or fewer PCs.",
@@ -2111,6 +2299,9 @@ class ReservationTimeModal(discord.ui.Modal):
                 self.team, allocated_pcs, start_time, end_time, manager, is_prime
             )
 
+        # staff book ggLeap in quarter hours, everything else keeps the exact request
+        staff_start, staff_end = round_slot(start_time, end_time)
+
         # Format PC list for display
         pc_list = ", ".join(
             PCs.format_pc(pc) for pc in sorted(allocated_pcs, key=lambda x: (x == 0, x))
@@ -2147,26 +2338,19 @@ class ReservationTimeModal(discord.ui.Modal):
             reservations_channel = self.cog.bot.get_channel(channel_id)
 
             if reservations_channel:
-                # Determine room type
-                back_room_pcs = [pc for pc in allocated_pcs if pc in BACK_ROOM_PCS]
-                main_room_pcs = [pc for pc in allocated_pcs if pc in MAIN_ROOM_PCS]
-
-                room_info = []
-                if back_room_pcs:
-                    room_info.append(
-                        f"Back Room: {', '.join(PCs.format_pc(pc) for pc in sorted(back_room_pcs))}"
-                    )
-                if main_room_pcs:
-                    room_info.append(
-                        f"Main Room: {', '.join(PCs.format_pc(pc) for pc in sorted(main_room_pcs))}"
-                    )
-
+                fields = booking_fields(
+                    self.team,
+                    allocated_pcs,
+                    staff_start,
+                    staff_end,
+                    not self.include_back_room,
+                )
                 embed = discord.Embed(
                     title="🎮 New PC Reservation",
                     color=discord.Color.from_rgb(78, 42, 132),
                     timestamp=datetime.now(UTC),
                 )
-                embed.add_field(name="Team", value=self.team, inline=False)
+                embed.add_field(name="Team", value=fields["Team"], inline=False)
                 embed.add_field(name="Res Type", value=self.res_type, inline=False)
                 manager_email = config.gamehead_email(manager)
                 embed.add_field(
@@ -2175,17 +2359,9 @@ class ReservationTimeModal(discord.ui.Modal):
                     inline=False,
                 )
                 embed.add_field(name="Manager", value=manager, inline=False)
-                embed.add_field(
-                    name="Date",
-                    value=start_time.strftime("%A, %B %d, %Y"),
-                    inline=False,
-                )
-                embed.add_field(
-                    name="Time",
-                    value=f"{start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')} CST",
-                    inline=True,
-                )
-                embed.add_field(name="PCs", value="\n".join(room_info), inline=False)
+                embed.add_field(name="Date", value=fields["Date"], inline=False)
+                embed.add_field(name="Time", value=fields["Time"], inline=True)
+                embed.add_field(name="PCs", value=fields["PCs"], inline=False)
 
                 if is_prime:
                     embed.add_field(
@@ -2216,18 +2392,9 @@ class ReservationTimeModal(discord.ui.Modal):
                         inline=False,
                     )
 
-                # plain link button: nothing to handle, so it outlives restarts
-                book_view = discord.ui.View(timeout=None)
-                book_view.add_item(
-                    discord.ui.Button(
-                        label="Book in ggLeap",
-                        url=ggleap_booking_url(
-                            self.team,
-                            allocated_pcs,
-                            start_time,
-                            end_time,
-                            manager_email,
-                        ),
+                book_view = booking_view(
+                    ggleap_booking_url(
+                        self.team, allocated_pcs, staff_start, staff_end, manager_email
                     )
                 )
 
@@ -2328,6 +2495,7 @@ class BookingWarningsView(discord.ui.View):
                 self.modal.num_pcs,
                 self.modal.res_type,
                 self.modal.is_test,
+                self.modal.include_back_room,
                 date_value=date_value,
                 start_value=start_value,
                 end_value=end_value,
@@ -2411,7 +2579,7 @@ class RemakeBookingView(discord.ui.View):
     async def remake_button(
         self, button: discord.ui.Button, interaction: discord.Interaction
     ) -> None:
-        # team, pc count and type come from the slash options, so only times reopen
+        # team, pc count, type and back room are slash options, so only times reopen
         date_value, start_value, end_value = self.raw_values
         await interaction.response.send_modal(
             ReservationTimeModal(
@@ -2420,11 +2588,117 @@ class RemakeBookingView(discord.ui.View):
                 self.modal.num_pcs,
                 self.modal.res_type,
                 self.modal.is_test,
+                self.modal.include_back_room,
                 date_value=date_value,
                 start_value=start_value,
                 end_value=end_value,
             )
         )
+
+
+class EditBookingModal(discord.ui.Modal):
+    """Staff fix to a ping's ggLeap link and embed. The saved reservation is untouched."""
+
+    def __init__(self, cog: PCs, booking: GgleapBooking) -> None:
+        super().__init__(title="Edit ggLeap Booking")
+        self.cog: PCs = cog
+        # not editable here, so it rides along into the new link as booked
+        self.email: str | None = booking.email
+
+        self.add_item(
+            discord.ui.InputText(
+                label="Team",
+                style=discord.InputTextStyle.short,
+                required=True,
+                value=booking.team,
+            )
+        )
+        self.add_item(
+            discord.ui.InputText(
+                label="PCs (0 = Streaming)",
+                placeholder="1, 2, 0",
+                style=discord.InputTextStyle.short,
+                required=True,
+                value=", ".join(str(pc) for pc in booking.pcs),
+            )
+        )
+        self.add_item(
+            discord.ui.InputText(
+                label="Date",
+                placeholder="YYYY-MM-DD",
+                style=discord.InputTextStyle.short,
+                required=True,
+                value=booking.start_time.strftime("%Y-%m-%d"),
+            )
+        )
+        self.add_item(
+            discord.ui.InputText(
+                label="Start Time",
+                placeholder="7, 7:30, or 7:30AM (assumes PM)",
+                style=discord.InputTextStyle.short,
+                required=True,
+                value=booking.start_time.strftime("%I:%M%p").lstrip("0"),
+            )
+        )
+        self.add_item(
+            discord.ui.InputText(
+                label="End Time",
+                placeholder="9, 9:30, or 9:30PM (assumes PM)",
+                style=discord.InputTextStyle.short,
+                required=True,
+                value=booking.end_time.strftime("%I:%M%p").lstrip("0"),
+            )
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        team, pcs_str, date_str, start_time_str, end_time_str = (
+            child.value.strip() for child in self.children
+        )
+
+        if not team:
+            await interaction.response.send_message(
+                "❌ The team can't be blank.", ephemeral=True
+            )
+            return
+
+        try:
+            pcs = parse_pc_list(pcs_str)
+            start_time, end_time = self.cog.parse_time_range(
+                f"{date_str} {start_time_str}-{end_time_str}"
+            )
+        except ValueError as e:
+            await interaction.response.send_message(f"❌ {e!s}", ephemeral=True)
+            return
+
+        if start_time >= end_time:
+            await interaction.response.send_message(
+                "❌ The booking has to end after it starts.", ephemeral=True
+            )
+            return
+
+        # staff book in quarter hours, same as the original ping
+        start_time, end_time = round_slot(start_time, end_time)
+        url = ggleap_booking_url(team, pcs, start_time, end_time, self.email)
+        if len(url) > LINK_BUTTON_URL_LIMIT:
+            await interaction.response.send_message(
+                "❌ That's too long to fit in the ggLeap link. Shorten the team name.",
+                ephemeral=True,
+            )
+            return
+
+        embed = interaction.message.embeds[0].copy()
+        # the skip is only on the ping, so carry it over until a back room PC is added
+        listed = next((f.value for f in embed.fields if f.name == "PCs"), "")
+        skipped = BACK_ROOM_SKIPPED_LINE in listed.splitlines()
+        fields = booking_fields(team, pcs, start_time, end_time, skipped)
+        for name, value in fields.items():
+            set_field(embed, name, value)
+        set_field(
+            embed,
+            "✏️ Edited",
+            f"by {interaction.user.mention} <t:{int(datetime.now(UTC).timestamp())}:R>",
+        )
+        await interaction.response.edit_message(embed=embed, view=booking_view(url))
 
 
 class ExternalReservationTimeModal(discord.ui.Modal):
