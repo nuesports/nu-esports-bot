@@ -819,6 +819,65 @@ async def test_staff_get_a_book_in_ggleap_button(booked, modal, monkeypatch):
     assert payload["email"] == "lilac@u.edu"
 
 
+def central(day, hour, minute, second=0):
+    return datetime(2026, 9, day, hour, minute, second, tzinfo=pcs.CENTRAL_TZ)
+
+
+@pytest.mark.parametrize(
+    ("moment", "expected"),
+    [
+        (central(28, 19, 7), central(28, 19, 0)),
+        (central(28, 19, 8), central(28, 19, 15)),
+        (central(28, 19, 7, 30), central(28, 19, 15)),
+        (central(28, 19, 52), central(28, 19, 45)),
+        (central(28, 19, 53), central(28, 20, 0)),
+        (central(28, 23, 55), central(29, 0, 0)),
+    ],
+    ids=[
+        "7 rounds down",
+        "8 rounds up",
+        "half rounds up",
+        "52 rounds down",
+        "53 rolls into the next hour",
+        "11:55 PM rolls into tomorrow",
+    ],
+)
+def test_staff_times_round_to_the_nearest_quarter_hour(moment, expected):
+    rounded = pcs.round_to_quarter_hour(moment)
+    assert rounded == expected
+    assert rounded.tzinfo is pcs.CENTRAL_TZ
+
+
+def test_a_slot_that_rounds_to_nothing_still_lasts_a_quarter_hour():
+    start, end = pcs.round_slot(central(28, 19, 1), central(28, 19, 6))
+    assert (start, end) == (central(28, 19, 0), central(28, 19, 15))
+
+
+@pytest.mark.asyncio
+async def test_staff_get_quarter_hours_while_the_booking_keeps_its_minutes(
+    booked, modal
+):
+    saved = []
+
+    async def save(*args):
+        saved.append(args)
+
+    booked.save_reservation = save
+    channel = FakeReservationsChannel()
+    booked.bot = SimpleNamespace(get_channel=lambda channel_id: channel)
+
+    interaction = await run_complete(modal, times="12:08PM-1:52PM")
+
+    assert saved[0][2:4] == (central(28, 12, 8), central(28, 13, 52))
+    assert "12:08 PM - 01:52 PM" in interaction.followup.send_calls[0]["content"]
+    posted = channel.sent[0]
+    time = next(f for f in posted["embed"].fields if f.name == "Time")
+    assert time.value == "12:15 PM - 01:45 PM CST"
+    [button] = posted["view"].children
+    _, payload = decode_booking_url(button.url)
+    assert (payload["start"], payload["duration"]) == ("2026-09-28T12:15:00", 90)
+
+
 # --- /reserve-external ---------------------------------------------------------
 
 
