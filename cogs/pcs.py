@@ -27,6 +27,7 @@ GGLEAP_BOOKING_GRID_URL = "https://admin.ggleap.com/booking/grid"
 LINK_BUTTON_URL_LIMIT = 512
 # answered by on_interaction rather than a registered view, so it outlives restarts
 EDIT_BOOKING_ID = "pcs-edit-booking"
+BACK_ROOM_SKIPPED_LINE = "Back Room: skipped"
 
 # Constants - Use ZoneInfo for proper DST handling
 CENTRAL_TZ = ZoneInfo("America/Chicago")
@@ -1965,7 +1966,7 @@ def booking_view(url: str) -> discord.ui.View:
     return view
 
 
-def format_rooms(pcs: list[int]) -> str:
+def format_rooms(pcs: list[int], back_room_skipped: bool = False) -> str:
     """The staff ping's PCs field, one line per room."""
     lines = []
     back_room_pcs = sorted(pc for pc in pcs if pc in BACK_ROOM_PCS)
@@ -1974,6 +1975,8 @@ def format_rooms(pcs: list[int]) -> str:
         lines.append(
             f"Back Room: {', '.join(PCs.format_pc(pc) for pc in back_room_pcs)}"
         )
+    elif back_room_skipped:
+        lines.append(BACK_ROOM_SKIPPED_LINE)
     if main_room_pcs:
         lines.append(
             f"Main Room: {', '.join(PCs.format_pc(pc) for pc in main_room_pcs)}"
@@ -1982,14 +1985,18 @@ def format_rooms(pcs: list[int]) -> str:
 
 
 def booking_fields(
-    team: str, pcs: list[int], start_time: datetime, end_time: datetime
+    team: str,
+    pcs: list[int],
+    start_time: datetime,
+    end_time: datetime,
+    back_room_skipped: bool = False,
 ) -> dict[str, str]:
     """The staff ping fields an edit can change, so posting and editing agree."""
     return {
         "Team": team,
         "Date": start_time.strftime("%A, %B %d, %Y"),
         "Time": f"{start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')} CST",
-        "PCs": format_rooms(pcs),
+        "PCs": format_rooms(pcs, back_room_skipped),
     }
 
 
@@ -2330,10 +2337,12 @@ class ReservationTimeModal(discord.ui.Modal):
 
             if reservations_channel:
                 fields = booking_fields(
-                    self.team, allocated_pcs, staff_start, staff_end
+                    self.team,
+                    allocated_pcs,
+                    staff_start,
+                    staff_end,
+                    not self.include_back_room,
                 )
-                if not self.include_back_room:
-                    fields["PCs"] = f"Back Room: skipped\n{fields['PCs']}"
                 embed = discord.Embed(
                     title="🎮 New PC Reservation",
                     color=discord.Color.from_rgb(78, 42, 132),
@@ -2674,7 +2683,11 @@ class EditBookingModal(discord.ui.Modal):
             return
 
         embed = interaction.message.embeds[0].copy()
-        for name, value in booking_fields(team, pcs, start_time, end_time).items():
+        # the skip is only on the ping, so carry it over until a back room PC is added
+        listed = next((f.value for f in embed.fields if f.name == "PCs"), "")
+        skipped = BACK_ROOM_SKIPPED_LINE in listed.splitlines()
+        fields = booking_fields(team, pcs, start_time, end_time, skipped)
+        for name, value in fields.items():
             set_field(embed, name, value)
         set_field(
             embed,

@@ -1047,7 +1047,9 @@ class FakeStaffPing(FakeMessage):
 
 
 @pytest_asyncio.fixture
-async def staff_ping(booked, modal, monkeypatch):
+async def staff_ping(request, booked, modal, monkeypatch):
+    # parametrise indirectly with False to book without the back room
+    modal.include_back_room = getattr(request, "param", True)
     channel = FakeReservationsChannel()
     booked.bot = SimpleNamespace(get_channel=lambda channel_id: channel)
     monkeypatch.setattr(pcs.config, "gamehead_email", lambda username: "lilac@u.edu")
@@ -1160,6 +1162,30 @@ async def test_a_second_edit_reads_the_first_and_keeps_one_note(booked, staff_pi
     fields = second.response.edits[0]["embed"].fields
     assert [field.name for field in fields].count("✏️ Edited") == 1
     assert next(f for f in fields if f.name == "PCs").value == "Main Room: PC 3, PC 4"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("staff_ping", [False], indirect=True)
+async def test_an_edit_keeps_the_back_room_skipped_note(booked, staff_ping):
+    interaction = await submit_edit(
+        booked, staff_ping, "Valorant White", "3, 4", "2026-09-30", "5", "7"
+    )
+
+    fields = interaction.response.edits[0]["embed"].fields
+    listed = next(f for f in fields if f.name == "PCs").value
+    assert listed == "Back Room: skipped\nMain Room: PC 3, PC 4"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("staff_ping", [False], indirect=True)
+async def test_adding_a_back_room_pc_drops_the_skipped_note(booked, staff_ping):
+    interaction = await submit_edit(
+        booked, staff_ping, "Valorant White", "3, 14", "2026-09-30", "5", "7"
+    )
+
+    fields = interaction.response.edits[0]["embed"].fields
+    listed = next(f for f in fields if f.name == "PCs").value
+    assert listed == "Back Room: PC 14\nMain Room: PC 3"
 
 
 @pytest.mark.asyncio
