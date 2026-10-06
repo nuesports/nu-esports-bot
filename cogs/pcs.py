@@ -1541,11 +1541,12 @@ class PCs(commands.Cog):
             choices=["Scrim", "Match"],
             required=True,
         ),
-        back_room: bool = discord.Option(
-            bool,
-            name="back_room",
-            description="Include the back room (14, 15, stream)",
-            default=True,
+        skip_backroom: str = discord.Option(
+            str,
+            name="skip_backroom",
+            description="Skip the back room (14, 15, stream)",
+            choices=["yes", "no"],
+            default="no",
         ),
         test: bool = discord.Option(
             bool,
@@ -1569,6 +1570,7 @@ class PCs(commands.Cog):
             return
 
         # num_pcs' max counts the back room, so refuse before the modal asks for times
+        back_room = skip_backroom == "no"
         cap = len(reservable_pcs(back_room))
         if num_pcs > cap:
             await ctx.respond(
@@ -2023,8 +2025,8 @@ def parse_pc_list(value: str) -> list[int]:
     unknown = sorted({pc for pc in pcs if pc not in every_pc})
     if unknown:
         raise ValueError(
-            f"There's no PC {', '.join(str(pc) for pc in unknown)}. Pick from "
-            f"{', '.join(str(pc) for pc in every_pc)} (0 is Streaming)."
+            f"There's no PC {', '.join(str(pc) for pc in unknown)}. "
+            "Pick from 1-10, 14, 15, 0."
         )
     repeated = sorted({pc for pc in pcs if pcs.count(pc) > 1})
     if repeated:
@@ -2674,6 +2676,8 @@ class EditBookingModal(discord.ui.Modal):
             )
             return
 
+        # staff book in quarter hours, same as the original ping
+        start_time, end_time = round_slot(start_time, end_time)
         url = ggleap_booking_url(team, pcs, start_time, end_time, self.email)
         if len(url) > LINK_BUTTON_URL_LIMIT:
             await interaction.response.send_message(

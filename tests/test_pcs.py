@@ -1148,6 +1148,19 @@ async def test_an_edit_rebuilds_the_link_and_the_embed(booked, staff_ping):
 
 
 @pytest.mark.asyncio
+async def test_an_edit_rounds_its_times_to_quarter_hours(booked, staff_ping):
+    interaction = await submit_edit(
+        booked, staff_ping, "Valorant White", "3", "2026-09-30", "7:42", "9:08"
+    )
+
+    edited = interaction.response.edits[0]
+    time = next(f for f in edited["embed"].fields if f.name == "Time")
+    assert time.value == "07:45 PM - 09:15 PM CST"
+    start, end = pcs.decode_ggleap_booking_url(edited["view"].children[0].url)[2:4]
+    assert (start.strftime("%H:%M"), end.strftime("%H:%M")) == ("19:45", "21:15")
+
+
+@pytest.mark.asyncio
 async def test_a_second_edit_reads_the_first_and_keeps_one_note(booked, staff_ping):
     first = await submit_edit(
         booked, staff_ping, "Valorant White", "3", "2026-09-30", "5", "7"
@@ -1321,7 +1334,13 @@ async def reserve(cog, monkeypatch, num_pcs, back_room):
     monkeypatch.setattr(pcs.config, "can_reserve", lambda member: True)
     ctx = FakeReserveContext(FakeBooker())
     await pcs.PCs.reserve.callback(
-        cog, ctx, "Deadlock Purple", num_pcs, "Scrim", back_room, False
+        cog,
+        ctx,
+        "Deadlock Purple",
+        num_pcs,
+        "Scrim",
+        "no" if back_room else "yes",
+        False,
     )
     return ctx
 
