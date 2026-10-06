@@ -6,7 +6,12 @@ from types import SimpleNamespace
 import discord
 import pytest
 import pytest_asyncio
-from conftest import FakeInteraction, FakeMessage, select_interaction
+from conftest import (
+    FakeApplicationContext,
+    FakeInteraction,
+    FakeMessage,
+    select_interaction,
+)
 
 from cogs import pcs
 
@@ -198,6 +203,97 @@ async def test_tuesday_conflicts_count_the_back_room(empty_room):
     assert not clash
 
 
+# --- skipping the back room ---------------------------------------------------
+
+
+def holding(team, held):
+    """A reservation over the whole of TUESDAY_EVENING."""
+    start, end = TUESDAY_EVENING
+    return {
+        "team": team,
+        "manager": f"{team} head",
+        "pcs": held,
+        "start_time": start,
+        "end_time": end,
+    }
+
+
+def occupy(cog, *reservations):
+    async def overlapping(*args):
+        return list(reservations)
+
+    cog.get_reservations_in_range = overlapping
+
+
+@pytest.mark.asyncio
+async def test_skipping_the_back_room_books_the_main_room(empty_room):
+    given = await empty_room.allocate_pcs(*TUESDAY_EVENING, 3, include_back_room=False)
+    assert given == [1, 2, 3]
+
+
+@pytest.mark.asyncio
+async def test_skipping_the_back_room_caps_at_the_main_room(empty_room):
+    whole_room = len(pcs.MAIN_ROOM_PCS)
+    assert (
+        await empty_room.allocate_pcs(
+            *TUESDAY_EVENING, whole_room, include_back_room=False
+        )
+        == pcs.MAIN_ROOM_PCS
+    )
+    assert (
+        await empty_room.allocate_pcs(
+            *TUESDAY_EVENING, whole_room + 1, include_back_room=False
+        )
+        == []
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_booked_back_room_does_not_crowd_out_the_main_room(cog):
+    occupy(cog, holding("Valorant White", [14, 15, 0]))
+    whole_room = len(pcs.MAIN_ROOM_PCS)
+
+    clash, _, _ = await cog.check_conflicts(
+        *TUESDAY_EVENING, whole_room, include_back_room=False
+    )
+
+    assert not clash
+    assert (
+        await cog.allocate_pcs(*TUESDAY_EVENING, whole_room, include_back_room=False)
+        == pcs.MAIN_ROOM_PCS
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_free_back_room_does_not_cover_for_a_full_main_room(cog):
+    occupy(cog, holding("Apex White", list(range(1, 9))))
+
+    skipped, team, _ = await cog.check_conflicts(
+        *TUESDAY_EVENING, 3, include_back_room=False
+    )
+    with_back_room, _, _ = await cog.check_conflicts(*TUESDAY_EVENING, 3)
+
+    assert skipped
+    assert team == "Apex White"
+    assert not with_back_room
+
+
+@pytest.mark.asyncio
+async def test_a_skipped_back_room_is_not_blamed_for_the_clash(cog):
+    occupy(
+        cog,
+        holding("Valorant White", [14, 15, 0]),
+        holding("Apex White", pcs.MAIN_ROOM_PCS),
+    )
+
+    clash, team, manager = await cog.check_conflicts(
+        *TUESDAY_EVENING, 1, include_back_room=False
+    )
+
+    assert clash
+    assert (team, manager) == ("Apex White", "Apex White head")
+
+
 # --- the confirm embed --------------------------------------------------------
 
 
@@ -322,6 +418,16 @@ async def test_edit_reopens_the_modal_with_what_was_typed(view):
 
 
 @pytest.mark.asyncio
+async def test_edit_keeps_the_back_room_skipped(view):
+    view.modal.include_back_room = False
+    interaction = FakeInteraction(FakeBooker())
+
+    await view.children[1].callback(interaction)
+
+    assert interaction.response.modals[0].include_back_room is False
+
+
+@pytest.mark.asyncio
 async def test_edit_leaves_the_buttons_live(view):
     # dismissing a modal fires no event, so retiring here would strand the booker
     await view.children[1].callback(FakeInteraction(FakeBooker()))
@@ -417,6 +523,17 @@ async def test_remake_reopens_the_modal_as_it_was(view):
     assert reopened.res_type == "Scrim"
     # a cancelled booking carries no live prompt to retire
     assert reopened.origin_view is None
+
+
+@pytest.mark.asyncio
+async def test_remake_keeps_the_back_room_skipped(view):
+    view.modal.include_back_room = False
+    remake = pcs.RemakeBookingView(view.modal, view.raw_values)
+    interaction = FakeInteraction(FakeBooker())
+
+    await remake.children[0].callback(interaction)
+
+    assert interaction.response.modals[0].include_back_room is False
 
 
 # --- what the modal refuses outright -----------------------------------------
@@ -729,6 +846,44 @@ async def test_an_off_peak_booking_raises_neither_prime_warning(booked, modal):
     assert "Prime time quota" not in body
 
 
+@pytest.mark.asyncio
+async def test_complete_hands_the_skip_to_conflicts_and_allocation(booked, modal):
+    seen = []
+
+    async def no_conflict(*args):
+        seen.append(("conflicts", args[-1]))
+        return (False, None, None)
+
+    async def allocate(*args):
+        seen.append(("allocate", args[-1]))
+        return [1, 2]
+
+    booked.check_conflicts = no_conflict
+    booked.allocate_pcs = allocate
+    modal.include_back_room = False
+
+    await run_complete(modal)
+
+    assert seen == [("conflicts", False), ("allocate", False)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("include_back_room", "prime"), [(True, False), (False, True)])
+async def test_skipping_the_back_room_makes_an_evening_prime_time(
+    booked, modal, include_back_room, prime
+):
+    # the real allocator, so prime time judges what skipping actually hands out
+    del booked.check_conflicts, booked.allocate_pcs
+    occupy(booked)
+    modal.num_pcs = 3
+    modal.include_back_room = include_back_room
+
+    interaction = await run_complete(modal)
+
+    body = interaction.followup.send_calls[0]["content"]
+    assert ("Prime Time Reservation" in body) is prime
+
+
 # --- what staff see -----------------------------------------------------------
 
 
@@ -770,6 +925,27 @@ async def test_a_clean_booking_pings_only_the_rotation(booked, modal, monkeypatc
     posted = channel.sent[0]
     assert posted["content"] == "<@99>"
     assert not [f for f in posted["embed"].fields if f.name == "⚠️ Notes"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("include_back_room", "listed"),
+    [
+        (True, "Main Room: PC 1, PC 2"),
+        (False, "Back Room: skipped\nMain Room: PC 1, PC 2"),
+    ],
+)
+async def test_staff_are_told_only_when_the_back_room_was_skipped(
+    booked, modal, include_back_room, listed
+):
+    channel = FakeReservationsChannel()
+    booked.bot = SimpleNamespace(get_channel=lambda channel_id: channel)
+    modal.include_back_room = include_back_room
+
+    await run_complete(modal, times="12:00PM-2:00PM")
+
+    field = next(f for f in channel.sent[0]["embed"].fields if f.name == "PCs")
+    assert field.value == listed
 
 
 def decode_booking_url(url):
@@ -817,6 +993,59 @@ async def test_staff_get_a_book_in_ggleap_button(booked, modal, monkeypatch):
     _, payload = decode_booking_url(button.url)
     assert payload["pcs"] == [1, 2]
     assert payload["email"] == "lilac@u.edu"
+
+
+# --- /reserve -----------------------------------------------------------------
+
+
+class FakeReserveContext(FakeApplicationContext):
+    """/reserve ends on send_modal, and its refusals need their text kept."""
+
+    def __init__(self, author):
+        super().__init__(author)
+        self.modals = []
+
+    async def respond(self, content=None, **kwargs):
+        self.respond_calls.append({"content": content, **kwargs})
+
+    async def send_modal(self, modal):
+        self.modals.append(modal)
+
+
+async def reserve(cog, monkeypatch, num_pcs, back_room):
+    monkeypatch.setattr(pcs.config, "can_reserve", lambda member: True)
+    ctx = FakeReserveContext(FakeBooker())
+    await pcs.PCs.reserve.callback(
+        cog, ctx, "Deadlock Purple", num_pcs, "Scrim", back_room, False
+    )
+    return ctx
+
+
+@pytest.mark.asyncio
+async def test_skipping_the_back_room_refuses_more_than_the_main_room_holds(
+    cog, monkeypatch
+):
+    ctx = await reserve(cog, monkeypatch, len(pcs.MAIN_ROOM_PCS) + 1, False)
+
+    [refusal] = ctx.respond_calls
+    assert f"Only {len(pcs.MAIN_ROOM_PCS)} PCs" in refusal["content"]
+    assert refusal["ephemeral"]
+    assert ctx.modals == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("num_pcs", "back_room"),
+    [(pcs.MAX_RESERVABLE_PCS, True), (len(pcs.MAIN_ROOM_PCS), False)],
+    ids=["everything", "the whole main room"],
+)
+async def test_up_to_the_cap_opens_the_modal(cog, monkeypatch, num_pcs, back_room):
+    ctx = await reserve(cog, monkeypatch, num_pcs, back_room)
+
+    [opened] = ctx.modals
+    assert opened.num_pcs == num_pcs
+    assert opened.include_back_room is back_room
+    assert ctx.respond_calls == []
 
 
 # --- /reserve-external ---------------------------------------------------------
