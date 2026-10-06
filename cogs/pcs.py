@@ -4,6 +4,7 @@ import io
 import json
 import os
 from datetime import UTC, date, datetime, timedelta
+from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
 import aiohttp
@@ -1867,6 +1868,41 @@ def ggleap_booking_url(
     raw = json.dumps(payload, separators=(",", ":")).encode()
     encoded = base64.urlsafe_b64encode(raw).decode().rstrip("=")
     return f"{GGLEAP_BOOKING_GRID_URL}#nue={encoded}"
+
+
+class GgleapBooking(NamedTuple):
+    """ggleap_booking_url's arguments, so a decoded link can be passed straight back."""
+
+    team: str
+    pcs: list[int]
+    start_time: datetime
+    end_time: datetime
+    email: str | None
+
+
+def decode_ggleap_booking_url(url: str) -> GgleapBooking:
+    """ggleap_booking_url in reverse. Raises ValueError for anything it didn't write."""
+    _, marker, encoded = url.partition("#nue=")
+    if not marker:
+        raise ValueError("Not a ggLeap booking link")
+    try:
+        payload = json.loads(
+            base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        )
+        if payload["v"] != 1:
+            raise ValueError(f"Unknown booking link version {payload['v']!r}")
+        start_time = datetime.strptime(payload["start"], "%Y-%m-%dT%H:%M:%S").replace(
+            tzinfo=CENTRAL_TZ
+        )
+        return GgleapBooking(
+            payload["team"],
+            payload["pcs"],
+            start_time,
+            start_time + timedelta(minutes=payload["duration"]),
+            payload["email"],
+        )
+    except (KeyError, TypeError) as e:
+        raise ValueError("Booking link is malformed") from e
 
 
 def warn_prime_quota(used_count: int, quota: int) -> str:

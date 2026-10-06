@@ -804,6 +804,38 @@ def test_booking_url_fits_in_a_discord_button(cog):
     )
 
 
+@pytest.mark.parametrize("email", ["a@b.edu", None], ids=["email", "no email"])
+def test_a_booking_link_decodes_back_to_what_built_it(cog, email):
+    start, end = cog.parse_time_range("2026-09-29 5:15PM-6:45PM")
+    url = pcs.ggleap_booking_url("Valorant White", [3, 1, 0], start, end, email)
+
+    booking = pcs.decode_ggleap_booking_url(url)
+
+    assert booking == ("Valorant White", [0, 1, 3], start, end, email)
+    assert pcs.ggleap_booking_url(*booking) == url
+
+
+def encode_payload(payload):
+    raw = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+    return f"{pcs.GGLEAP_BOOKING_GRID_URL}#nue={raw}"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        pcs.GGLEAP_BOOKING_GRID_URL,
+        f"{pcs.GGLEAP_BOOKING_GRID_URL}#nue=not*base64",
+        encode_payload({"v": 2, "team": "Valorant White"}),
+        encode_payload({"v": 1, "team": "Valorant White"}),
+        encode_payload(["v", 1]),
+    ],
+    ids=["no fragment", "garbled", "newer version", "missing keys", "not an object"],
+)
+def test_decoding_refuses_a_link_it_did_not_write(url):
+    with pytest.raises(ValueError):
+        pcs.decode_ggleap_booking_url(url)
+
+
 @pytest.mark.asyncio
 async def test_staff_get_a_book_in_ggleap_button(booked, modal, monkeypatch):
     channel = FakeReservationsChannel()
