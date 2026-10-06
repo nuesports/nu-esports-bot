@@ -800,8 +800,40 @@ def test_booking_url_fits_in_a_discord_button(cog):
     email = "someone.with.a.long.name2029@u.northwestern.edu"
     assert (
         len(pcs.ggleap_booking_url("Rocket League Purple", every_pc, start, end, email))
-        <= 512
+        <= pcs.LINK_BUTTON_URL_LIMIT
     )
+
+
+@pytest.mark.parametrize("email", ["a@b.edu", None], ids=["email", "no email"])
+def test_a_booking_link_decodes_back_to_what_built_it(cog, email):
+    start, end = cog.parse_time_range("2026-09-29 5:15PM-6:45PM")
+    url = pcs.ggleap_booking_url("Valorant White", [3, 1, 0], start, end, email)
+
+    booking = pcs.decode_ggleap_booking_url(url)
+
+    assert booking == ("Valorant White", [0, 1, 3], start, end, email)
+    assert pcs.ggleap_booking_url(*booking) == url
+
+
+def encode_payload(payload):
+    raw = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+    return f"{pcs.GGLEAP_BOOKING_GRID_URL}#nue={raw}"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        pcs.GGLEAP_BOOKING_GRID_URL,
+        f"{pcs.GGLEAP_BOOKING_GRID_URL}#nue=not*base64",
+        encode_payload({"v": 2, "team": "Valorant White"}),
+        encode_payload({"v": 1, "team": "Valorant White"}),
+        encode_payload(["v", 1]),
+    ],
+    ids=["no fragment", "garbled", "newer version", "missing keys", "not an object"],
+)
+def test_decoding_refuses_a_link_it_did_not_write(url):
+    with pytest.raises(ValueError):
+        pcs.decode_ggleap_booking_url(url)
 
 
 @pytest.mark.asyncio
@@ -812,11 +844,199 @@ async def test_staff_get_a_book_in_ggleap_button(booked, modal, monkeypatch):
 
     await run_complete(modal, times="12:00PM-2:00PM")
 
-    [button] = channel.sent[0]["view"].children
+    [button, edit] = channel.sent[0]["view"].children
     assert button.label == "Book in ggLeap"
     _, payload = decode_booking_url(button.url)
     assert payload["pcs"] == [1, 2]
     assert payload["email"] == "lilac@u.edu"
+    assert edit.custom_id == pcs.EDIT_BOOKING_ID
+
+
+# --- staff editing the booking -------------------------------------------------
+
+
+STAFF = SimpleNamespace(name="kai", mention="<@42>")
+
+
+class FakeStaffPing(FakeMessage):
+    """A posted staff ping as the edit button reads it: the embed and the real
+    component types py-cord parses off the message, not the view that built them."""
+
+    def __init__(self, embed, view):
+        super().__init__()
+        self.embeds = [embed]
+        self.components = [
+            discord.components.ActionRow(row) for row in view.to_components()
+        ]
+
+
+@pytest_asyncio.fixture
+async def staff_ping(booked, modal, monkeypatch):
+    channel = FakeReservationsChannel()
+    booked.bot = SimpleNamespace(get_channel=lambda channel_id: channel)
+    monkeypatch.setattr(pcs.config, "gamehead_email", lambda username: "lilac@u.edu")
+    monkeypatch.setattr(pcs.config, "is_gameroom_staff", lambda member: member is STAFF)
+
+    await run_complete(modal, times="12:00PM-2:00PM")
+
+    return FakeStaffPing(channel.sent[0]["embed"], channel.sent[0]["view"])
+
+
+def press(message, user, custom_id=pcs.EDIT_BOOKING_ID):
+    interaction = FakeInteraction(user)
+    interaction.data = {"custom_id": custom_id}
+    interaction.message = message
+    return interaction
+
+
+async def submit_edit(cog, message, team, typed_pcs, date, start, end):
+    """Press Edit booking, then submit its modal with the five fields."""
+    pressed = press(message, STAFF)
+    await cog.on_interaction(pressed)
+    modal = pressed.response.modals[0]
+    values = (team, typed_pcs, date, start, end)
+    for child, value in zip(modal.children, values, strict=True):
+        child.value = value
+    interaction = press(message, STAFF)
+    await modal.callback(interaction)
+    return interaction
+
+
+@pytest.mark.asyncio
+async def test_only_gameroom_staff_may_edit_a_booking(booked, staff_ping):
+    interaction = press(staff_ping, FakeBooker())
+    await booked.on_interaction(interaction)
+
+    refusal = interaction.response.messages[0]
+    assert "Only gameroom staff" in refusal["content"]
+    assert refusal["ephemeral"] is True
+    assert interaction.response.modals == []
+
+
+@pytest.mark.asyncio
+async def test_other_buttons_are_not_mistaken_for_the_edit(booked, staff_ping):
+    interaction = press(staff_ping, STAFF, custom_id="config-undo:3")
+    await booked.on_interaction(interaction)
+
+    assert interaction.response.messages == []
+    assert interaction.response.modals == []
+
+
+@pytest.mark.asyncio
+async def test_edit_prefills_the_modal_from_the_book_link(booked, staff_ping):
+    interaction = press(staff_ping, STAFF)
+    await booked.on_interaction(interaction)
+
+    modal = interaction.response.modals[0]
+    assert isinstance(modal, pcs.EditBookingModal)
+    assert [child.value for child in modal.children] == [
+        "Deadlock Purple",
+        "1, 2",
+        "2026-09-28",
+        "12:00PM",
+        "2:00PM",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_edit_rebuilds_the_link_and_the_embed(booked, staff_ping):
+    interaction = await submit_edit(
+        booked, staff_ping, "Valorant White", "3, 0, 14", "2026-09-30", "5", "7:30"
+    )
+
+    edited = interaction.response.edits[0]
+    [book, edit] = edited["view"].children
+    start, end = booked.parse_time_range("2026-09-30 5PM-7:30PM")
+    assert pcs.decode_ggleap_booking_url(book.url) == (
+        "Valorant White",
+        [0, 3, 14],
+        start,
+        end,
+        "lilac@u.edu",
+    )
+    assert edit.custom_id == pcs.EDIT_BOOKING_ID
+
+    fields = {field.name: field for field in edited["embed"].fields}
+    assert fields["Team"].value == "Valorant White"
+    assert fields["Date"].value == "Wednesday, September 30, 2026"
+    assert fields["Time"].value == "05:00 PM - 07:30 PM CST"
+    assert fields["PCs"].value == "Back Room: Streaming, PC 14\nMain Room: PC 3"
+    assert fields["✏️ Edited"].value.startswith("by <@42> ")
+    # the rest of the ping is what was booked, edited fields keep their place
+    assert fields["Res Type"].value == "Scrim"
+    assert fields["Manager"].value == "lilac"
+    assert edited["embed"].fields[0].name == "Team"
+    assert fields["Time"].inline is True
+
+
+@pytest.mark.asyncio
+async def test_a_second_edit_reads_the_first_and_keeps_one_note(booked, staff_ping):
+    first = await submit_edit(
+        booked, staff_ping, "Valorant White", "3", "2026-09-30", "5", "7"
+    )
+    edited = first.response.edits[0]
+    reposted = FakeStaffPing(edited["embed"], edited["view"])
+
+    second = await submit_edit(
+        booked, reposted, "Valorant White", "3, 4", "2026-09-30", "5", "8"
+    )
+
+    fields = second.response.edits[0]["embed"].fields
+    assert [field.name for field in fields].count("✏️ Edited") == 1
+    assert next(f for f in fields if f.name == "PCs").value == "Main Room: PC 3, PC 4"
+
+
+@pytest.mark.asyncio
+async def test_an_edit_leaves_the_saved_reservation_alone(booked, staff_ping):
+    async def forbidden(*args):
+        raise AssertionError("an edit must not write to the reservations table")
+
+    booked.save_reservation = forbidden
+    booked.pending_acknowledgments = {4321: {"team": "Deadlock Purple"}}
+
+    await submit_edit(booked, staff_ping, "Valorant White", "3", "2026-09-30", "5", "7")
+
+    assert booked.pending_acknowledgments == {4321: {"team": "Deadlock Purple"}}
+
+
+@pytest.mark.parametrize(
+    ("team", "typed_pcs", "start", "end", "refusal"),
+    [
+        ("  ", "1, 2", "12PM", "2PM", "team can't be blank"),
+        ("Deadlock Purple", "1, 11", "12PM", "2PM", "There's no PC 11"),
+        ("Deadlock Purple", "1, 2, 1", "12PM", "2PM", "PC 1 is listed more than once"),
+        ("Deadlock Purple", "one, two", "12PM", "2PM", "PCs must be numbers"),
+        ("Deadlock Purple", ",", "12PM", "2PM", "at least one PC"),
+        ("Deadlock Purple", "1, 2", "lunchtime", "2PM", "Invalid time format"),
+        ("Deadlock Purple", "1, 2", "4PM", "2PM", "has to end after it starts"),
+        ("Deadlock Purple", "1, 2", "2PM", "2PM", "has to end after it starts"),
+        ("x" * 400, "1, 2", "12PM", "2PM", "too long to fit in the ggLeap link"),
+    ],
+    ids=[
+        "blank team",
+        "no such pc",
+        "repeated pc",
+        "not numbers",
+        "no pcs",
+        "bad time",
+        "backwards",
+        "zero length",
+        "link too long",
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_bad_edit_is_refused_and_changes_nothing(
+    booked, staff_ping, team, typed_pcs, start, end, refusal
+):
+    interaction = await submit_edit(
+        booked, staff_ping, team, typed_pcs, "2026-09-28", start, end
+    )
+
+    sent = interaction.response.messages[0]
+    assert sent["content"].startswith("❌")
+    assert refusal in sent["content"]
+    assert sent["ephemeral"] is True
+    assert interaction.response.edits == []
 
 
 # --- /reserve-external ---------------------------------------------------------
