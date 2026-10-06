@@ -47,6 +47,11 @@ def staff_list() -> list[int]:
     return config.config["roles"]["gameroom_staff"].get("users") or []
 
 
+def reservable_pcs(include_back_room: bool = True) -> list[int]:
+    """Back room first, since allocation fills it before the main room."""
+    return (BACK_ROOM_PCS if include_back_room else []) + MAIN_ROOM_PCS
+
+
 # also the source of the /reserve team list, so the two can't drift
 TEAM_PRIME_TIME_QUOTA: dict[str, int] = {
     "Valorant White": 2,
@@ -556,7 +561,11 @@ class PCs(commands.Cog):
         return used_count < quota, used_count
 
     async def check_conflicts(
-        self, start_time: datetime, end_time: datetime, num_pcs: int
+        self,
+        start_time: datetime,
+        end_time: datetime,
+        num_pcs: int,
+        include_back_room: bool = True,
     ) -> tuple[bool, str | None, str | None]:
         """
         Check for conflicts with existing reservations.
@@ -564,6 +573,8 @@ class PCs(commands.Cog):
         """
         # Get all overlapping reservations from database
         overlapping = await self.get_reservations_in_range(start_time, end_time)
+        # a skipped back room is neither spare capacity nor someone in the way
+        pool = reservable_pcs(include_back_room)
 
         # For each time slot in the requested range, check if we can fit the PCs
         # We need to ensure at most 5 main room PCs are in use at any given time
@@ -587,9 +598,7 @@ class PCs(commands.Cog):
             if interval_end <= start_time or interval_start >= end_time:
                 continue
 
-            # Count how many main room and back room PCs are already reserved in this interval
-            main_room_used = 0
-            back_room_used = 0
+            used = 0
             conflicting_team = None
             conflicting_manager = None
 
@@ -598,37 +607,28 @@ class PCs(commands.Cog):
                     res["start_time"] < interval_end
                     and res["end_time"] > interval_start
                 ):
-                    for pc in res["pcs"]:
-                        if pc in MAIN_ROOM_PCS:
-                            main_room_used += 1
-                        elif pc in BACK_ROOM_PCS:
-                            back_room_used += 1
-                    if conflicting_team is None:
+                    held = sum(pc in pool for pc in res["pcs"])
+                    used += held
+                    if held and conflicting_team is None:
                         conflicting_team = res["team"]
                         conflicting_manager = res["manager"]
 
-            # Check if we can fit the requested PCs
-            # We have: back room (14, 15, streaming) = 3 PCs, main room = 10 PCs
-
-            # Available back room PCs in this interval
-            back_room_available = len(BACK_ROOM_PCS) - back_room_used
-
-            # Available main room PCs
-            main_room_available = len(MAIN_ROOM_PCS) - main_room_used
-
             # Can we fit num_pcs?
-            total_available = back_room_available + main_room_available
-
-            if total_available < num_pcs:
+            if len(pool) - used < num_pcs:
                 return True, conflicting_team, conflicting_manager
 
         return False, None, None
 
     async def allocate_pcs(
-        self, start_time: datetime, end_time: datetime, num_pcs: int
+        self,
+        start_time: datetime,
+        end_time: datetime,
+        num_pcs: int,
+        include_back_room: bool = True,
     ) -> list[int]:
         """
         Allocate PCs optimally: back room first (14, 15, streaming), then main room (contiguous).
+        Without the back room, only the main room is drawn from.
         Returns list of PC numbers, or empty list if can't allocate.
         PC numbers: 1-10 (main room), 14, 15 (back room), 0 (streaming, treated as back room)
         """
@@ -636,7 +636,7 @@ class PCs(commands.Cog):
         overlapping = await self.get_reservations_in_range(start_time, end_time)
 
         # Determine which PCs are available throughout the entire time range
-        all_pcs = BACK_ROOM_PCS + MAIN_ROOM_PCS  # Back room first, then main room
+        all_pcs = reservable_pcs(include_back_room)
 
         available_pcs = []
         for pc in all_pcs:
@@ -1540,6 +1540,12 @@ class PCs(commands.Cog):
             choices=["Scrim", "Match"],
             required=True,
         ),
+        back_room: bool = discord.Option(
+            bool,
+            name="back_room",
+            description="Include the back room (14, 15, stream)",
+            default=True,
+        ),
         test: bool = discord.Option(
             bool,
             name="test",
@@ -1561,8 +1567,17 @@ class PCs(commands.Cog):
             )
             return
 
+        # num_pcs' max counts the back room, so refuse before the modal asks for times
+        cap = len(reservable_pcs(back_room))
+        if num_pcs > cap:
+            await ctx.respond(
+                f"❌ Only {cap} PCs can be reserved without the back room.",
+                ephemeral=True,
+            )
+            return
+
         # Show modal for time input
-        modal = ReservationTimeModal(self, team, num_pcs, res_type, test)
+        modal = ReservationTimeModal(self, team, num_pcs, res_type, test, back_room)
         await ctx.send_modal(modal)
 
     @commands.slash_command(
@@ -2083,6 +2098,7 @@ class ReservationTimeModal(discord.ui.Modal):
         num_pcs: int,
         res_type: str,
         is_test: bool = False,
+        include_back_room: bool = True,
         date_value: str = "",
         start_value: str = "",
         end_value: str = "",
@@ -2094,6 +2110,7 @@ class ReservationTimeModal(discord.ui.Modal):
         self.num_pcs: int = num_pcs
         self.res_type: str = res_type
         self.is_test: bool = is_test
+        self.include_back_room: bool = include_back_room
         self.origin_view: BookingWarningsView | None = origin_view
 
         # Calculate example date as today + 2 days (minimum advance booking)
@@ -2221,7 +2238,9 @@ class ReservationTimeModal(discord.ui.Modal):
             has_conflict,
             conflicting_team,
             conflicting_manager,
-        ) = await self.cog.check_conflicts(start_time, end_time, self.num_pcs)
+        ) = await self.cog.check_conflicts(
+            start_time, end_time, self.num_pcs, self.include_back_room
+        )
         if has_conflict:
             await interaction.followup.send(
                 f"❌ Conflict with team **{conflicting_team}**. Please contact **{conflicting_manager}** to resolve.",
@@ -2230,7 +2249,9 @@ class ReservationTimeModal(discord.ui.Modal):
             return
 
         # Allocate PCs
-        allocated_pcs = await self.cog.allocate_pcs(start_time, end_time, self.num_pcs)
+        allocated_pcs = await self.cog.allocate_pcs(
+            start_time, end_time, self.num_pcs, self.include_back_room
+        )
         if not allocated_pcs:
             await interaction.followup.send(
                 f"❌ Unable to allocate {self.num_pcs} PCs for the requested time slot. Please try a different time or fewer PCs.",
@@ -2311,6 +2332,8 @@ class ReservationTimeModal(discord.ui.Modal):
                 fields = booking_fields(
                     self.team, allocated_pcs, staff_start, staff_end
                 )
+                if not self.include_back_room:
+                    fields["PCs"] = f"Back Room: skipped\n{fields['PCs']}"
                 embed = discord.Embed(
                     title="🎮 New PC Reservation",
                     color=discord.Color.from_rgb(78, 42, 132),
@@ -2461,6 +2484,7 @@ class BookingWarningsView(discord.ui.View):
                 self.modal.num_pcs,
                 self.modal.res_type,
                 self.modal.is_test,
+                self.modal.include_back_room,
                 date_value=date_value,
                 start_value=start_value,
                 end_value=end_value,
@@ -2544,7 +2568,7 @@ class RemakeBookingView(discord.ui.View):
     async def remake_button(
         self, button: discord.ui.Button, interaction: discord.Interaction
     ) -> None:
-        # team, pc count and type come from the slash options, so only times reopen
+        # team, pc count, type and back room are slash options, so only times reopen
         date_value, start_value, end_value = self.raw_values
         await interaction.response.send_modal(
             ReservationTimeModal(
@@ -2553,6 +2577,7 @@ class RemakeBookingView(discord.ui.View):
                 self.modal.num_pcs,
                 self.modal.res_type,
                 self.modal.is_test,
+                self.modal.include_back_room,
                 date_value=date_value,
                 start_value=start_value,
                 end_value=end_value,
