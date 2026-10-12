@@ -42,3 +42,37 @@ async def test_a_well_formed_battletag_still_goes_through(monkeypatch):
     await client.fetch_and_store(
         123, ("overwatch", "Alex#1234", None, None, None, None)
     )
+
+
+@pytest.mark.asyncio
+async def test_an_emerald_rank_is_stored_between_platinum_and_diamond(monkeypatch):
+    client = _client_returning(
+        monkeypatch,
+        {
+            "competitive": {
+                "pc": {
+                    "tank": {"division": "platinum", "tier": 1},
+                    "damage": {"division": "emerald", "tier": 3},
+                    "support": {"division": "diamond", "tier": 5},
+                }
+            }
+        },
+    )
+    stored = []
+
+    async def capture(sql, rows):
+        stored.extend(rows)
+
+    async def has_mains(*args):
+        return True
+
+    monkeypatch.setattr(overwatch.db, "perform_many", capture)
+    monkeypatch.setattr(overwatch, "has_profile_mains", has_mains)
+
+    await client.fetch_and_store(
+        123, ("overwatch", "Alex#1234", None, None, None, None)
+    )
+
+    ranks = {role: (value, label) for _, _, role, value, label in stored}
+    assert ranks["Damage"][1] == "Emerald 3"
+    assert ranks["Tank"][0] < ranks["Damage"][0] < ranks["Support"][0]

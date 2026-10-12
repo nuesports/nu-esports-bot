@@ -1,5 +1,5 @@
 roles: [Tank, Damage, Support, Flex]
-tiers: [Bronze, Silver, Gold, Platinum, Diamond, Master, Grandmaster, Ultimate, Top 500]
+tiers: [Bronze, Silver, Gold, Platinum, Emerald, Diamond, Master, Grandmaster, Ultimate, Top 500]
 divisions: 5
 no_division_tiers: [Top 500]
 lobby_size: 10
@@ -10,6 +10,7 @@ rank_points:
   Silver: 350
   Gold: 750
   Platinum: 1200
+  Emerald: 1450
   Diamond: 1700
   Master: 2300
   Grandmaster: 3000
