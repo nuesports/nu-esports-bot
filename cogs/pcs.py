@@ -1134,6 +1134,12 @@ class PCs(commands.Cog):
     )
     @commands.dynamic_cooldown(pcs_cooldown, commands.BucketType.user)
     async def pcs(self, ctx: discord.ApplicationContext) -> None:
+        await ctx.respond(
+            "Sorry, the pcs command is currently deprecated. "
+            "To find the status of the PCs, please come in person or ping a gameroom attendant."
+        )
+        return
+
         in_bot_channel = ctx.channel.id == BOT_CHANNEL_ID
         await ctx.defer(ephemeral=(not in_bot_channel))
         now = datetime.now(CENTRAL_TZ)
