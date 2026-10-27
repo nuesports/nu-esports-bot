@@ -25,7 +25,8 @@ RESERVATIONS_ENDPOINT = f"{GGLEAP_BASE_URL}/reservations"
 GGLEAP_BOOKING_GRID_URL = "https://admin.ggleap.com/booking/grid"
 # discord refuses a link button whose url runs past this
 LINK_BUTTON_URL_LIMIT = 512
-# answered by on_interaction rather than a registered view, so it outlives restarts
+# answered by on_interaction rather than a registered view, so they outlive restarts
+BOOK_BOOKING_ID = "pcs-book-booking"
 EDIT_BOOKING_ID = "pcs-edit-booking"
 BACK_ROOM_SKIPPED_LINE = "Back Room: skipped"
 
@@ -181,18 +182,39 @@ class PCs(commands.Cog):
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction) -> None:
-        """Open the edit modal from a staff ping, prefilled from its Book link."""
-        if (interaction.data or {}).get("custom_id") != EDIT_BOOKING_ID:
+        """Handle staff booking acknowledgments and edits, including after restarts."""
+        custom_id = (interaction.data or {}).get("custom_id")
+        if custom_id not in (BOOK_BOOKING_ID, EDIT_BOOKING_ID):
             return
         if not config.is_gameroom_staff(interaction.user):
             await interaction.response.send_message(
-                "❌ Only gameroom staff can edit a booking.", ephemeral=True
+                "❌ Only gameroom staff can book or edit a booking.", ephemeral=True
             )
             return
         try:
-            booking = decode_ggleap_booking_url(booking_link(interaction.message))
+            url = booking_link(interaction.message)
+            booking = decode_ggleap_booking_url(url)
         except ValueError as e:
             await interaction.response.send_message(f"❌ {e!s}", ephemeral=True)
+            return
+        if custom_id == BOOK_BOOKING_ID and interaction.message is not None:
+            # Link buttons send no interaction. Give staff the link privately so
+            # this first click can also acknowledge the original reservation ping.
+            view = discord.ui.View()
+            view.add_item(discord.ui.Button(label="Open ggLeap", url=url))
+            await interaction.response.send_message(
+                "Open ggLeap to finish the booking.", view=view, ephemeral=True
+            )
+            try:
+                await interaction.message.add_reaction("✅")
+            except discord.HTTPException:
+                await interaction.followup.send(
+                    "⚠️ I couldn't add the ✅ reaction. Please react to the reservation "
+                    "message once you've booked it.",
+                    ephemeral=True,
+                )
+                return
+            self.pending_acknowledgments.pop(interaction.message.id, None)
             return
         await interaction.response.send_modal(EditBookingModal(self, booking))
 
@@ -1951,7 +1973,10 @@ def decode_ggleap_booking_url(url: str) -> GgleapBooking:
 
 
 def booking_link(message: discord.Message | None) -> str:
-    """The Book in ggLeap url off a staff ping -- the edit button's only record."""
+    """Read a persisted booking link, including older pings with link buttons."""
+    for embed in message.embeds if message else []:
+        if embed.url and "#nue=" in embed.url:
+            return embed.url
     for row in message.components if message else []:
         for component in getattr(row, "children", [row]):
             url = getattr(component, "url", None)
@@ -1960,10 +1985,16 @@ def booking_link(message: discord.Message | None) -> str:
     raise ValueError("No ggLeap booking link on this message")
 
 
-def booking_view(url: str) -> discord.ui.View:
-    """Staff ping buttons. The link needs no handler and the edit is on_interaction's."""
+def booking_view() -> discord.ui.View:
+    """Staff ping buttons, both handled by on_interaction."""
     view = discord.ui.View(timeout=None)
-    view.add_item(discord.ui.Button(label="Book in ggLeap", url=url))
+    view.add_item(
+        discord.ui.Button(
+            label="Book in ggLeap",
+            style=discord.ButtonStyle.primary,
+            custom_id=BOOK_BOOKING_ID,
+        )
+    )
     view.add_item(
         discord.ui.Button(
             label="Edit booking",
@@ -2398,11 +2429,11 @@ class ReservationTimeModal(discord.ui.Modal):
                         inline=False,
                     )
 
-                book_view = booking_view(
-                    ggleap_booking_url(
-                        self.team, allocated_pcs, staff_start, staff_end, manager_email
-                    )
+                # Keep the link on the message so buttons survive bot restarts.
+                embed.url = ggleap_booking_url(
+                    self.team, allocated_pcs, staff_start, staff_end, manager_email
                 )
+                book_view = booking_view()
 
                 # Ping the next staff member in rotation
                 if staff_list():
@@ -2693,6 +2724,7 @@ class EditBookingModal(discord.ui.Modal):
             return
 
         embed = interaction.message.embeds[0].copy()
+        embed.url = url
         # the skip is only on the ping, so carry it over until a back room PC is added
         listed = next((f.value for f in embed.fields if f.name == "PCs"), "")
         skipped = BACK_ROOM_SKIPPED_LINE in listed.splitlines()
@@ -2704,7 +2736,7 @@ class EditBookingModal(discord.ui.Modal):
             "✏️ Edited",
             f"by {interaction.user.mention} <t:{int(datetime.now(UTC).timestamp())}:R>",
         )
-        await interaction.response.edit_message(embed=embed, view=booking_view(url))
+        await interaction.response.edit_message(embed=embed, view=booking_view())
 
 
 class ExternalReservationTimeModal(discord.ui.Modal):
