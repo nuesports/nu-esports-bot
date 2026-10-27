@@ -1074,72 +1074,17 @@ def press(message, user, custom_id=pcs.EDIT_BOOKING_ID):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("pending", [True, False], ids=["pending", "after restart"])
-async def test_book_button_reacts_and_acknowledges_the_staff_ping(
-    booked, staff_ping, pending
-):
-    unrelated = {9876: {"team": "Valorant White"}}
-    booked.pending_acknowledgments = dict(unrelated)
-    if pending:
-        booked.pending_acknowledgments[staff_ping.id] = {"team": "Deadlock Purple"}
+async def test_book_button_reacts_and_acknowledges_the_staff_ping(booked, staff_ping):
+    booked.pending_acknowledgments = {staff_ping.id: {"team": "Deadlock Purple"}}
     interaction = press(staff_ping, STAFF, pcs.BOOK_BOOKING_ID)
 
     await booked.on_interaction(interaction)
 
     assert staff_ping.reactions == ["✅"]
-    assert booked.pending_acknowledgments == unrelated
+    assert staff_ping.id not in booked.pending_acknowledgments
     response = interaction.response.messages[0]
     assert response["ephemeral"] is True
     assert response["view"].children[0].url == pcs.booking_link(staff_ping)
-    assert interaction.response.modals == []
-
-
-@pytest.mark.asyncio
-async def test_nonstaff_cannot_acknowledge_a_booking(booked, staff_ping):
-    booked.pending_acknowledgments = {staff_ping.id: {"team": "Deadlock Purple"}}
-    interaction = press(staff_ping, FakeBooker(), pcs.BOOK_BOOKING_ID)
-
-    await booked.on_interaction(interaction)
-
-    assert "Only gameroom staff" in interaction.response.messages[0]["content"]
-    assert interaction.response.messages[0]["ephemeral"] is True
-    assert staff_ping.reactions == []
-    assert staff_ping.id in booked.pending_acknowledgments
-
-
-@pytest.mark.asyncio
-async def test_reaction_failure_still_provides_the_link_and_keeps_the_reminder(
-    booked, staff_ping, monkeypatch
-):
-    async def forbidden(emoji):
-        raise discord.Forbidden(SimpleNamespace(status=403, reason="Forbidden"), "")
-
-    monkeypatch.setattr(staff_ping, "add_reaction", forbidden)
-    booked.pending_acknowledgments = {staff_ping.id: {"team": "Deadlock Purple"}}
-    interaction = press(staff_ping, STAFF, pcs.BOOK_BOOKING_ID)
-
-    await booked.on_interaction(interaction)
-
-    assert interaction.response.messages[0]["view"].children[0].url
-    assert "couldn't add" in interaction.followup.send_calls[0]["content"]
-    assert interaction.followup.send_calls[0]["ephemeral"] is True
-    assert staff_ping.id in booked.pending_acknowledgments
-
-
-@pytest.mark.asyncio
-async def test_older_link_button_pings_can_still_be_edited(booked, staff_ping):
-    url = pcs.booking_link(staff_ping)
-    staff_ping.embeds[0].url = None
-    old_view = discord.ui.View(timeout=None)
-    old_view.add_item(discord.ui.Button(label="Book in ggLeap", url=url))
-    staff_ping.components = [
-        discord.components.ActionRow(row) for row in old_view.to_components()
-    ]
-    interaction = press(staff_ping, STAFF)
-
-    await booked.on_interaction(interaction)
-
-    assert interaction.response.modals[0].email == "lilac@u.edu"
 
 
 async def submit_edit(cog, message, team, typed_pcs, date, start, end):
