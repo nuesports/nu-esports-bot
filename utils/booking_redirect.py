@@ -33,6 +33,26 @@ def booking_redirect_url(message: discord.Message) -> str | None:
 
 
 def add_booking_routes(app: web.Application, bot: discord.Bot) -> None:
+    tasks: set[asyncio.Task[None]] = set()
+
+    async def acknowledge(message: discord.Message) -> None:
+        try:
+            async with asyncio.timeout(3):
+                await message.add_reaction("✅")
+        except discord.HTTPException, TimeoutError:
+            logger.warning(
+                "Could not acknowledge booking message %s", message.id, exc_info=True
+            )
+        else:
+            if cog := bot.get_cog("PCs"):
+                cog.pending_acknowledgments.pop(message.id, None)
+
+    async def finish_acknowledgments(app: web.Application) -> None:
+        if tasks:
+            await asyncio.gather(*tasks)
+
+    app.on_cleanup.append(finish_acknowledgments)
+
     async def booking(request: web.Request) -> web.Response:
         from cogs.pcs import GGLEAP_BOOKING_GRID_URL, booking_link
 
@@ -74,17 +94,10 @@ def add_booking_routes(app: web.Application, bot: discord.Bot) -> None:
                 content_type="text/html",
                 headers=headers,
             )
-        try:
-            async with asyncio.timeout(3):
-                await message.add_reaction("✅")
-        except discord.HTTPException, TimeoutError:
-            # Booking remains accessible even if Discord cannot add the reaction.
-            logger.warning(
-                "Could not acknowledge booking message %s", message_id, exc_info=True
-            )
-        else:
-            if cog := bot.get_cog("PCs"):
-                cog.pending_acknowledgments.pop(message_id, None)
+        # Keep a strong reference until completion, but never delay navigation.
+        task = asyncio.create_task(acknowledge(message))
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
         raise web.HTTPSeeOther(target, headers=headers)
 
     path = r"/booking/{channel:\d+}/{message:\d+}/{signature:[a-f0-9]{64}}"

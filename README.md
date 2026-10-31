@@ -122,7 +122,8 @@ After you have Postgres up and running, modify `secrets.yaml` (and/or `compose.y
 
 The **Book in ggLeap** button can add ✅ to its reservation message and open ggLeap
 with the same click. The browser automatically submits through the bot's HTTP
-server and redirects to ggLeap; there is no second Discord button or confirmation.
+server and redirects to ggLeap immediately, while the reaction runs in the
+background. There is no second Discord button, confirmation, or timer.
 The reaction acknowledges the click, not successful completion inside ggLeap.
 
 Set `BOOKING_REDIRECT_URL` to the public HTTPS base address of the bot's HTTP

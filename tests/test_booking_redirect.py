@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import urlsplit
@@ -28,10 +29,15 @@ async def test_booking_link_acknowledges_and_redirects_without_a_second_click(
         embeds=[discord.Embed(url=target)],
         add_reaction=AsyncMock(),
     )
-    if reaction_fails:
-        message.add_reaction.side_effect = discord.Forbidden(
-            SimpleNamespace(status=403, reason="Forbidden"), ""
-        )
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def react(emoji):
+        started.set()
+        await release.wait()
+        if reaction_fails:
+            raise discord.Forbidden(SimpleNamespace(status=403, reason="Forbidden"), "")
+
+    message.add_reaction.side_effect = react
     view = pcs.booking_view(target, message)
     message.components = [
         discord.components.ActionRow(row) for row in view.to_components()
@@ -56,9 +62,15 @@ async def test_booking_link_acknowledges_and_redirects_without_a_second_click(
         assert response.status == 200
         assert '<form method="post">' in await response.text()
         message.add_reaction.assert_not_awaited()
-        response = await client.post(path, allow_redirects=False)
+        async with asyncio.timeout(2):
+            response = await client.post(path, allow_redirects=False)
+            await started.wait()
         assert response.status == 303
         assert response.headers["Location"] == target
         message.add_reaction.assert_awaited_once_with("✅")
-        assert (message.id in pending) == reaction_fails
-        assert 789 in pending
+        assert (
+            message.id in pending
+        )  # Redirect arrived while Discord was still waiting.
+        release.set()
+    assert (message.id in pending) == reaction_fails
+    assert 789 in pending
