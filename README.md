@@ -118,34 +118,6 @@ Additionally, you will also need a Postgres database to connect to. There are mu
 
 After you have Postgres up and running, modify `secrets.yaml` (and/or `compose.yaml`) to point to it -- the defaults are set up for Docker Compose.
 
-## One-click booking acknowledgments
-
-The **Book in ggLeap** button can add ✅ to its reservation message and open ggLeap
-with the same click. The browser automatically submits through the bot's HTTP
-server and redirects to ggLeap immediately, while the reaction runs in the
-background. There is no second Discord button, confirmation, or timer.
-The reaction acknowledges the click, not successful completion inside ggLeap.
-
-Set `BOOKING_REDIRECT_URL` to the public HTTPS base address of the bot's HTTP
-server, and `BOOKING_REDIRECT_SECRET` to a long random secret in the host's `.env`.
-Keep the secret stable across deployments so posted links keep working. Compose
-passes both variables to the bot. When either is unset, buttons link directly to
-ggLeap without an automatic reaction.
-
-Route `/booking/*` on that HTTPS address to the existing bot HTTP server on port
-8001. If a reverse proxy runs on the Docker host, an override file can publish
-`127.0.0.1:8001:8001` for the bot service. The base compose file does not publish
-the HTTP port. The public address must be reachable from attendants' browsers.
-
-Links are signed for a specific Discord message. Anyone holding a link can
-acknowledge that message; there is no additional Discord login. Ordinary GET/HEAD
-previews do not add reactions. A JavaScript-enabled browser automatically posts,
-then redirects; if JavaScript is disabled, a direct ggLeap link remains available.
-Reaction failures preserve the reminder and still redirect to ggLeap.
-
-New reservation messages use this flow once configured. Saving **Edit booking**
-upgrades an existing message's button.
-
 ## Database
 
 The schema lives in `postgres/migrations` as numbered `.sql` files. The bot applies any it
