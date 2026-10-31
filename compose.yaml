@@ -2,6 +2,8 @@ services:
   bot:
     environment:
       PYTHONUNBUFFERED: 1
+      BOOKING_REDIRECT_URL: ${BOOKING_REDIRECT_URL:-}
+      BOOKING_REDIRECT_SECRET: ${BOOKING_REDIRECT_SECRET:-}
     build:
       context: .
       args:

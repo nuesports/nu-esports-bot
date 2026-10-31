@@ -13,6 +13,7 @@ from discord.ext import commands, tasks
 from PIL import Image, ImageDraw, ImageFont
 
 from utils import config, db
+from utils.booking_redirect import booking_redirect_url
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
 BOT_CHANNEL_ID = 741898302055907388
@@ -1963,10 +1964,11 @@ def booking_link(message: discord.Message | None) -> str:
     raise ValueError("No ggLeap booking link on this message")
 
 
-def booking_view(url: str) -> discord.ui.View:
+def booking_view(url: str, message: discord.Message | None = None) -> discord.ui.View:
     """Staff ping buttons. The link needs no handler and the edit is on_interaction's."""
     view = discord.ui.View(timeout=None)
-    view.add_item(discord.ui.Button(label="Book in ggLeap", url=url))
+    link = (booking_redirect_url(message) if message else None) or url
+    view.add_item(discord.ui.Button(label="Book in ggLeap", url=link))
     view.add_item(
         discord.ui.Button(
             label="Edit booking",
@@ -2401,11 +2403,11 @@ class ReservationTimeModal(discord.ui.Modal):
                         inline=False,
                     )
 
-                book_view = booking_view(
-                    ggleap_booking_url(
-                        self.team, allocated_pcs, staff_start, staff_end, manager_email
-                    )
+                url = ggleap_booking_url(
+                    self.team, allocated_pcs, staff_start, staff_end, manager_email
                 )
+                embed.url = url
+                book_view = booking_view(url)
 
                 # Ping the next staff member in rotation
                 if staff_list():
@@ -2427,14 +2429,16 @@ class ReservationTimeModal(discord.ui.Modal):
                         "team": self.team,
                     }
                 elif staff_role:
-                    await reservations_channel.send(
+                    msg = await reservations_channel.send(
                         f"⚠️ {staff_role.mention}",
                         embed=embed,
                         view=book_view,
                         allowed_mentions=mentions,
                     )
                 else:
-                    await reservations_channel.send(embed=embed, view=book_view)
+                    msg = await reservations_channel.send(embed=embed, view=book_view)
+                if booking_redirect_url(msg):
+                    await msg.edit(view=booking_view(url, msg))
         except discord.HTTPException as e:
             print(f"Failed to send notification to nexus-reservations: {e}")
 
@@ -2696,6 +2700,7 @@ class EditBookingModal(discord.ui.Modal):
             return
 
         embed = interaction.message.embeds[0].copy()
+        embed.url = url
         # the skip is only on the ping, so carry it over until a back room PC is added
         listed = next((f.value for f in embed.fields if f.name == "PCs"), "")
         skipped = BACK_ROOM_SKIPPED_LINE in listed.splitlines()
@@ -2707,7 +2712,9 @@ class EditBookingModal(discord.ui.Modal):
             "✏️ Edited",
             f"by {interaction.user.mention} <t:{int(datetime.now(UTC).timestamp())}:R>",
         )
-        await interaction.response.edit_message(embed=embed, view=booking_view(url))
+        await interaction.response.edit_message(
+            embed=embed, view=booking_view(url, interaction.message)
+        )
 
 
 class ExternalReservationTimeModal(discord.ui.Modal):

@@ -14,6 +14,7 @@ from aiohttp import web
 from discord.ext import commands
 
 from utils import config, db
+from utils.booking_redirect import add_booking_routes
 
 MASKED_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 LEADING_HEADING = re.compile(r"^#{1,3}\s*")
@@ -234,6 +235,7 @@ def create_app(backlog: GithubBacklog) -> web.Application:
 
     app = web.Application()
     app.router.add_post("/github/webhook", webhook_handler)
+    add_booking_routes(app, backlog.bot)
     return app
 
 
