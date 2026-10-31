@@ -1022,8 +1022,9 @@ async def test_staff_get_a_book_in_ggleap_button(booked, modal, monkeypatch):
 
     [button, edit] = channel.sent[0]["view"].children
     assert button.label == "Book in ggLeap"
-    assert button.custom_id == pcs.BOOK_BOOKING_ID
-    _, payload = decode_booking_url(channel.sent[0]["embed"].url)
+    assert button.style == discord.ButtonStyle.link
+    assert button.custom_id is None
+    _, payload = decode_booking_url(button.url)
     assert payload["pcs"] == [1, 2]
     assert payload["email"] == "lilac@u.edu"
     assert edit.custom_id == pcs.EDIT_BOOKING_ID
@@ -1041,15 +1042,10 @@ class FakeStaffPing(FakeMessage):
 
     def __init__(self, embed, view):
         super().__init__()
-        self.id = 4321
-        self.reactions = []
         self.embeds = [embed]
         self.components = [
             discord.components.ActionRow(row) for row in view.to_components()
         ]
-
-    async def add_reaction(self, emoji):
-        self.reactions.append(emoji)
 
 
 @pytest_asyncio.fixture
@@ -1071,20 +1067,6 @@ def press(message, user, custom_id=pcs.EDIT_BOOKING_ID):
     interaction.data = {"custom_id": custom_id}
     interaction.message = message
     return interaction
-
-
-@pytest.mark.asyncio
-async def test_book_button_reacts_and_acknowledges_the_staff_ping(booked, staff_ping):
-    booked.pending_acknowledgments = {staff_ping.id: {"team": "Deadlock Purple"}}
-    interaction = press(staff_ping, STAFF, pcs.BOOK_BOOKING_ID)
-
-    await booked.on_interaction(interaction)
-
-    assert staff_ping.reactions == ["✅"]
-    assert staff_ping.id not in booked.pending_acknowledgments
-    response = interaction.response.messages[0]
-    assert response["ephemeral"] is True
-    assert response["view"].children[0].url == pcs.booking_link(staff_ping)
 
 
 async def submit_edit(cog, message, team, typed_pcs, date, start, end):
@@ -1145,8 +1127,7 @@ async def test_an_edit_rebuilds_the_link_and_the_embed(booked, staff_ping):
     edited = interaction.response.edits[0]
     [book, edit] = edited["view"].children
     start, end = booked.parse_time_range("2026-09-30 5PM-7:30PM")
-    assert book.custom_id == pcs.BOOK_BOOKING_ID
-    assert pcs.decode_ggleap_booking_url(edited["embed"].url) == (
+    assert pcs.decode_ggleap_booking_url(book.url) == (
         "Valorant White",
         [0, 3, 14],
         start,
@@ -1177,7 +1158,7 @@ async def test_an_edit_rounds_its_times_to_quarter_hours(booked, staff_ping):
     edited = interaction.response.edits[0]
     time = next(f for f in edited["embed"].fields if f.name == "Time")
     assert time.value == "07:45 PM - 09:15 PM CST"
-    start, end = pcs.decode_ggleap_booking_url(edited["embed"].url)[2:4]
+    start, end = pcs.decode_ggleap_booking_url(edited["view"].children[0].url)[2:4]
     assert (start.strftime("%H:%M"), end.strftime("%H:%M")) == ("19:45", "21:15")
 
 
@@ -1329,7 +1310,8 @@ async def test_staff_get_quarter_hours_while_the_booking_keeps_its_minutes(
     posted = channel.sent[0]
     time = next(f for f in posted["embed"].fields if f.name == "Time")
     assert time.value == "12:15 PM - 01:45 PM CST"
-    _, payload = decode_booking_url(posted["embed"].url)
+    button, _edit = posted["view"].children
+    _, payload = decode_booking_url(button.url)
     assert (payload["start"], payload["duration"]) == ("2026-09-28T12:15:00", 90)
 
 
