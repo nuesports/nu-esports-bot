@@ -3,7 +3,7 @@ import base64
 import io
 import json
 import os
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
@@ -46,6 +46,24 @@ BOOKING_REMINDER_LEAD = timedelta(hours=4)
 # reservations.team is a VARCHAR(50)
 TEAM_NAME_LIMIT = 50
 BOOKING_REMINDER_GIF = "https://klipy.com/gifs/cat-meme-112"
+# answered by on_interaction, with the slot and week in the custom_id after a colon
+WEEKLY_SKIP_ID = "pcs-weekly-skip"
+# confirmed as soon as a booking stops being short notice, with a day's warning first
+WEEKLY_CONFIRM_LEAD = timedelta(days=ADVANCE_BOOKING_DAYS)
+WEEKLY_HEADS_UP_LEAD = WEEKLY_CONFIRM_LEAD + timedelta(days=1)
+WEEKDAYS = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+]
+WEEKLY_COLUMNS = (
+    "id, owner_id, manager, team, num_pcs, res_type, include_back_room, "
+    "weekday, start_time, end_time, first_date"
+)
 
 
 def staff_list() -> list[int]:
@@ -138,6 +156,85 @@ async def reservation_autocomplete(
     return choices
 
 
+class WeeklySlot(NamedTuple):
+    """A row of weekly_reservations, in WEEKLY_COLUMNS order."""
+
+    id: int
+    owner_id: int
+    manager: str
+    team: str
+    num_pcs: int
+    res_type: str
+    include_back_room: bool
+    weekday: int
+    start_time: time
+    end_time: time
+    first_date: date
+
+
+def weekly_datetime(day: date, clock: time) -> datetime:
+    """Wall clock Central, so a slot stays at 7pm across a DST change."""
+    return datetime.combine(day, clock, tzinfo=CENTRAL_TZ)
+
+
+def next_weekly_date(slot: WeeklySlot, now: datetime) -> date:
+    """The slot's next week that hasn't started yet."""
+    today = now.date()
+    day = today + timedelta(days=(slot.weekday - today.weekday()) % 7)
+    if weekly_datetime(day, slot.start_time) <= now:
+        day += timedelta(days=7)
+    return max(day, slot.first_date)
+
+
+def first_weekly_date(weekday: int, clock: time, now: datetime) -> date:
+    """The first week that can still get its full heads up, so none are sprung."""
+    today = now.date()
+    day = today + timedelta(days=(weekday - today.weekday()) % 7)
+    while weekly_datetime(day, clock) - WEEKLY_HEADS_UP_LEAD <= now:
+        day += timedelta(days=7)
+    return day
+
+
+def describe_weekly(slot: WeeklySlot, day: date) -> str:
+    start = weekly_datetime(day, slot.start_time)
+    end = weekly_datetime(day, slot.end_time)
+    return (
+        f"{slot.team}, {start.strftime('%A, %B %d')} "
+        f"({start.strftime('%I:%M %p')} - {end.strftime('%I:%M %p')} CST)"
+    )
+
+
+def weekly_skip_view(weekly_id: int, day: date) -> discord.ui.View:
+    view = discord.ui.View(timeout=None)
+    view.add_item(
+        discord.ui.Button(
+            label="Skip this week",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"{WEEKLY_SKIP_ID}:{weekly_id}:{day.isoformat()}",
+        )
+    )
+    return view
+
+
+async def weekly_reservation_autocomplete(
+    ctx: discord.AutocompleteContext,
+) -> list[discord.OptionChoice]:
+    """Your own weekly reservations. Bot devs see everyone's."""
+    user = ctx.interaction.user
+    sql = f"SELECT {WEEKLY_COLUMNS} FROM weekly_reservations"
+    if config.is_bot_dev(user):
+        rows = await db.fetch_all(sql)
+    else:
+        rows = await db.fetch_all(f"{sql} WHERE owner_id = %s", (user.id,))
+    choices = []
+    for row in rows:
+        slot = WeeklySlot(*row)
+        clock = slot.start_time.strftime("%I:%M %p")
+        name = f"{slot.team} - {WEEKDAYS[slot.weekday]}s @ {clock}"
+        choices.append(discord.OptionChoice(name=name, value=str(slot.id)))
+    return choices
+
+
 class PCs(commands.Cog):
     def __init__(self, bot: discord.Bot) -> None:
         self.bot: discord.Bot = bot
@@ -151,6 +248,7 @@ class PCs(commands.Cog):
         # Start background task
         self.check_pending_acknowledgments.start()
         self.remind_unbooked_reservations.start()
+        self.run_weekly_reservations.start()
 
     async def next_staff_index(self) -> int:
         """Return the staff member whose turn it is, and advance the rotation.
@@ -187,8 +285,12 @@ class PCs(commands.Cog):
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction) -> None:
-        """Open the edit modal from a staff ping, prefilled from its Book link."""
-        if (interaction.data or {}).get("custom_id") != EDIT_BOOKING_ID:
+        """Answer the buttons that have to outlive a restart."""
+        custom_id = (interaction.data or {}).get("custom_id") or ""
+        if custom_id.startswith(f"{WEEKLY_SKIP_ID}:"):
+            await self.skip_weekly_run(interaction)
+            return
+        if custom_id != EDIT_BOOKING_ID:
             return
         if not config.is_gameroom_staff(interaction.user):
             await interaction.response.send_message(
@@ -344,6 +446,554 @@ class PCs(commands.Cog):
             WHERE message_id = %s
         """
         await db.perform_one(sql, (team, start_time, start_time, message_id))
+
+    async def post_staff_ping(
+        self,
+        team: str,
+        res_type: str,
+        allocated_pcs: list[int],
+        start_time: datetime,
+        end_time: datetime,
+        manager: str,
+        warnings: list[str],
+        is_prime: bool,
+        reservation_id: int | None,
+        is_test: bool = False,
+        back_room_skipped: bool = False,
+        weekly: bool = False,
+    ) -> None:
+        """Tell the next staff member in rotation there's a booking to make."""
+        # staff book ggLeap in quarter hours, everything else keeps the exact request
+        staff_start, staff_end = round_slot(start_time, end_time)
+
+        # Send notification to nexus-reservations channel
+        try:
+            # Get the reservations channel from config
+            channel_id = config.config["reservations"]["channel"]
+            reservations_channel = self.bot.get_channel(channel_id)
+
+            if reservations_channel:
+                fields = booking_fields(
+                    team,
+                    allocated_pcs,
+                    staff_start,
+                    staff_end,
+                    back_room_skipped,
+                )
+                embed = discord.Embed(
+                    title="🎮 New PC Reservation",
+                    color=discord.Color.from_rgb(78, 42, 132),
+                    timestamp=datetime.now(UTC),
+                )
+                embed.add_field(name="Team", value=fields["Team"], inline=False)
+                embed.add_field(name="Res Type", value=res_type, inline=False)
+                manager_email = config.gamehead_email(manager)
+                embed.add_field(
+                    name="Manager Email",
+                    value=manager_email or "Email not found",
+                    inline=False,
+                )
+                embed.add_field(name="Manager", value=manager, inline=False)
+                embed.add_field(name="Date", value=fields["Date"], inline=False)
+                embed.add_field(name="Time", value=fields["Time"], inline=True)
+                embed.add_field(name="PCs", value=fields["PCs"], inline=False)
+
+                if is_prime:
+                    embed.add_field(
+                        name="Status", value="✨ Prime Time Reservation", inline=False
+                    )
+
+                if is_test:
+                    embed.add_field(
+                        name="Status",
+                        value="Test Reservation (Not saved to database)",
+                        inline=False,
+                    )
+
+                # mentions only notify from the content, not from inside an embed
+                staff_role = None
+                if warnings and (role_id := config.staff_role_id()):
+                    staff_role = reservations_channel.guild.get_role(role_id)
+                mentions = discord.AllowedMentions(
+                    everyone=False,
+                    users=True,
+                    roles=[staff_role] if staff_role else False,
+                )
+
+                if weekly:
+                    embed.add_field(
+                        name="Status", value="🔁 Weekly auto reservation", inline=False
+                    )
+
+                if warnings:
+                    embed.add_field(
+                        name="⚠️ Notes",
+                        value="\n".join(warnings),
+                        inline=False,
+                    )
+
+                book_view = booking_view(
+                    ggleap_booking_url(
+                        team, allocated_pcs, staff_start, staff_end, manager_email
+                    )
+                )
+
+                # Ping the next staff member in rotation
+                if staff_list():
+                    staff_id = staff_list()[await self.next_staff_index()]
+                    content = f"<@{staff_id}>"
+                    if staff_role:
+                        content += f" // ⚠️ {staff_role.mention}"
+                    msg = await reservations_channel.send(
+                        content,
+                        embed=embed,
+                        view=book_view,
+                        allowed_mentions=mentions,
+                    )
+                    # Track for acknowledgment
+                    self.pending_acknowledgments[msg.id] = {
+                        "staff_id": staff_id,
+                        "channel_id": reservations_channel.id,
+                        "sent_at": datetime.now(CENTRAL_TZ),
+                        "team": team,
+                    }
+                    # a test booking has nothing to make, so nothing to remind about
+                    if reservation_id is not None:
+                        await self.save_booking_reminder(
+                            msg.id,
+                            reservations_channel.id,
+                            staff_id,
+                            reservation_id,
+                            team,
+                            staff_start,
+                        )
+                elif staff_role:
+                    await reservations_channel.send(
+                        f"⚠️ {staff_role.mention}",
+                        embed=embed,
+                        view=book_view,
+                        allowed_mentions=mentions,
+                    )
+                else:
+                    await reservations_channel.send(embed=embed, view=book_view)
+        except discord.HTTPException as e:
+            print(f"Failed to send notification to nexus-reservations: {e}")
+
+    @tasks.loop(minutes=5)
+    async def run_weekly_reservations(self) -> None:
+        """Send each week's heads up, then confirm whatever nobody skipped."""
+        # bot.py opens the pool in its own on_ready, which may not have run yet
+        if db.pool.closed:
+            return
+        # a db error escaping a tasks.loop ends it for good, and nobody would notice
+        try:
+            now = datetime.now(CENTRAL_TZ)
+            for slot in await self.weekly_slots():
+                try:
+                    await self.process_weekly_slot(slot, now)
+                except discord.HTTPException as e:
+                    print(f"Failed to process weekly reservation {slot.id}: {e}")
+        except psycopg.Error as e:
+            print(f"Weekly reservation check failed: {e}")
+
+    @run_weekly_reservations.before_loop
+    async def before_run_weekly_reservations(self) -> None:
+        await self.bot.wait_until_ready()
+
+    async def weekly_slots(self) -> list[WeeklySlot]:
+        rows = await db.fetch_all(f"SELECT {WEEKLY_COLUMNS} FROM weekly_reservations")
+        return [WeeklySlot(*row) for row in rows]
+
+    async def process_weekly_slot(self, slot: WeeklySlot, now: datetime) -> None:
+        """Move this week's run along, if it's due for anything."""
+        run_date = next_weekly_date(slot, now)
+        start = weekly_datetime(run_date, slot.start_time)
+        run = await db.fetch_one(
+            """
+            SELECT status, confirm_at FROM weekly_reservation_runs
+            WHERE weekly_id = %s AND run_date = %s
+            """,
+            (slot.id, run_date),
+        )
+
+        if run is None:
+            if now < start - WEEKLY_HEADS_UP_LEAD:
+                return
+            # the bot was down for the heads up, and it's too late to give a day's notice
+            if start - now < timedelta(days=1):
+                await self.record_weekly_run(slot, run_date, "missed", None)
+                await self.send_weekly_dm(
+                    slot,
+                    f"I missed the heads up for your auto res for "
+                    f"**{describe_weekly(slot, run_date)}**, so it won't be booked "
+                    "this week. Use `/reserve` if you still need it.",
+                )
+                return
+            confirm_at = max(start - WEEKLY_CONFIRM_LEAD, now + timedelta(days=1))
+            await self.record_weekly_run(slot, run_date, "notified", confirm_at)
+            await self.send_weekly_dm(
+                slot,
+                f"Heads up, auto res for **{describe_weekly(slot, run_date)}** is "
+                "being confirmed tomorrow.",
+                view=weekly_skip_view(slot.id, run_date),
+            )
+            return
+
+        status, confirm_at = run
+        if status == "notified" and now >= confirm_at:
+            await self.confirm_weekly_run(slot, run_date)
+
+    async def record_weekly_run(
+        self,
+        slot: WeeklySlot,
+        run_date: date,
+        status: str,
+        confirm_at: datetime | None,
+    ) -> None:
+        await db.perform_one(
+            """
+            INSERT INTO weekly_reservation_runs (weekly_id, run_date, status, confirm_at)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (slot.id, run_date, status, confirm_at),
+        )
+
+    async def send_weekly_dm(
+        self, slot: WeeklySlot, content: str, view: discord.ui.View | None = None
+    ) -> None:
+        """DM whoever owns the slot, or tag them in the staff channel if DMs are shut."""
+        kwargs = {"view": view} if view else {}
+        try:
+            user = self.bot.get_user(slot.owner_id) or await self.bot.fetch_user(
+                slot.owner_id
+            )
+            await user.send(content, **kwargs)
+        except discord.HTTPException:
+            channel = self.bot.get_channel(config.config["reservations"]["channel"])
+            if channel:
+                await channel.send(f"<@{slot.owner_id}> {content}", **kwargs)
+
+    async def confirm_weekly_run(self, slot: WeeklySlot, run_date: date) -> None:
+        """Book this week's slot the way /reserve would, unless a skip got there first."""
+        claimed = await db.perform_one(
+            """
+            UPDATE weekly_reservation_runs SET status = 'booking'
+            WHERE weekly_id = %s AND run_date = %s AND status = 'notified'
+            """,
+            (slot.id, run_date),
+        )
+        if not claimed:
+            return
+
+        start = weekly_datetime(run_date, slot.start_time)
+        end = weekly_datetime(run_date, slot.end_time)
+
+        has_conflict, conflicting_team, _ = await self.check_conflicts(
+            start, end, slot.num_pcs, slot.include_back_room
+        )
+        allocated = (
+            []
+            if has_conflict
+            else await self.allocate_pcs(
+                start, end, slot.num_pcs, slot.include_back_room
+            )
+        )
+        if not allocated:
+            reason = (
+                f"**{conflicting_team}** has that slot"
+                if has_conflict
+                else f"there aren't {slot.num_pcs} PCs free"
+            )
+            await db.perform_one(
+                """
+                UPDATE weekly_reservation_runs SET status = 'failed'
+                WHERE weekly_id = %s AND run_date = %s
+                """,
+                (slot.id, run_date),
+            )
+            await self.send_weekly_dm(
+                slot,
+                f"Couldn't confirm your auto res for "
+                f"**{describe_weekly(slot, run_date)}**: {reason}. Use `/reserve` if "
+                "you still need it this week.",
+            )
+            return
+
+        warnings = []
+        if not self.is_within_open_hours(start, end):
+            warnings.append(WARN_OUTSIDE_HOURS)
+        if not self.validate_advance_booking(start):
+            warnings.append(WARN_SHORT_NOTICE)
+        if slot.num_pcs > LARGE_BOOKING_PCS:
+            warnings.append(WARN_LARGE_BOOKING)
+        is_prime = self.is_prime_time(start, end, allocated)
+        if is_prime:
+            has_quota, used = await self.check_prime_time_quota(slot.team, start)
+            if not has_quota:
+                warnings.append(
+                    warn_prime_quota(used, self.team_prime_time_quota[slot.team])
+                )
+            if end > start + timedelta(hours=2):
+                warnings.append(WARN_LONG_PRIME)
+
+        reservation_id = await self.save_reservation(
+            slot.team, allocated, start, end, slot.manager, is_prime
+        )
+        await db.perform_one(
+            """
+            UPDATE weekly_reservation_runs SET status = 'booked', reservation_id = %s
+            WHERE weekly_id = %s AND run_date = %s
+            """,
+            (reservation_id, slot.id, run_date),
+        )
+        await self.post_staff_ping(
+            slot.team,
+            slot.res_type,
+            allocated,
+            start,
+            end,
+            slot.manager,
+            warnings,
+            is_prime,
+            reservation_id,
+            back_room_skipped=not slot.include_back_room,
+            weekly=True,
+        )
+
+    async def skip_weekly_run(self, interaction: discord.Interaction) -> None:
+        """Answer the skip button, which outlives restarts by living in its custom_id."""
+        _, weekly_id, run_date = interaction.data["custom_id"].split(":")
+        run_day = date.fromisoformat(run_date)
+        row = await db.fetch_one(
+            f"SELECT {WEEKLY_COLUMNS} FROM weekly_reservations WHERE id = %s",
+            (int(weekly_id),),
+        )
+        if row is None:
+            await interaction.response.send_message(
+                "That weekly reservation has been cancelled.", ephemeral=True
+            )
+            return
+        slot = WeeklySlot(*row)
+        if interaction.user.id != slot.owner_id and not config.is_bot_dev(
+            interaction.user
+        ):
+            await interaction.response.send_message(
+                "❌ Only whoever set up this weekly reservation can skip it.",
+                ephemeral=True,
+            )
+            return
+
+        skipped = await db.perform_one(
+            """
+            UPDATE weekly_reservation_runs SET status = 'skipped'
+            WHERE weekly_id = %s AND run_date = %s AND status = 'notified'
+            """,
+            (slot.id, run_day),
+        )
+        if not skipped:
+            await interaction.response.send_message(
+                "Too late to skip this one. If it's already confirmed, use "
+                "`/cancel-reservation`.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.edit_message(
+            content=f"Skipped **{describe_weekly(slot, run_day)}**. It's back on next "
+            "week.",
+            view=None,
+        )
+
+    @commands.slash_command(
+        name="reserve-weekly",
+        description="Reserve the same slot every week",
+        guild_ids=[GUILD_ID],
+    )
+    async def reserve_weekly(
+        self,
+        ctx: discord.ApplicationContext,
+        team: str = discord.Option(
+            name="team",
+            description="Your team",
+            choices=RESERVABLE_TEAMS,
+            required=True,
+        ),
+        num_pcs: int = discord.Option(
+            int,
+            name="num_pcs",
+            description=f"Number of PCs to reserve (1-{MAX_RESERVABLE_PCS})",
+            min_value=1,
+            max_value=MAX_RESERVABLE_PCS,
+            required=True,
+        ),
+        res_type: str = discord.Option(
+            name="type",
+            description="Scrim or match",
+            choices=["Scrim", "Match"],
+            required=True,
+        ),
+        day: str = discord.Option(
+            name="day",
+            description="Day of the week",
+            choices=WEEKDAYS,
+            required=True,
+        ),
+        start: str = discord.Option(
+            name="start",
+            description="Start time, like 7, 7:30, or 7:30AM (assumes PM)",
+            required=True,
+        ),
+        end: str = discord.Option(
+            name="end",
+            description="End time, like 9, 9:30, or 9:30PM (assumes PM)",
+            required=True,
+        ),
+        skip_backroom: str = discord.Option(
+            str,
+            name="skip_backroom",
+            description="Skip the back room (14, 15, stream)",
+            choices=["yes", "no"],
+            default="no",
+        ),
+    ) -> None:
+        if not config.can_reserve(ctx.author):
+            await ctx.respond(
+                "❌ You don't have permission to reserve PCs. Contact a team manager.",
+                ephemeral=True,
+            )
+            return
+
+        back_room = skip_backroom == "no"
+        cap = len(reservable_pcs(back_room))
+        if num_pcs > cap:
+            await ctx.respond(
+                f"❌ Only {cap} PCs can be reserved without the back room.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            start_clock = self.parse_clock(start).time()
+            end_clock = self.parse_clock(end).time()
+        except ValueError as e:
+            await ctx.respond(f"❌ {e!s}", ephemeral=True)
+            return
+        if start_clock >= end_clock:
+            await ctx.respond(
+                "❌ The reservation has to end after it starts.", ephemeral=True
+            )
+            return
+        if start_clock.hour < NORRIS_OPEN_HOUR:
+            await ctx.respond(
+                f"❌ Norris is closed between 12:00 AM and {NORRIS_OPEN_HOUR}:00 AM. "
+                "Pick a later start time.",
+                ephemeral=True,
+            )
+            return
+
+        await ctx.defer(ephemeral=True)
+
+        weekday = WEEKDAYS.index(day)
+        taken = await db.fetch_one(
+            """
+            SELECT 1 FROM weekly_reservations
+            WHERE team = %s AND weekday = %s AND start_time = %s
+            """,
+            (team, weekday, start_clock),
+        )
+        if taken:
+            await ctx.followup.send(
+                f"❌ **{team}** already has a weekly reservation at that time.",
+                ephemeral=True,
+            )
+            return
+
+        user = ctx.author
+        manager = (
+            f"{user.name}#{user.discriminator}"
+            if user.discriminator != "0"
+            else user.name
+        )
+        first_date = first_weekly_date(weekday, start_clock, datetime.now(CENTRAL_TZ))
+        await db.perform_one(
+            """
+            INSERT INTO weekly_reservations (
+                owner_id, manager, team, num_pcs, res_type, include_back_room,
+                weekday, start_time, end_time, first_date
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                user.id,
+                manager,
+                team,
+                num_pcs,
+                res_type,
+                back_room,
+                weekday,
+                start_clock,
+                end_clock,
+                first_date,
+            ),
+        )
+        first_start = weekly_datetime(first_date, start_clock)
+        first_end = weekly_datetime(first_date, end_clock)
+        await ctx.followup.send(
+            f"🔁 **{team}** is on every {day}, "
+            f"{first_start.strftime('%I:%M %p')} - {first_end.strftime('%I:%M %p')} "
+            "CST.\n"
+            f"First one: {first_start.strftime('%A, %B %d')}. You'll get a reminder in "
+            f"DMs {WEEKLY_HEADS_UP_LEAD.days} days before each reservation.",
+            ephemeral=True,
+        )
+
+    @commands.slash_command(
+        name="cancel-weekly-reservation",
+        description="Stop a weekly reservation",
+        guild_ids=[GUILD_ID],
+    )
+    async def cancel_weekly_reservation(
+        self,
+        ctx: discord.ApplicationContext,
+        reservation: str = discord.Option(
+            name="reservation",
+            description="Select a weekly reservation to stop",
+            autocomplete=weekly_reservation_autocomplete,
+            required=True,
+        ),
+    ) -> None:
+        await ctx.defer(ephemeral=True)
+        try:
+            weekly_id = int(reservation)
+        except ValueError:
+            await ctx.followup.send(
+                "Invalid selection. Please select from the dropdown.", ephemeral=True
+            )
+            return
+
+        row = await db.fetch_one(
+            f"SELECT {WEEKLY_COLUMNS} FROM weekly_reservations WHERE id = %s",
+            (weekly_id,),
+        )
+        if row is None:
+            await ctx.followup.send(
+                "That weekly reservation is already cancelled.", ephemeral=True
+            )
+            return
+        slot = WeeklySlot(*row)
+        if ctx.author.id != slot.owner_id and not config.is_bot_dev(ctx.author):
+            await ctx.followup.send(
+                "You can only cancel your own weekly reservations.", ephemeral=True
+            )
+            return
+
+        await db.perform_one(
+            "DELETE FROM weekly_reservations WHERE id = %s", (weekly_id,)
+        )
+        await ctx.followup.send(
+            f"Stopped **{slot.team}** on {WEEKDAYS[slot.weekday]}s. Anything already "
+            "confirmed stays booked, use `/cancel-reservation` for those.",
+            ephemeral=True,
+        )
 
     @staticmethod
     def format_pc(pc: int) -> str:
@@ -2363,9 +3013,6 @@ class ReservationTimeModal(discord.ui.Modal):
                 self.team, allocated_pcs, start_time, end_time, manager, is_prime
             )
 
-        # staff book ggLeap in quarter hours, everything else keeps the exact request
-        staff_start, staff_end = round_slot(start_time, end_time)
-
         # Format PC list for display
         pc_list = ", ".join(
             PCs.format_pc(pc) for pc in sorted(allocated_pcs, key=lambda x: (x == 0, x))
@@ -2395,113 +3042,19 @@ class ReservationTimeModal(discord.ui.Modal):
             ephemeral=True,
         )
 
-        # Send notification to nexus-reservations channel
-        try:
-            # Get the reservations channel from config
-            channel_id = config.config["reservations"]["channel"]
-            reservations_channel = self.cog.bot.get_channel(channel_id)
-
-            if reservations_channel:
-                fields = booking_fields(
-                    self.team,
-                    allocated_pcs,
-                    staff_start,
-                    staff_end,
-                    not self.include_back_room,
-                )
-                embed = discord.Embed(
-                    title="🎮 New PC Reservation",
-                    color=discord.Color.from_rgb(78, 42, 132),
-                    timestamp=datetime.now(UTC),
-                )
-                embed.add_field(name="Team", value=fields["Team"], inline=False)
-                embed.add_field(name="Res Type", value=self.res_type, inline=False)
-                manager_email = config.gamehead_email(manager)
-                embed.add_field(
-                    name="Manager Email",
-                    value=manager_email or "Email not found",
-                    inline=False,
-                )
-                embed.add_field(name="Manager", value=manager, inline=False)
-                embed.add_field(name="Date", value=fields["Date"], inline=False)
-                embed.add_field(name="Time", value=fields["Time"], inline=True)
-                embed.add_field(name="PCs", value=fields["PCs"], inline=False)
-
-                if is_prime:
-                    embed.add_field(
-                        name="Status", value="✨ Prime Time Reservation", inline=False
-                    )
-
-                if self.is_test:
-                    embed.add_field(
-                        name="Status",
-                        value="Test Reservation (Not saved to database)",
-                        inline=False,
-                    )
-
-                # mentions only notify from the content, not from inside an embed
-                staff_role = None
-                if warnings and (role_id := config.staff_role_id()):
-                    staff_role = reservations_channel.guild.get_role(role_id)
-                mentions = discord.AllowedMentions(
-                    everyone=False,
-                    users=True,
-                    roles=[staff_role] if staff_role else False,
-                )
-
-                if warnings:
-                    embed.add_field(
-                        name="⚠️ Notes",
-                        value="\n".join(warnings),
-                        inline=False,
-                    )
-
-                book_view = booking_view(
-                    ggleap_booking_url(
-                        self.team, allocated_pcs, staff_start, staff_end, manager_email
-                    )
-                )
-
-                # Ping the next staff member in rotation
-                if staff_list():
-                    staff_id = staff_list()[await self.cog.next_staff_index()]
-                    content = f"<@{staff_id}>"
-                    if staff_role:
-                        content += f" // ⚠️ {staff_role.mention}"
-                    msg = await reservations_channel.send(
-                        content,
-                        embed=embed,
-                        view=book_view,
-                        allowed_mentions=mentions,
-                    )
-                    # Track for acknowledgment
-                    self.cog.pending_acknowledgments[msg.id] = {
-                        "staff_id": staff_id,
-                        "channel_id": reservations_channel.id,
-                        "sent_at": datetime.now(CENTRAL_TZ),
-                        "team": self.team,
-                    }
-                    # a test booking has nothing to make, so nothing to remind about
-                    if reservation_id is not None:
-                        await self.cog.save_booking_reminder(
-                            msg.id,
-                            reservations_channel.id,
-                            staff_id,
-                            reservation_id,
-                            self.team,
-                            staff_start,
-                        )
-                elif staff_role:
-                    await reservations_channel.send(
-                        f"⚠️ {staff_role.mention}",
-                        embed=embed,
-                        view=book_view,
-                        allowed_mentions=mentions,
-                    )
-                else:
-                    await reservations_channel.send(embed=embed, view=book_view)
-        except discord.HTTPException as e:
-            print(f"Failed to send notification to nexus-reservations: {e}")
+        await self.cog.post_staff_ping(
+            self.team,
+            self.res_type,
+            allocated_pcs,
+            start_time,
+            end_time,
+            manager,
+            warnings,
+            is_prime,
+            reservation_id,
+            is_test=self.is_test,
+            back_room_skipped=not self.include_back_room,
+        )
 
 
 class BookingWarningsView(discord.ui.View):
