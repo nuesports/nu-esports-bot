@@ -34,6 +34,11 @@ class FakePing(FakeMessage):
 class FakeChannel:
     def __init__(self, ping):
         self.ping = ping
+        self.sent = []
+
+    async def send(self, content=None, **kwargs):
+        self.sent.append(content)
+        return FakeMessage()
 
     async def fetch_message(self, message_id):
         if self.ping is None:
@@ -45,7 +50,7 @@ def cog_with(ping):
     cog = pcs.PCs.__new__(pcs.PCs)
     cog.pending_acknowledgments = {MESSAGE_ID: {"team": TEAM}}
     channel = FakeChannel(ping)
-    cog.bot = SimpleNamespace(get_channel=lambda channel_id: channel)
+    cog.bot = SimpleNamespace(get_channel=lambda channel_id: channel, channel=channel)
     return cog
 
 
@@ -154,6 +159,9 @@ async def test_the_loop_reminds_once_and_names_who_still_has_to_book(clean_pings
 
     [reply] = ping.reply_calls
     assert reply["content"].startswith(f"<@{STAFF_ID}> **{TEAM}** starts <t:")
+    assert reply["content"].endswith(":R> but hasn't been reserved yet.")
+    # alone in its message, or discord shows the link above the gif
+    assert cog.bot.channel.sent == [pcs.BOOKING_REMINDER_GIF]
     assert reply["mention_author"] is False
     assert (await ping_row())[2] is True
     # the 4 hour reminder replaces the 24 hour one, rather than stacking on it
@@ -169,7 +177,25 @@ async def test_a_reacted_ping_is_left_alone(clean_pings):
     await cog.remind_unbooked_reservations()
 
     assert ping.reply_calls == []
+    assert cog.bot.channel.sent == []
     assert (await ping_row())[2] is True
+
+
+@pytest.mark.asyncio
+async def test_a_failed_gif_does_not_re_ping(clean_pings):
+    ping = FakePing()
+    cog = cog_with(ping)
+
+    async def refuse(content=None, **kwargs):
+        raise discord.HTTPException(SimpleNamespace(status=500, reason="no"), "no")
+
+    cog.bot.channel.send = refuse
+    await add_ping(timedelta(hours=3))
+
+    await cog.remind_unbooked_reservations()
+    await cog.remind_unbooked_reservations()
+
+    assert len(ping.reply_calls) == 1
 
 
 @pytest.mark.asyncio

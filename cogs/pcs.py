@@ -44,6 +44,7 @@ PRIME_TIME_WEEKEND_HOUR = 18  # 6 PM
 NORRIS_OPEN_HOUR = 8
 # how long before a booking starts staff get re-pinged if they haven't made it
 BOOKING_REMINDER_LEAD = timedelta(hours=4)
+BOOKING_REMINDER_GIF = "https://klipy.com/gifs/cat-meme-112"
 
 
 def staff_list() -> list[int]:
@@ -275,11 +276,11 @@ class PCs(commands.Cog):
             )
             return
         # read off the message itself, a reaction made while the bot was down still counts
-        if not is_acknowledged(ping):
+        outstanding = not is_acknowledged(ping)
+        if outstanding:
             await ping.reply(
                 f"<@{staff_id}> **{team}** starts <t:{int(start_time.timestamp())}:R> "
-                "and still isn't booked in ggLeap. Book it from this ping, then react "
-                "to it.",
+                "but hasn't been reserved yet.",
                 mention_author=False,
                 allowed_mentions=discord.AllowedMentions(
                     everyone=False, roles=False, users=True
@@ -291,6 +292,10 @@ class PCs(commands.Cog):
             "UPDATE reservation_pings SET reminded = TRUE WHERE message_id = %s",
             (message_id,),
         )
+        # its own message, since discord only hides a link that's alone in one. Sent
+        # last so a failure here can't re-ping staff for a reminder they already got.
+        if outstanding:
+            await channel.send(BOOKING_REMINDER_GIF)
 
     async def save_booking_reminder(
         self,
