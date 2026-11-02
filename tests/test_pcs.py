@@ -725,10 +725,15 @@ async def booked(cog, modal, monkeypatch):
     async def save(*args):
         return None
 
+    async def reminder_written(*args):
+        return None
+
     cog.check_conflicts = no_conflict
     cog.allocate_pcs = allocate
     cog.check_prime_time_quota = unlimited_quota
     cog.save_reservation = save
+    cog.save_booking_reminder = reminder_written
+    cog.move_booking_reminder = reminder_written
     cog.team_prime_time_quota = pcs.TEAM_PRIME_TIME_QUOTA
     cog.pending_acknowledgments = {}
     cog.bot = SimpleNamespace(get_channel=lambda channel_id: None)
@@ -1030,6 +1035,53 @@ async def test_staff_get_a_book_in_ggleap_button(booked, modal, monkeypatch):
     assert edit.custom_id == pcs.EDIT_BOOKING_ID
 
 
+@pytest_asyncio.fixture
+async def rotation(booked, monkeypatch):
+    """Staff on the rotation and a reservation that saves, recording the reminder."""
+    saved = []
+
+    async def save(*args):
+        return 77
+
+    async def remember(*args):
+        saved.append(args)
+
+    async def first_in_line():
+        return 0
+
+    booked.save_reservation = save
+    booked.save_booking_reminder = remember
+    booked.next_staff_index = first_in_line
+    booked.bot = SimpleNamespace(get_channel=lambda channel_id: channel)
+    channel = FakeReservationsChannel()
+    monkeypatch.setattr(pcs, "staff_list", lambda: [42])
+    monkeypatch.setattr(pcs.config, "gamehead_email", lambda username: "lilac@u.edu")
+    return saved
+
+
+@pytest.mark.asyncio
+async def test_a_staff_ping_arms_its_reminder_for_the_staff_pinged(
+    booked, modal, rotation
+):
+    await run_complete(modal, times="12:07PM-2:00PM")
+
+    # the rounded time, since that's what the ping tells staff to book
+    start, _ = booked.parse_time_range("2026-09-28 12:00PM-2:00PM")
+    [(message_id, channel_id, staff_id, reservation_id, team, when)] = rotation
+    assert message_id in booked.pending_acknowledgments
+    assert (channel_id, staff_id, reservation_id) == (5, 42, 77)
+    assert (team, when) == ("Deadlock Purple", start)
+
+
+@pytest.mark.asyncio
+async def test_a_test_booking_arms_no_reminder(modal, rotation):
+    modal.is_test = True
+
+    await run_complete(modal, times="12:00PM-2:00PM")
+
+    assert rotation == []
+
+
 # --- staff editing the booking -------------------------------------------------
 
 
@@ -1042,6 +1094,7 @@ class FakeStaffPing(FakeMessage):
 
     def __init__(self, embed, view):
         super().__init__()
+        self.id = 4321
         self.embeds = [embed]
         self.components = [
             discord.components.ActionRow(row) for row in view.to_components()
@@ -1201,6 +1254,23 @@ async def test_adding_a_back_room_pc_drops_the_skipped_note(booked, staff_ping):
     fields = interaction.response.edits[0]["embed"].fields
     listed = next(f for f in fields if f.name == "PCs").value
     assert listed == "Back Room: PC 14\nMain Room: PC 3"
+
+
+@pytest.mark.asyncio
+async def test_an_edit_moves_the_reminder_to_the_new_time(booked, staff_ping):
+    moved = []
+
+    async def move(*args):
+        moved.append(args)
+
+    booked.move_booking_reminder = move
+
+    await submit_edit(
+        booked, staff_ping, "Valorant White", "3", "2026-09-30", "7:42", "9"
+    )
+
+    start, _ = booked.parse_time_range("2026-09-30 7:45PM-9PM")
+    assert moved == [(4321, "Valorant White", start)]
 
 
 @pytest.mark.asyncio

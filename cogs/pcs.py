@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 import aiohttp
 import discord
+import psycopg
 from discord.ext import commands, tasks
 from PIL import Image, ImageDraw, ImageFont
 
@@ -41,6 +42,8 @@ PRIME_TIME_WEEKDAY_HOUR = 19  # 7 PM
 PRIME_TIME_WEEKEND_HOUR = 18  # 6 PM
 # Norris locks overnight, so nothing can be booked before it reopens
 NORRIS_OPEN_HOUR = 8
+# how long before a booking starts staff get re-pinged if they haven't made it
+BOOKING_REMINDER_LEAD = timedelta(hours=4)
 
 
 def staff_list() -> list[int]:
@@ -145,6 +148,7 @@ class PCs(commands.Cog):
         self.pending_acknowledgments: dict[int, dict] = {}
         # Start background task
         self.check_pending_acknowledgments.start()
+        self.remind_unbooked_reservations.start()
 
     async def next_staff_index(self) -> int:
         """Return the staff member whose turn it is, and advance the rotation.
@@ -215,6 +219,107 @@ class PCs(commands.Cog):
     async def before_check_pending_acknowledgments(self) -> None:
         """Wait until bot is ready before starting the loop"""
         await self.bot.wait_until_ready()
+
+    @tasks.loop(minutes=5)
+    async def remind_unbooked_reservations(self) -> None:
+        """Re-ping whoever still hasn't made a reservation that's about to start."""
+        # bot.py opens the pool in its own on_ready, which may not have run yet
+        if db.pool.closed:
+            return
+        # a db error escaping a tasks.loop ends it for good, and nobody would notice
+        try:
+            await db.perform_one(
+                "DELETE FROM reservation_pings WHERE start_time <= NOW()"
+            )
+            for row in await self.due_booking_reminders():
+                try:
+                    await self.send_booking_reminder(*row)
+                except discord.HTTPException as e:
+                    print(f"Failed to send booking reminder for {row[0]}: {e}")
+        except psycopg.Error as e:
+            print(f"Booking reminder check failed: {e}")
+
+    @remind_unbooked_reservations.before_loop
+    async def before_remind_unbooked_reservations(self) -> None:
+        await self.bot.wait_until_ready()
+
+    async def due_booking_reminders(self) -> list[tuple]:
+        """Pings inside the reminder window. One posted inside it is its own reminder."""
+        sql = """
+            SELECT message_id, channel_id, staff_id, team, start_time
+            FROM reservation_pings
+            WHERE NOT reminded
+              AND start_time > NOW()
+              AND start_time - %s <= NOW()
+              AND start_time - %s > posted_at
+        """
+        return await db.fetch_all(sql, (BOOKING_REMINDER_LEAD, BOOKING_REMINDER_LEAD))
+
+    async def send_booking_reminder(
+        self,
+        message_id: int,
+        channel_id: int,
+        staff_id: int,
+        team: str,
+        start_time: datetime,
+    ) -> None:
+        """Reply to the ping unless someone's reacted, since a reaction means it's made."""
+        channel = self.bot.get_channel(channel_id)
+        if channel is None:
+            return
+        try:
+            ping = await channel.fetch_message(message_id)
+        except discord.NotFound:
+            await db.perform_one(
+                "DELETE FROM reservation_pings WHERE message_id = %s", (message_id,)
+            )
+            return
+        # read off the message itself, a reaction made while the bot was down still counts
+        if not is_acknowledged(ping):
+            await ping.reply(
+                f"<@{staff_id}> **{team}** starts <t:{int(start_time.timestamp())}:R> "
+                "and still isn't booked in ggLeap. Book it from this ping, then react "
+                "to it.",
+                mention_author=False,
+                allowed_mentions=discord.AllowedMentions(
+                    everyone=False, roles=False, users=True
+                ),
+            )
+            # this says everything the 24 hour nudge would, so skip that one
+            self.pending_acknowledgments.pop(message_id, None)
+        await db.perform_one(
+            "UPDATE reservation_pings SET reminded = TRUE WHERE message_id = %s",
+            (message_id,),
+        )
+
+    async def save_booking_reminder(
+        self,
+        message_id: int,
+        channel_id: int,
+        staff_id: int,
+        reservation_id: int,
+        team: str,
+        start_time: datetime,
+    ) -> None:
+        sql = """
+            INSERT INTO reservation_pings
+                (message_id, channel_id, staff_id, reservation_id, team, start_time)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """
+        await db.perform_one(
+            sql, (message_id, channel_id, staff_id, reservation_id, team, start_time)
+        )
+
+    async def move_booking_reminder(
+        self, message_id: int, team: str, start_time: datetime
+    ) -> None:
+        """Follow an edited ping, re-arming the reminder if the start time changed."""
+        sql = """
+            UPDATE reservation_pings
+            SET team = %s, reminded = reminded AND start_time = %s, start_time = %s
+            WHERE message_id = %s
+        """
+        await db.perform_one(sql, (team, start_time, start_time, message_id))
 
     @staticmethod
     def format_pc(pc: int) -> str:
@@ -1963,6 +2068,11 @@ def booking_link(message: discord.Message | None) -> str:
     raise ValueError("No ggLeap booking link on this message")
 
 
+def is_acknowledged(message: discord.Message) -> bool:
+    """Whether anyone but the bot has reacted to a staff ping."""
+    return any(reaction.count > int(reaction.me) for reaction in message.reactions)
+
+
 def booking_view(url: str) -> discord.ui.View:
     """Staff ping buttons. The link needs no handler and the edit is on_interaction's."""
     view = discord.ui.View(timeout=None)
@@ -2303,8 +2413,9 @@ class ReservationTimeModal(discord.ui.Modal):
             if interaction.user.discriminator != "0"
             else interaction.user.name
         )
+        reservation_id = None
         if not self.is_test:
-            await self.cog.save_reservation(
+            reservation_id = await self.cog.save_reservation(
                 self.team, allocated_pcs, start_time, end_time, manager, is_prime
             )
 
@@ -2426,6 +2537,16 @@ class ReservationTimeModal(discord.ui.Modal):
                         "sent_at": datetime.now(CENTRAL_TZ),
                         "team": self.team,
                     }
+                    # a test booking has nothing to make, so nothing to remind about
+                    if reservation_id is not None:
+                        await self.cog.save_booking_reminder(
+                            msg.id,
+                            reservations_channel.id,
+                            staff_id,
+                            reservation_id,
+                            self.team,
+                            staff_start,
+                        )
                 elif staff_role:
                     await reservations_channel.send(
                         f"⚠️ {staff_role.mention}",
@@ -2708,6 +2829,7 @@ class EditBookingModal(discord.ui.Modal):
             f"by {interaction.user.mention} <t:{int(datetime.now(UTC).timestamp())}:R>",
         )
         await interaction.response.edit_message(embed=embed, view=booking_view(url))
+        await self.cog.move_booking_reminder(interaction.message.id, team, start_time)
 
 
 class ExternalReservationTimeModal(discord.ui.Modal):
