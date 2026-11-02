@@ -243,12 +243,14 @@ async def test_cancelling_a_reservation_stops_its_reminder(clean_pings):
 
 
 @pytest.mark.asyncio
-async def test_a_started_reservation_is_cleared_out(clean_pings):
+async def test_a_started_reservation_keeps_its_ping_but_no_reminder(clean_pings):
+    ping = FakePing()
     await add_ping(timedelta(minutes=-1))
 
-    await cog_with(FakePing()).remind_unbooked_reservations()
+    await cog_with(ping).remind_unbooked_reservations()
 
-    assert await ping_row() is None
+    assert ping.reply_calls == []
+    assert (await ping_row())[2] is False
 
 
 @pytest.mark.asyncio
@@ -289,7 +291,7 @@ async def test_a_failed_check_does_not_end_the_loop(monkeypatch):
         raise psycopg.OperationalError("database went away")
 
     monkeypatch.setattr(pcs.db, "pool", SimpleNamespace(closed=False))
-    monkeypatch.setattr(pcs.db, "perform_one", broken)
+    monkeypatch.setattr(pcs.db, "fetch_all", broken)
 
     await cog_with(FakePing()).remind_unbooked_reservations()
 
@@ -300,6 +302,6 @@ async def test_the_check_waits_for_the_pool(monkeypatch):
         raise AssertionError("the pool isn't open yet")
 
     monkeypatch.setattr(pcs.db, "pool", SimpleNamespace(closed=True))
-    monkeypatch.setattr(pcs.db, "perform_one", forbidden)
+    monkeypatch.setattr(pcs.db, "fetch_all", forbidden)
 
     await cog_with(FakePing()).remind_unbooked_reservations()

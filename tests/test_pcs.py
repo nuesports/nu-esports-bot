@@ -734,6 +734,7 @@ async def booked(cog, modal, monkeypatch):
     cog.save_reservation = save
     cog.save_booking_reminder = reminder_written
     cog.move_booking_reminder = reminder_written
+    cog.update_saved_reservation = reminder_written
     cog.team_prime_time_quota = pcs.TEAM_PRIME_TIME_QUOTA
     cog.pending_acknowledgments = {}
     cog.bot = SimpleNamespace(get_channel=lambda channel_id: None)
@@ -1257,6 +1258,23 @@ async def test_adding_a_back_room_pc_drops_the_skipped_note(booked, staff_ping):
 
 
 @pytest.mark.asyncio
+async def test_an_edit_updates_the_saved_reservation(booked, staff_ping):
+    updated = []
+
+    async def update(*args):
+        updated.append(args)
+
+    booked.update_saved_reservation = update
+
+    await submit_edit(
+        booked, staff_ping, "Valorant White", "3, 0", "2026-09-30", "7:42", "9"
+    )
+
+    start, end = booked.parse_time_range("2026-09-30 7:45PM-9PM")
+    assert updated == [(4321, "Valorant White", [0, 3], start, end)]
+
+
+@pytest.mark.asyncio
 async def test_an_edit_moves_the_reminder_to_the_new_time(booked, staff_ping):
     moved = []
 
@@ -1274,9 +1292,9 @@ async def test_an_edit_moves_the_reminder_to_the_new_time(booked, staff_ping):
 
 
 @pytest.mark.asyncio
-async def test_an_edit_leaves_the_saved_reservation_alone(booked, staff_ping):
+async def test_an_edit_adds_no_reservation_and_keeps_the_nudge(booked, staff_ping):
     async def forbidden(*args):
-        raise AssertionError("an edit must not write to the reservations table")
+        raise AssertionError("an edit updates the reservation, it never adds one")
 
     booked.save_reservation = forbidden
     booked.pending_acknowledgments = {4321: {"team": "Deadlock Purple"}}
@@ -1290,6 +1308,7 @@ async def test_an_edit_leaves_the_saved_reservation_alone(booked, staff_ping):
     ("team", "typed_pcs", "start", "end", "refusal"),
     [
         ("  ", "1, 2", "12PM", "2PM", "team can't be blank"),
+        ("x" * 51, "1, 2", "12PM", "2PM", "Team names stop at 50"),
         ("Deadlock Purple", "1, 11", "12PM", "2PM", "There's no PC 11"),
         ("Deadlock Purple", "1, 2, 1", "12PM", "2PM", "PC 1 is listed more than once"),
         ("Deadlock Purple", "one, two", "12PM", "2PM", "PCs must be numbers"),
@@ -1301,6 +1320,7 @@ async def test_an_edit_leaves_the_saved_reservation_alone(booked, staff_ping):
     ],
     ids=[
         "blank team",
+        "team too long",
         "no such pc",
         "repeated pc",
         "not numbers",
