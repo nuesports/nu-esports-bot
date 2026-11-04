@@ -1,6 +1,7 @@
 import pytest
 
 from cogs import fun
+from tests.conftest import FakeApplicationContext
 
 
 class FakeSticker:
@@ -177,3 +178,34 @@ async def test_ty_stan_false_when_roll_fails(monkeypatch):
     monkeypatch.setattr(fun.random, "randint", lambda a, b: 50)
     message = FakeMessage(content="tyst", guild=FakeGuild([]))
     assert await fun.ty_stan(message) is False
+
+
+# --- smoke_echo ---
+
+
+def test_smoke_echo_reply_uses_configured_text(monkeypatch):
+    monkeypatch.setattr(fun.config, "config", {"smoke_echo": {"reply": "pong"}})
+    assert fun.smoke_echo_reply() == "pong"
+
+
+def test_smoke_echo_reply_defaults_when_section_missing(monkeypatch):
+    monkeypatch.setattr(fun.config, "config", {"fun": {}})
+    assert fun.smoke_echo_reply() == fun.SMOKE_ECHO_DEFAULT
+
+
+@pytest.mark.parametrize(
+    "fake", [{"smoke_echo": {"reply": None}}, {"smoke_echo": {}}, {"smoke_echo": None}]
+)
+def test_smoke_echo_reply_defaults_when_reply_empty(monkeypatch, fake):
+    monkeypatch.setattr(fun.config, "config", fake)
+    assert fun.smoke_echo_reply() == fun.SMOKE_ECHO_DEFAULT
+
+
+@pytest.mark.asyncio
+async def test_smoke_echo_command_responds_with_reply(monkeypatch):
+    monkeypatch.setattr(fun.config, "config", {"smoke_echo": {"reply": "pong"}})
+    ctx = FakeApplicationContext(author=None)
+
+    await fun.Fun.smoke_echo.callback(fun.Fun(FakeBot(None)), ctx)
+
+    assert ctx.respond_calls == [{"content": "pong"}]
