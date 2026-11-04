@@ -102,3 +102,7 @@ antiscam:
   # warning at load if it is set, and this file's real counterpart is gitignored.
   #test_account_ages:
   #  <your_discord_id>: 180
+
+agent:
+  # @Miku <request> makes a PR (cogs/agent_jobs.py). Off unless set true; it's the kill switch too
+  enabled: false

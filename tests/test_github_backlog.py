@@ -1,6 +1,8 @@
 import hashlib
 import hmac
 
+import pytest
+
 from cogs import github_backlog as backlog
 
 
@@ -53,3 +55,50 @@ def test_first_body_line_skips_blank_lines_and_strips_markdown():
 
 def test_first_body_line_none_body_returns_placeholder():
     assert backlog.first_body_line(None) == "No description provided."
+
+
+def backlog_recording():
+    """A cog whose Discord and database calls are only recorded."""
+    cog = backlog.GithubBacklog.__new__(backlog.GithubBacklog)
+    cog.pr_channel_id = 1
+    cog.issue_channel_id = 2
+    cog.calls = []
+
+    async def unpin(repo, number, kind):
+        cog.calls.append(("unpin", number, kind))
+
+    async def send_embed(channel_id, embed):
+        cog.calls.append(("embed", channel_id, embed.footer.text))
+
+    cog.unpin = unpin
+    cog.send_embed = send_embed
+    return cog
+
+
+def pr_payload(merged):
+    return {
+        "action": "closed",
+        "repository": {"full_name": "nuesports/nu-esports-bot"},
+        "pull_request": {
+            "number": 101,
+            "title": "Add Coinflip",
+            "body": "## Summary",
+            "html_url": "https://github.com/nuesports/nu-esports-bot/pull/101",
+            "merged": merged,
+            "merged_by": {"login": "someone"} if merged else None,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_closing_a_pr_without_merging_unpins_it_quietly():
+    cog = backlog_recording()
+    await cog.handle_pull_request(pr_payload(merged=False))
+    assert cog.calls == [("unpin", 101, "pr")]
+
+
+@pytest.mark.asyncio
+async def test_merging_a_pr_unpins_it_and_says_who():
+    cog = backlog_recording()
+    await cog.handle_pull_request(pr_payload(merged=True))
+    assert cog.calls == [("unpin", 101, "pr"), ("embed", 1, "Merged by someone")]

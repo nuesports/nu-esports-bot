@@ -158,8 +158,12 @@ class GithubBacklog(commands.Cog):
                 color=COLOR_OPEN_PR,
             )
             await self.post_and_pin(self.pr_channel_id, repo, number, "pr", embed)
-        elif action == "closed" and pr.get("merged"):
+        elif action == "closed":
+            # any close unpins, like issues: an abandoned or rejected PR (Miku opens
+            # throwaway ones) would otherwise stay pinned forever
             await self.unpin(repo, number, "pr")
+            if not pr.get("merged"):
+                return
             merged_by = pr.get("merged_by")
             username = merged_by["login"] if merged_by else "unknown"
             embed = build_notification_embed(
