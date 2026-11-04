@@ -1,4 +1,5 @@
 import pytest
+from conftest import FakeApplicationContext
 
 from cogs import fun
 
@@ -177,3 +178,35 @@ async def test_ty_stan_false_when_roll_fails(monkeypatch):
     monkeypatch.setattr(fun.random, "randint", lambda a, b: 50)
     message = FakeMessage(content="tyst", guild=FakeGuild([]))
     assert await fun.ty_stan(message) is False
+
+
+# --- smoke_echo ---
+
+
+def test_smoke_echo_reply_uses_configured_text(monkeypatch):
+    monkeypatch.setattr(fun.config, "config", {"smoke_echo": {"reply": "pong"}})
+    assert fun.smoke_echo_reply() == "pong"
+
+
+@pytest.mark.parametrize("fake", [{}, {"smoke_echo": None}, {"smoke_echo": {}}])
+def test_smoke_echo_reply_defaults_when_missing(monkeypatch, fake):
+    monkeypatch.setattr(fun.config, "config", fake)
+    assert fun.smoke_echo_reply() == fun.SMOKE_ECHO_DEFAULT
+
+
+class RecordingContext(FakeApplicationContext):
+    """Keeps the reply text, which the shared fake drops."""
+
+    async def respond(self, content=None, **kwargs):
+        self.respond_calls.append({"content": content, **kwargs})
+
+
+@pytest.mark.asyncio
+async def test_smoke_echo_command_responds(monkeypatch):
+    monkeypatch.setattr(fun.config, "config", {"smoke_echo": {"reply": "pong"}})
+    cog = fun.Fun(FakeBot(FakeClientUser()))
+    ctx = RecordingContext(author=None)
+
+    await fun.Fun.smoke_echo.callback(cog, ctx)
+
+    assert [call["content"] for call in ctx.respond_calls] == ["pong"]

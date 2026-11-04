@@ -9,6 +9,8 @@ from utils import config
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
 
+SMOKE_ECHO_DEFAULT = "Smoke echo isn't configured."
+
 
 class Fun(commands.Cog):
     def __init__(self, bot: discord.Bot) -> None:
@@ -266,6 +268,14 @@ class Fun(commands.Cog):
         else:
             await ctx.respond("Hannah was not muted or I don't have permissions!")
 
+    @discord.slash_command(
+        name="smoke-echo",
+        description="Replies with the configured smoke-test text",
+        guild_ids=[GUILD_ID],
+    )
+    async def smoke_echo(self, ctx: discord.ApplicationContext) -> None:
+        await ctx.respond(smoke_echo_reply())
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         if message.author == self.bot.user:
@@ -341,6 +351,14 @@ def oh_lord(message: discord.Message) -> str | None:
         output = "https://www.youtube.com/watch?v=YsoP6bjADic"
         return output
     return None
+
+
+def smoke_echo_reply() -> str:
+    """The configured smoke_echo.reply text, or a default when it isn't set.
+
+    Read at call time so /config reloads apply. `or {}` covers a bare
+    `smoke_echo:` line in YAML, which loads as None."""
+    return (config.config.get("smoke_echo") or {}).get("reply") or SMOKE_ECHO_DEFAULT
 
 
 def special_interactions(message: discord.Message) -> list[str] | None:
