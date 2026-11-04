@@ -85,6 +85,41 @@ def test_oh_lord_misses_when_roll_fails(monkeypatch):
     assert fun.oh_lord(FakeMessage(content="oh lord")) is None
 
 
+# --- smoke_echo ---
+
+
+def test_smoke_echo_reply_returns_configured_text(monkeypatch):
+    monkeypatch.setattr(fun.config, "config", {"smoke_echo": {"reply": "hello"}})
+    assert fun.smoke_echo_reply() == "hello"
+
+
+def test_smoke_echo_reply_default_when_section_missing(monkeypatch):
+    monkeypatch.setattr(fun.config, "config", {"fun": {}})
+    assert fun.smoke_echo_reply() == fun.SMOKE_ECHO_DEFAULT
+
+
+@pytest.mark.parametrize(
+    "fake", [{"smoke_echo": {}}, {"smoke_echo": None}, {"smoke_echo": {"reply": ""}}]
+)
+def test_smoke_echo_reply_default_when_reply_missing_or_empty(monkeypatch, fake):
+    monkeypatch.setattr(fun.config, "config", fake)
+    assert fun.smoke_echo_reply() == fun.SMOKE_ECHO_DEFAULT
+
+
+@pytest.mark.asyncio
+async def test_smoke_echo_command_responds(monkeypatch):
+    monkeypatch.setattr(fun.config, "config", {"smoke_echo": {"reply": "hello"}})
+    responses = []
+
+    class FakeCtx:
+        async def respond(self, *args, **kwargs):
+            responses.append((args, kwargs))
+
+    await fun.Fun.smoke_echo.callback(fun.Fun(FakeBot(None)), FakeCtx())
+
+    assert responses == [(("hello",), {})]
+
+
 # --- special_interactions ---
 
 

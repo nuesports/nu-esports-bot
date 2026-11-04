@@ -266,6 +266,14 @@ class Fun(commands.Cog):
         else:
             await ctx.respond("Hannah was not muted or I don't have permissions!")
 
+    @discord.slash_command(
+        name="smoke-echo",
+        description="Replies with the configured smoke-test text",
+        guild_ids=[GUILD_ID],
+    )
+    async def smoke_echo(self, ctx: discord.ApplicationContext) -> None:
+        await ctx.respond(smoke_echo_reply())
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         if message.author == self.bot.user:
@@ -341,6 +349,19 @@ def oh_lord(message: discord.Message) -> str | None:
         output = "https://www.youtube.com/watch?v=YsoP6bjADic"
         return output
     return None
+
+
+SMOKE_ECHO_DEFAULT = "smoke-echo has no reply configured."
+
+
+def smoke_echo_reply() -> str:
+    """The text /smoke-echo replies with. smoke_echo.reply is a new key that
+    production's config may not have yet, so a missing section or value falls back
+    to a default instead of raising."""
+    reply = (config.config.get("smoke_echo") or {}).get("reply")
+    if isinstance(reply, str) and reply:
+        return reply
+    return SMOKE_ECHO_DEFAULT
 
 
 def special_interactions(message: discord.Message) -> list[str] | None:
