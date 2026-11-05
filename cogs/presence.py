@@ -5,6 +5,7 @@ import discord
 from discord.ext import commands, tasks
 
 from utils import config
+from utils import version as build_info
 from utils.statuses import load_statuses
 
 GUILD_ID = config.secrets["discord"]["guild_id"]
@@ -18,6 +19,11 @@ class Presence(commands.Cog):
         self.index: int = 0
         self.lastindex: int = -1
         self.statuses: list[discord.Activity] = load_statuses()
+        # worked out once here, so the command never waits on git
+        self.started_at = discord.utils.utcnow()
+        self.commit: str = build_info.git_commit()
+        self.commit_date: str | None = build_info.commit_date()
+        self.project_version: str = build_info.project_version()
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
@@ -81,6 +87,19 @@ class Presence(commands.Cog):
                 await ctx.respond("❌ Something went wrong. Try again!", ephemeral=True)
                 return
             await ctx.respond("🤖 Resumed cycling status!", ephemeral=True)
+
+    @discord.slash_command(
+        name="version",
+        description="Shows which build of the bot is running",
+        guild_ids=[GUILD_ID],
+    )
+    async def version(self, ctx: discord.ApplicationContext) -> None:
+        await ctx.respond(
+            build_info.format_version(
+                self.project_version, self.commit, self.commit_date, self.started_at
+            ),
+            ephemeral=True,
+        )
 
 
 def setup(bot: discord.Bot) -> None:
