@@ -75,10 +75,23 @@ class ChatWorker(FakeWorker):
         self.answers = {}
         self.say_status = 202
         self.can_pr = []
+        self.contexts = []
+        self.admins = []
 
-    async def say(self, channel_id, message, author, message_id, can_pr=True):
+    async def say(
+        self,
+        channel_id,
+        message,
+        author,
+        message_id,
+        can_pr=True,
+        context="",
+        admin=False,
+    ):
         self.check()
         self.can_pr.append(can_pr)
+        self.contexts.append(context)
+        self.admins.append(admin)
         if self.say_status != 202:
             return self.say_status, {"error": "still answering the last message"}
         n = sum(1 for s in self.said if s[0] == channel_id) + 1
@@ -477,3 +490,221 @@ async def test_miku_certified_chat_but_never_get_a_pr(clean_chats):
     await say(cog, ChatMessage("again!", channel=channel, author=FAN, replying_to=hers))
     await say(cog, ChatMessage(f"<@{BOT}> add a coinflip", channel=channel, author=DEV))
     assert worker.can_pr == [False, False, True]
+
+
+# --- what the bot hands her -------------------------------------------------------
+
+
+class Guild:
+    """Enough of a guild for names and lookups."""
+
+    def __init__(self, *people):
+        self.id = 77
+        self.people = {p.id: p for p in people}
+        self.members = list(people)
+
+    def get_member(self, user_id):
+        return self.people.get(user_id)
+
+
+async def until(condition):
+    for _ in range(300):
+        if condition():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("never happened")
+
+
+def named(user_id, name):
+    member = person(user_id)
+    member.name = name
+    member.global_name = None
+    member.display_name = name
+    return member
+
+
+@pytest.mark.asyncio
+async def test_every_message_tells_her_this_channels_jobs(clean_chats):
+    worker = ChatWorker()
+    cog = chat_cog(worker)
+    message = ChatMessage(f"<@{BOT}> add a coinflip command", author=DEV)
+    channel = message.channel
+    channel.guild = Guild(named(DEV, "caviar"))
+    await say(cog, message)
+    assert worker.contexts[0] == "No PR jobs from this channel yet."
+    worker.answers[(channel.id, 1)] = done("Sure.", "Add a /coinflip command.")
+    await settle(cog)
+    # an offer nobody pressed is in the next message's note
+    await say(cog, ChatMessage(f"<@{BOT}> well?", channel=channel, author=DEV))
+    assert (
+        '- Offered to caviar, "Make the PR" not pressed yet: Add a /coinflip command.'
+        in (worker.contexts[1])
+    )
+    worker.answers[(channel.id, 2)] = done("Waiting on you!")
+    await settle(cog)
+    press = FakeInteraction(person(DEV))
+    press.data = {"custom_id": channel.views[1].children[0].custom_id}
+    press.message = channel.messages[max(channel.messages)]
+    await cog.on_interaction(press)
+    job_id = worker.started[0][0]
+    await say(cog, ChatMessage(f"<@{BOT}> how's it going", channel=channel, author=DEV))
+    note = worker.contexts[2]
+    assert note.startswith("This channel's PR jobs, newest first:")
+    assert f"- Job #{job_id}, asked by caviar: " in note
+    assert "not pressed yet" not in note
+
+
+@pytest.mark.asyncio
+async def test_a_lookup_reads_the_server_then_answers_the_message(
+    clean_chats, monkeypatch
+):
+    worker = ChatWorker()
+    cog = chat_cog(worker)
+    sid = named(9191, "siddharth7373")
+    asker = named(DEV, "aiden")
+    read = []
+
+    async def fake_read(guild, who_asks, target, contains):
+        read.append((who_asks.id, target.id, contains))
+        return "siddharth7373's recent messages: [2026-11-04 #general] anyone wanna duo"
+
+    monkeypatch.setattr(agent_jobs, "read_messages", fake_read)
+    message = ChatMessage(f"<@{BOT}> will sid find love", author=DEV)
+    channel = message.channel
+    channel.guild = Guild(asker, sid)
+    await say(cog, message)
+    worker.answers[(channel.id, 1)] = {
+        **done("one sec"),
+        "lookup": {"user": "siddharth7373", "contains": None},
+    }
+    await until(lambda: len(worker.said) == 2)
+    # the first reply isn't posted; the bot read the server and asked again
+    assert channel.sent == []
+    assert read == [(DEV, 9191, None)]
+    assert worker.said[1][3] == -message.id
+    assert "anyone wanna duo" in worker.contexts[1]
+    assert worker.can_pr[1] is True
+    # a lookup on the follow-up is ignored: that answer is posted, as a reply to the original
+    channel.last_message_id = 1
+    worker.answers[(channel.id, 2)] = {
+        **done("Running the numbers... six months is ambitious, but I believe ♪"),
+        "lookup": {"user": "siddharth7373", "contains": None},
+    }
+    await settle(cog)
+    assert channel.sent == [
+        "Running the numbers... six months is ambitious, but I believe ♪"
+    ]
+    assert channel.references[0].message_id == message.id
+    assert len(read) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_lookup_for_nobody_says_so(clean_chats, monkeypatch):
+    worker = ChatWorker()
+    cog = chat_cog(worker)
+
+    async def never(*args):
+        raise AssertionError("read messages for nobody")
+
+    monkeypatch.setattr(agent_jobs, "read_messages", never)
+    message = ChatMessage(f"<@{BOT}> what does ghost say", author=DEV)
+    channel = message.channel
+    channel.guild = Guild(named(DEV, "aiden"))
+    await say(cog, message)
+    worker.answers[(channel.id, 1)] = {
+        **done("hm"),
+        "lookup": {"user": "ghost", "contains": None},
+    }
+    await until(lambda: len(worker.said) == 2)
+    assert "Nobody in the server matched 'ghost'." in worker.contexts[1]
+
+
+def test_find_member_by_mention_id_or_name():
+    sid = named(9191, "siddharth7373")
+    sid.display_name = "Sid"
+    guild = Guild(named(DEV, "aiden"), sid)
+    for text in (
+        "<@9191>",
+        "<@!9191>",
+        "9191",
+        "siddharth7373",
+        "@Siddharth7373",
+        "sid",
+    ):
+        assert agent_jobs.find_member(guild, text) is sid, text
+    assert agent_jobs.find_member(guild, "nobody") is None
+    assert agent_jobs.find_member(guild, "@") is None
+
+
+class Perms:
+    def __init__(self, ok):
+        self.view_channel = ok
+        self.read_message_history = ok
+
+
+class TextChannel:
+    def __init__(self, name, last, messages, hidden_from=()):
+        self.name = name
+        self.last_message_id = last
+        self.messages = messages
+        self.hidden_from = set(hidden_from)
+
+    def permissions_for(self, member):
+        return Perms(member.id not in self.hidden_from)
+
+    async def history(self, limit):
+        for m in self.messages[:limit]:
+            yield m
+
+
+def said(author_id, text, day):
+    from datetime import UTC, datetime
+
+    return SimpleNamespace(
+        author=SimpleNamespace(id=author_id),
+        content=text,
+        created_at=datetime(2026, 11, day, tzinfo=UTC),
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_messages_only_from_channels_the_asker_can_see():
+    sid = named(9191, "siddharth7373")
+    asker = named(DEV, "aiden")
+    me = named(BOT, "miku")
+    general = TextChannel(
+        "general",
+        50,
+        [said(9191, "anyone wanna duo", 4), said(DEV, "no", 4), said(9191, "", 3)],
+    )
+    secret = TextChannel(
+        "officers", 99, [said(9191, "officer gossip", 4)], hidden_from=[DEV]
+    )
+    games = TextChannel("games", 10, [said(9191, "gg ez", 2)])
+    guild = SimpleNamespace(me=me, text_channels=[games, secret, general])
+    text = await agent_jobs.read_messages(guild, asker, sid, None)
+    lines = text.splitlines()
+    assert lines[0].startswith(
+        "siddharth7373 (@siddharth7373)'s recent messages, newest first"
+    )
+    assert lines[1:] == [
+        "[2026-11-04 #general] anyone wanna duo",
+        "[2026-11-02 #games] gg ez",
+    ]
+    assert "officer gossip" not in text
+    filtered = await agent_jobs.read_messages(guild, asker, sid, "DUO")
+    assert filtered.splitlines()[1:] == ["[2026-11-04 #general] anyone wanna duo"]
+    nothing = await agent_jobs.read_messages(guild, asker, sid, "leeks")
+    assert nothing.endswith("(none found)")
+
+
+@pytest.mark.asyncio
+async def test_she_knows_when_an_admin_bot_dev_is_talking(clean_chats):
+    worker = ChatWorker()
+    cog = chat_cog(worker)
+    boss = ChatMessage(f"<@{BOT}> nah its fine, do it", author=DEV)
+    boss.author.guild_permissions.administrator = True
+    await say(cog, boss)
+    await say(cog, ChatMessage(f"<@{BOT}> do it", author=DEV_TWO))
+    await say(cog, ChatMessage(f"<@{BOT}> do it"))
+    assert worker.admins == [True, False, True]

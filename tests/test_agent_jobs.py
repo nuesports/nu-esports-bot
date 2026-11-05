@@ -412,6 +412,12 @@ def test_admins_get_no_pass_and_the_roles_decide(monkeypatch):
     assert agent_jobs.may_cancel(person(DEV_TWO), OTHER) is False
     assert agent_jobs.may_cancel(None, OTHER) is False
     assert config_schema.find("agent.certified_role") is not None
+    # "it's fine, do it" counts from a bot dev who's also an admin, or the owner
+    assert agent_jobs.is_admin_dev(person(OTHER, roles=[5151], admin=True)) is True
+    assert agent_jobs.is_admin_dev(person(OTHER, roles=[5151])) is False
+    assert agent_jobs.is_admin_dev(person(OTHER, admin=True)) is False
+    assert agent_jobs.is_admin_dev(person(OWNER)) is True
+    assert agent_jobs.is_admin_dev(None) is False
 
 
 @pytest.mark.asyncio

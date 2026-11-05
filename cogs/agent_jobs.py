@@ -380,6 +380,15 @@ def access(user: discord.abc.User | None) -> str | None:
     return None
 
 
+def is_admin_dev(user: discord.abc.User | None) -> bool:
+    """A bot dev who is also a server admin, or the owner: Miku takes their "it's
+    fine, do it" on a bit she turned down (the worker's prompts/chat.md)."""
+    if user is None or access(user) != DEV:
+        return False
+    perms = getattr(user, "guild_permissions", None)
+    return user.id == owner_id() or bool(perms is not None and perms.administrator)
+
+
 def may_start_pr(user: discord.abc.User | None, requester_id: int | None) -> bool:
     """ "Make the PR" is for whoever asked, while they're still a bot dev, and for
     the owner, whose plan pays for it."""
@@ -405,6 +414,97 @@ NO_ACCESS = (
     "I'd love to, but I'm only singing for Miku Certified people at the moment ♪",
 )
 REFUSE_EVERY = 10 * 60
+
+
+# reading someone's messages for her: newest channels first, within these limits
+LOOKUP_PER_CHANNEL = 300
+LOOKUP_SCAN_LIMIT = 3000
+LOOKUP_MATCHES = 120
+LOOKUP_CHARS = 10000
+LOOKUP_SECONDS = 60
+# what a follow-up turn may carry; the worker takes up to 16000
+LOOKUP_CONTEXT_CHARS = 15000
+
+
+def find_member(guild: discord.Guild, name: str) -> discord.Member | None:
+    """A member by @mention, id, username, global name or server nickname."""
+    text = name.strip()
+    mention = re.fullmatch(r"<@!?(\d+)>", text)
+    if mention or text.isdigit():
+        return guild.get_member(int(mention.group(1) if mention else text))
+    wanted = text.lstrip("@").lower()
+    if not wanted:
+        return None
+    for member in guild.members:
+        names = (member.name, member.global_name or "", member.display_name)
+        if wanted in (n.lower() for n in names):
+            return member
+    return None
+
+
+def readable_by(channel: discord.abc.GuildChannel, *members: discord.Member) -> bool:
+    for member in members:
+        perms = channel.permissions_for(member)
+        if not (perms.view_channel and perms.read_message_history):
+            return False
+    return True
+
+
+async def read_messages(
+    guild: discord.Guild,
+    asker: discord.Member,
+    target: discord.Member,
+    contains: str | None,
+) -> str:
+    """target's recent messages from the text channels both the asker and the bot can
+    read, newest first, so she never sees anything the asker couldn't scroll to."""
+    me = guild.me
+    channels = [c for c in guild.text_channels if readable_by(c, asker, me)]
+    channels.sort(key=lambda c: c.last_message_id or 0, reverse=True)
+    needle = contains.lower() if contains else None
+    found: list[tuple] = []
+    scanned = 0
+    start = time.monotonic()
+    for channel in channels:
+        if (
+            scanned >= LOOKUP_SCAN_LIMIT
+            or len(found) >= LOOKUP_MATCHES
+            or time.monotonic() - start > LOOKUP_SECONDS
+        ):
+            break
+        try:
+            async for msg in channel.history(limit=LOOKUP_PER_CHANNEL):
+                scanned += 1
+                text = (msg.content or "").strip()
+                if (
+                    msg.author.id == target.id
+                    and text
+                    and (needle is None or needle in text.lower())
+                ):
+                    found.append((msg.created_at, channel.name, text))
+                    if len(found) >= LOOKUP_MATCHES:
+                        break
+                if scanned >= LOOKUP_SCAN_LIMIT:
+                    break
+        except discord.HTTPException:
+            continue
+    found.sort(key=lambda f: f[0], reverse=True)
+    about = f" mentioning {contains!r}" if contains else ""
+    header = (
+        f"{target.display_name} (@{target.name})'s recent messages{about}, newest first, "
+        f"from channels {asker.display_name} can see ({scanned} messages read):"
+    )
+    lines, total = [header], len(header)
+    for created, channel_name, text in found:
+        one = " ".join(text.split())
+        line = f"[{created:%Y-%m-%d} #{channel_name}] {one[:300]}"
+        if total + len(line) + 1 > LOOKUP_CHARS:
+            break
+        lines.append(line)
+        total += len(line) + 1
+    if len(lines) == 1:
+        lines.append("(none found)")
+    return "\n".join(lines)
 
 
 class WorkerUnavailable(Exception):
@@ -470,6 +570,8 @@ class WorkerClient:
         author: str,
         message_id: int,
         can_pr: bool = True,
+        context: str = "",
+        admin: bool = False,
     ) -> tuple[int, dict]:
         return await self.request(
             "POST",
@@ -479,6 +581,8 @@ class WorkerClient:
                 "author": author,
                 "message_id": message_id,
                 "can_pr": can_pr,
+                "context": context,
+                "admin": admin,
             },
         )
 
@@ -616,9 +720,37 @@ class AgentJobs(commands.Cog):
             return None
         turn_id = row[0]
         author = getattr(message.author, "display_name", None) or message.author.name
+        return await self.send_turn(
+            turn_id,
+            channel,
+            request.prompt,
+            str(author),
+            message.id,
+            can_pr,
+            await self.channel_context(channel),
+            is_admin_dev(message.author),
+        )
+
+    async def send_turn(
+        self,
+        turn_id: int,
+        channel: discord.abc.Messageable,
+        prompt: str,
+        author: str,
+        message_id: int,
+        can_pr: bool,
+        context: str,
+        admin: bool = False,
+    ) -> int | None:
         try:
             status, body = await self.worker.say(
-                channel.id, request.prompt, str(author), message.id, can_pr
+                channel.id,  # type: ignore[attr-defined]
+                prompt,
+                author,
+                message_id,
+                can_pr,
+                context,
+                admin,
             )
         except WorkerUnavailable as e:
             await self.end_turn(turn_id, f"the worker isn't reachable ({e})")
@@ -642,6 +774,118 @@ class AgentJobs(commands.Cog):
         )
         self.follow_turn(turn_id)
         return turn_id
+
+    async def channel_context(self, channel: discord.abc.Messageable) -> str:
+        """What she's told with every message: this channel's PR jobs and unpressed
+        offers, so "how's that PR going?" gets the truth. Other channels' jobs are
+        only counted, since their requests may be private."""
+        channel_id = getattr(channel, "id", None)
+        guild = getattr(channel, "guild", None)
+
+        def name(user_id: int) -> str:
+            member = guild.get_member(user_id) if guild is not None else None
+            return member.display_name if member is not None else "someone"
+
+        jobs = await db.fetch_all(
+            """
+            SELECT id, requester_id, status, step, review_rounds, pr_url, stop_reason, prompt
+            FROM agent_jobs WHERE channel_id = %s ORDER BY id DESC LIMIT 5;
+            """,
+            (channel_id,),
+        )
+        lines = [
+            "This channel's PR jobs, newest first:"
+            if jobs
+            else "No PR jobs from this channel yet."
+        ]
+        for job_id, requester, status, step, rounds, pr_url, stop, prompt in jobs:
+            if status in ("running", "preparing"):
+                where = step_text(step, rounds)
+            elif status == "draft":
+                where = (
+                    f"draft PR ({STOP_TEXT.get(stop or '', stop or 'checks failed')})"
+                )
+            else:
+                where = status.replace("_", " ")
+            first = " ".join(str(prompt).split())[:140]
+            link = f", {pr_url}" if pr_url else ""
+            lines.append(
+                f"- Job #{job_id}, asked by {name(requester)}: {where}{link}. Request: {first}"
+            )
+        offers = await db.fetch_all(
+            """
+            SELECT requester_id, pr_request FROM agent_chat_turns
+            WHERE channel_id = %s AND pr_request IS NOT NULL AND job_id IS NULL
+            ORDER BY id DESC LIMIT 3;
+            """,
+            (channel_id,),
+        )
+        for requester, request in offers:
+            first = " ".join(str(request).split())[:140]
+            lines.append(
+                f'- Offered to {name(requester)}, "Make the PR" not pressed yet: {first}'
+            )
+        elsewhere = await db.fetch_one(
+            "SELECT count(*) FROM agent_jobs WHERE channel_id <> %s AND status IN ('queued', 'preparing', 'running');",
+            (channel_id,),
+        )
+        if elsewhere and elsewhere[0]:
+            lines.append(f"Jobs queued or running from other channels: {elsewhere[0]}.")
+        return "\n".join(lines)
+
+    async def follow_up_with_lookup(
+        self,
+        turn_id: int,
+        channel: discord.abc.Messageable | None,
+        lookup: dict,
+        effort: str,
+    ) -> None:
+        """Reads what she asked for, from the channels the asker can see, and sends it
+        back to her as a second turn for the same message; that turn's answer is the
+        one posted."""
+        row = await db.fetch_one(
+            "SELECT message_id, requester_id FROM agent_chat_turns WHERE id = %s;",
+            (turn_id,),
+        )
+        guild = getattr(channel, "guild", None)
+        if row is None or channel is None or guild is None:
+            return
+        message_id, requester_id = row
+        asker = guild.get_member(requester_id)
+        if asker is None:
+            return
+        target = find_member(guild, str(lookup.get("user") or ""))
+        contains = (
+            lookup.get("contains") if isinstance(lookup.get("contains"), str) else None
+        )
+        if target is None:
+            found = f"Nobody in the server matched {str(lookup.get('user'))[:80]!r}."
+        else:
+            try:
+                await channel.trigger_typing()
+            except discord.HTTPException, AttributeError:
+                pass
+            found = await read_messages(guild, asker, target, contains)
+        follow = await db.fetch_one(
+            """
+            INSERT INTO agent_chat_turns (channel_id, message_id, requester_id, effort, status)
+            VALUES (%s, %s, %s, %s, 'sending') ON CONFLICT (message_id) DO NOTHING RETURNING id;
+            """,
+            (channel.id, -message_id, requester_id, effort),  # type: ignore[attr-defined]
+        )
+        if follow is None:
+            return
+        context = await self.channel_context(channel)
+        await self.send_turn(
+            follow[0],
+            channel,
+            f"(The bot read that for you; it's below. Now answer {asker.display_name}'s message.)",
+            asker.display_name,
+            -message_id,
+            access(asker) == DEV,
+            f"{context}\n\n{found}"[:LOOKUP_CONTEXT_CHARS],
+            is_admin_dev(asker),
+        )
 
     async def end_turn(self, turn_id: int, error: str) -> None:
         await db.perform_one(
@@ -707,6 +951,17 @@ class AgentJobs(commands.Cog):
     ) -> None:
         done = turn.get("state") == "done"
         request = (turn.get("pr_request") or None) if done else None
+        lookup = turn.get("lookup") if done else None
+        # she asked to read someone's messages first: that reply isn't posted, the
+        # follow-up turn with what the bot found is. A follow-up's own lookup (a
+        # negative message id) is ignored, so one message is one lookup at most.
+        if isinstance(lookup, dict) and message_id is not None and message_id > 0:
+            await db.perform_one(
+                "UPDATE agent_chat_turns SET status = 'done', finished_at = CURRENT_TIMESTAMP WHERE id = %s AND status = 'thinking';",
+                (turn_id,),
+            )
+            await self.follow_up_with_lookup(turn_id, channel, lookup, effort)
+            return
         # recorded before posting, so a restart mid-post can't post it twice
         await db.perform_one(
             """
@@ -723,8 +978,11 @@ class AgentJobs(commands.Cog):
         )
         if channel is None:
             return
-        # decided once, before her first piece lands and becomes the channel's last message
-        reference = answer_reference(channel, message_id)
+        # decided once, before her first piece lands and becomes the channel's last
+        # message; a lookup's follow-up answers the original message
+        reference = answer_reference(
+            channel, abs(message_id) if message_id is not None else None
+        )
         try:
             if not done:
                 await channel.send(
