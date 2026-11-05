@@ -8,6 +8,8 @@ services:
         PROD: ${PROD:-false}
         CONFIG_ACCESS_TOKEN: ${CONFIG_ACCESS_TOKEN:-}
         GGLEAP_URL: ${GGLEAP_URL:-}
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        GIT_COMMIT_DATE: ${GIT_COMMIT_DATE:-}
     restart: always
     depends_on:
       db:

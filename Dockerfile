@@ -31,4 +31,11 @@ RUN if [ "$PROD" = "true" ]; then \
 # Install dependencies using uv
 RUN uv sync --frozen
 
+# Last, so a new commit every build doesn't invalidate the layers above.
+# Shown by /version; both are optional.
+ARG GIT_COMMIT
+ARG GIT_COMMIT_DATE
+ENV GIT_COMMIT=${GIT_COMMIT}
+ENV GIT_COMMIT_DATE=${GIT_COMMIT_DATE}
+
 CMD ["uv", "run", "bot.py"]
