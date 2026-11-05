@@ -16,11 +16,13 @@ Chats and jobs both run in the miku-worker container (deploy repo), reached over
 HTTP on a private network, so a deploy that recreates this container never kills
 either.
 
-Bot devs (roles.bot_devs, admins included) and agent.owner_id can talk to Miku and
-start jobs; everyone else is ignored. It all runs on the owner's Claude plan, so
-the owner (from secrets.yaml, so /config can't change it) can also cancel anyone's
-job or press anyone's PR button. agent.enabled (config.yaml, editable with
-/config) is the kill switch.
+Bot devs (roles.bot_devs: the role or the user list, and being an admin doesn't
+count) and agent.owner_id can talk to Miku and make PRs. Members with
+agent.certified_role ("Miku Certified") can talk to her, but get no PR offers.
+Anyone else who @'s her gets a polite in-character no, at most once every ten
+minutes. It all runs on the owner's Claude plan, so the owner (from secrets.yaml,
+so /config can't change it) can also cancel anyone's job or press anyone's PR
+button. agent.enabled (config.yaml, editable with /config) is the kill switch.
 """
 
 import asyncio
@@ -320,8 +322,8 @@ OUT_OF_VOICE = (
 def chat_failure(turn: dict) -> str:
     if turn.get("limit"):
         line = random.choice(OUT_OF_VOICE)
-        # the worker names a refused login alongside the limit; only bot devs talk to
-        # her, and one of them can tell the owner
+        # the worker names a refused login alongside the limit; whoever sees it can
+        # tell the owner
         if "has expired" in (turn.get("error") or ""):
             line += "\n-# One of the Claude logins expired too: renew it with `claude setup-token`."
         return line
@@ -337,36 +339,72 @@ def owner_id() -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def _agent_role_ids(key: str) -> set[int]:
+    value = (config.config.get("agent") or {}).get(key)
+    return {
+        role_id
+        for role_id in (value if isinstance(value, list) else [value])
+        if isinstance(role_id, int) and not isinstance(role_id, bool)
+    }
+
+
 def role_ids(guild: discord.Guild | None) -> set[int]:
     """The roles whose ping talks to Miku: her own bot role, and agent.role."""
-    ids: set[int] = set()
+    ids = _agent_role_ids("role")
     if guild is not None and guild.self_role is not None:
         ids.add(guild.self_role.id)
-    value = (config.config.get("agent") or {}).get("role")
-    for role_id in value if isinstance(value, list) else [value]:
-        if isinstance(role_id, int) and not isinstance(role_id, bool):
-            ids.add(role_id)
     return ids
 
 
-def can_use(user: discord.abc.User | None) -> bool:
-    """Bot devs (admins count) and the owner may talk to Miku and start jobs."""
+# what someone may do with Miku: bot devs chat and make PRs, Miku Certified chat
+DEV = "dev"
+CERTIFIED = "certified"
+
+
+def access(user: discord.abc.User | None) -> str | None:
+    """DEV for the owner and bot devs (the role or the user list: being an admin
+    doesn't count here, since not every admin is someone the owner knows),
+    CERTIFIED for agent.certified_role, else None."""
+    if user is None:
+        return None
+    if user.id == owner_id():
+        return DEV
+    # a member of the server; a bare User (someone who left, a DM) has no roles to check
+    roles = getattr(user, "roles", None)
+    if roles is None:
+        return None
+    if config.is_bot_dev(cast(discord.Member, user), admins=False):
+        return DEV
+    if {role.id for role in roles} & _agent_role_ids("certified_role"):
+        return CERTIFIED
+    return None
+
+
+def may_start_pr(user: discord.abc.User | None, requester_id: int | None) -> bool:
+    """ "Make the PR" is for whoever asked, while they're still a bot dev, and for
+    the owner, whose plan pays for it."""
     if user is None:
         return False
     if user.id == owner_id():
         return True
-    # a member of the server; a bare User (someone who left, a DM) has no roles to check
-    if getattr(user, "roles", None) is None:
-        return False
-    return config.is_bot_dev(cast(discord.Member, user))
+    return user.id == requester_id and access(user) == DEV
 
 
-def may_act_for(user: discord.abc.User | None, requester_id: int | None) -> bool:
-    """Cancel and "Make the PR" belong to whoever asked, and to the owner, whose
-    plan pays for it. They must still be allowed to use Miku at all."""
-    if user is None or not can_use(user):
-        return False
-    return user.id == owner_id() or user.id == requester_id
+def may_cancel(user: discord.abc.User | None, requester_id: int | None) -> bool:
+    """Stopping a job is always allowed to whoever asked for it, and to the owner."""
+    return user is not None and user.id in (requester_id, owner_id())
+
+
+# someone with neither role @'d her: one of these, at most once per person per REFUSE_EVERY
+NO_ACCESS = (
+    "Ahh, sorry! I'm only allowed to chat with Miku Certified people right now ♪",
+    "Hmm, you're not on my list… Miku Certified only, sorry! ♪",
+    "Backstage pass required! (That's the Miku Certified role.) ♪",
+    "No ticket, no show! I can only talk with Miku Certified folks for now ♪",
+    "Eep, my manager says I can't chat with you yet. Miku Certified only! ♪",
+    "I'd love to, but I'm only singing for Miku Certified people at the moment ♪",
+)
+REFUSE_EVERY = 10 * 60
 
 
 class WorkerUnavailable(Exception):
@@ -426,12 +464,22 @@ class WorkerClient:
         return await self.request("POST", f"/jobs/{job_id}/cancel", timeout=60)
 
     async def say(
-        self, channel_id: int, message: str, author: str, message_id: int
+        self,
+        channel_id: int,
+        message: str,
+        author: str,
+        message_id: int,
+        can_pr: bool = True,
     ) -> tuple[int, dict]:
         return await self.request(
             "POST",
             f"/chats/{channel_id}/turns",
-            {"message": message, "author": author, "message_id": message_id},
+            {
+                "message": message,
+                "author": author,
+                "message_id": message_id,
+                "can_pr": can_pr,
+            },
         )
 
     async def answer(self, channel_id: int, n: int) -> tuple[int, dict]:
@@ -470,6 +518,8 @@ class AgentJobs(commands.Cog):
         # two quick clicks on "Make the PR" must make one job
         self.pr_lock = asyncio.Lock()
         self.chats_resumed = False
+        # user id -> when they were last told no, so a refusal is once per REFUSE_EVERY
+        self.refused: dict[int, float] = {}
         self.poll.start()
 
     def cog_unload(self) -> None:
@@ -486,7 +536,13 @@ class AgentJobs(commands.Cog):
         guild = message.guild
         # first, because with no channel limit this runs on every message in the server
         request = parse_request(message.content, self.bot.user.id, role_ids(guild))
-        if guild is None or not can_use(message.author):
+        if guild is None:
+            return
+        level = access(message.author)
+        if level is None:
+            # a mention gets a polite no; a reply to her from them is left alone
+            if request is not None and enabled():
+                await self.refuse(message)
             return
         if request is None:
             # replying to one of her messages is talking to her, mention or not
@@ -495,14 +551,30 @@ class AgentJobs(commands.Cog):
                 and enabled()
                 and await self.replies_to_me(message)
             ):
-                await self.chat(message, AgentRequest(message.content.strip()))
+                await self.chat(
+                    message,
+                    AgentRequest(message.content.strip()),
+                    can_pr=level == DEV,
+                )
             return
         if not enabled():
             return
         if request.error:
             await message.reply(request.error, allowed_mentions=QUIET)
             return
-        await self.chat(message, request)
+        await self.chat(message, request, can_pr=level == DEV)
+
+    async def refuse(self, message: discord.Message) -> None:
+        """One in-character no, and then quiet for a while, so pinging her over and
+        over can't make her spam the channel."""
+        now = time.time()
+        if now - self.refused.get(message.author.id, 0) < REFUSE_EVERY:
+            return
+        self.refused[message.author.id] = now
+        try:
+            await message.reply(random.choice(NO_ACCESS), allowed_mentions=QUIET)
+        except discord.HTTPException:
+            pass
 
     async def replies_to_me(self, message: discord.Message) -> bool:
         """Whether the message is a Discord reply to one of Miku's own messages."""
@@ -519,9 +591,12 @@ class AgentJobs(commands.Cog):
 
     # --- conversations -------------------------------------------------------------
 
-    async def chat(self, message: discord.Message, request: AgentRequest) -> int | None:
+    async def chat(
+        self, message: discord.Message, request: AgentRequest, can_pr: bool = True
+    ) -> int | None:
         """Hands what they said to the worker and follows it until the answer is
-        posted. Returns the turn's id, or None when it never reached the worker."""
+        posted. Returns the turn's id, or None when it never reached the worker.
+        can_pr=False (Miku Certified) means no PR offer: the worker drops one."""
         channel = message.channel
         await db.perform_one(
             """
@@ -543,7 +618,7 @@ class AgentJobs(commands.Cog):
         author = getattr(message.author, "display_name", None) or message.author.name
         try:
             status, body = await self.worker.say(
-                channel.id, request.prompt, str(author), message.id
+                channel.id, request.prompt, str(author), message.id, can_pr
             )
         except WorkerUnavailable as e:
             await self.end_turn(turn_id, f"the worker isn't reachable ({e})")
@@ -1097,7 +1172,7 @@ class AgentJobs(commands.Cog):
         requester = await db.fetch_one(
             "SELECT requester_id FROM agent_jobs WHERE id = %s;", (job_id,)
         )
-        if not may_act_for(interaction.user, requester[0] if requester else None):
+        if not may_cancel(interaction.user, requester[0] if requester else None):
             await interaction.response.send_message(
                 "Only the person who asked can cancel it.", ephemeral=True
             )
@@ -1116,9 +1191,9 @@ class AgentJobs(commands.Cog):
         requester = await db.fetch_one(
             "SELECT requester_id FROM agent_chat_turns WHERE id = %s;", (turn_id,)
         )
-        if not may_act_for(interaction.user, requester[0] if requester else None):
+        if not may_start_pr(interaction.user, requester[0] if requester else None):
             await interaction.response.send_message(
-                "Only the person who asked for it can start it.", ephemeral=True
+                "Only the bot dev who asked for it can start it.", ephemeral=True
             )
             return
         if not enabled():

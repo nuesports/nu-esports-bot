@@ -16,18 +16,23 @@ BOT = 1111
 ROLE = 2222
 OWNER = 3333
 OTHER = 4444
+OTHER_TWO = 4545
 DEV = 5555
 DEV_TWO = 6666
 DEVS = {DEV, DEV_TWO}
+FAN = 7070
+FAN_ROLE = 9090
 
 
-def person(user_id, bot=False):
-    """A server member: bot devs are told apart by id (agent_settings)."""
+def person(user_id, bot=False, roles=(), admin=False):
+    """A server member: bot devs are told apart by id (agent_settings), and FAN
+    holds the Miku Certified role."""
+    held = list(roles) or ([FAN_ROLE] if user_id == FAN else [])
     return SimpleNamespace(
         id=user_id,
         bot=bot,
-        roles=[],
-        guild_permissions=SimpleNamespace(administrator=False),
+        roles=[SimpleNamespace(id=r) for r in held],
+        guild_permissions=SimpleNamespace(administrator=admin),
     )
 
 
@@ -280,19 +285,22 @@ def make_cog(bot=None, worker=None):
     cog.following = {}
     cog.pr_lock = agent_jobs.asyncio.Lock()
     cog.chats_resumed = False
+    cog.refused = {}
     return cog
 
 
 @pytest.fixture
 def agent_settings(monkeypatch):
-    monkeypatch.setitem(config.config, "agent", {"enabled": True})
+    monkeypatch.setitem(
+        config.config, "agent", {"enabled": True, "certified_role": FAN_ROLE}
+    )
     monkeypatch.setitem(
         config.secrets,
         "agent",
         {"worker_url": "http://w", "worker_token": "t", "owner_id": OWNER},
     )
     monkeypatch.setattr(
-        config, "is_bot_dev", lambda member, cfg=None: member.id in DEVS
+        config, "is_bot_dev", lambda member, cfg=None, admins=True: member.id in DEVS
     )
 
 
@@ -303,7 +311,6 @@ def agent_settings(monkeypatch):
 @pytest.mark.parametrize(
     "message",
     [
-        lambda: FakeDiscordMessage(f"<@{BOT}> add a coinflip command", author=OTHER),
         lambda: FakeDiscordMessage(f"<@{BOT}> add a coinflip command", bot=True),
         lambda: FakeDiscordMessage(f"<@{BOT}> add a coinflip command", guild=False),
         lambda: FakeDiscordMessage(f"what does <@{BOT}> think of a coinflip command"),
@@ -328,22 +335,83 @@ async def test_bot_devs_and_the_owner_get_in(agent_settings, monkeypatch):
     cog = make_cog()
     heard = []
 
-    async def chat(message, request):
-        heard.append((message.author.id, request.prompt))
+    async def chat(message, request, can_pr=True):
+        heard.append((message.author.id, request.prompt, can_pr))
 
     cog.chat = chat
     await cog.on_message(FakeDiscordMessage(f"<@{BOT}> hi", author=DEV))
     await cog.on_message(FakeDiscordMessage(f"<@&{ROLE}> hey", author=DEV_TWO))
     await cog.on_message(FakeDiscordMessage(f"<@{BOT}> yo"))
-    await cog.on_message(FakeDiscordMessage(f"<@{BOT}> hm", author=OTHER))
+    await cog.on_message(FakeDiscordMessage(f"<@{BOT}> sing", author=FAN))
     # agent.role pings her too
-    monkeypatch.setitem(config.config, "agent", {"enabled": True, "role": 7777})
+    monkeypatch.setitem(
+        config.config,
+        "agent",
+        {"enabled": True, "role": 7777, "certified_role": FAN_ROLE},
+    )
     await cog.on_message(FakeDiscordMessage("<@&7777> sup", author=DEV))
-    assert heard == [(DEV, "hi"), (DEV_TWO, "hey"), (OWNER, "yo"), (DEV, "sup")]
+    assert heard == [
+        (DEV, "hi", True),
+        (DEV_TWO, "hey", True),
+        (OWNER, "yo", True),
+        (FAN, "sing", False),
+        (DEV, "sup", True),
+    ]
     # someone who isn't a member any more has no roles, so only the owner passes
-    assert agent_jobs.can_use(SimpleNamespace(id=DEV)) is False
-    assert agent_jobs.can_use(SimpleNamespace(id=OWNER)) is True
-    assert agent_jobs.can_use(None) is False
+    assert agent_jobs.access(SimpleNamespace(id=DEV)) is None
+    assert agent_jobs.access(SimpleNamespace(id=OWNER)) == agent_jobs.DEV
+    assert agent_jobs.access(None) is None
+
+
+@pytest.mark.asyncio
+async def test_anyone_else_gets_one_polite_no_then_quiet(agent_settings):
+    cog = make_cog()
+
+    async def no_chat(*args, **kwargs):
+        raise AssertionError("started a chat")
+
+    cog.chat = no_chat
+    first = FakeDiscordMessage(f"<@{BOT}> add a coinflip command", author=OTHER)
+    await cog.on_message(first)
+    assert len(first.replies) == 1 and first.replies[0] in agent_jobs.NO_ACCESS
+    again = FakeDiscordMessage(f"<@{BOT}> hello??", author=OTHER)
+    await cog.on_message(again)
+    assert again.replies == []
+    # after the quiet spell, one more
+    cog.refused[OTHER] -= agent_jobs.REFUSE_EVERY + 1
+    later = FakeDiscordMessage(f"<@{BOT}> hi", author=OTHER)
+    await cog.on_message(later)
+    assert len(later.replies) == 1
+    # a plain message, or no mention at all, gets nothing
+    plain = FakeDiscordMessage("miku is cool", author=OTHER_TWO)
+    await cog.on_message(plain)
+    assert plain.replies == []
+
+
+def test_admins_get_no_pass_and_the_roles_decide(monkeypatch):
+    monkeypatch.setitem(config.secrets, "agent", {"owner_id": OWNER})
+    monkeypatch.setitem(config.config, "agent", {"certified_role": FAN_ROLE})
+    monkeypatch.setitem(
+        config.config["roles"], "bot_devs", {"role": 5151, "users": [DEV_TWO]}
+    )
+    assert agent_jobs.access(person(OTHER, admin=True)) is None
+    assert agent_jobs.access(person(OTHER, roles=[5151])) == agent_jobs.DEV
+    assert agent_jobs.access(person(DEV_TWO)) == agent_jobs.DEV
+    assert agent_jobs.access(person(OTHER, roles=[FAN_ROLE])) == agent_jobs.CERTIFIED
+    assert agent_jobs.access(person(OTHER, roles=[5151, FAN_ROLE])) == agent_jobs.DEV
+    assert agent_jobs.access(person(OWNER)) == agent_jobs.DEV
+    # elsewhere in the bot, admins still count as bot devs
+    assert config.is_bot_dev(person(OTHER, admin=True)) is True
+    # the PR button: the bot dev who asked, or the owner; Cancel: who asked, or the owner
+    assert agent_jobs.may_start_pr(person(OTHER, roles=[5151]), OTHER) is True
+    assert agent_jobs.may_start_pr(person(OTHER, roles=[FAN_ROLE]), OTHER) is False
+    assert agent_jobs.may_start_pr(person(OWNER), OTHER) is True
+    assert agent_jobs.may_start_pr(person(DEV_TWO), OTHER) is False
+    assert agent_jobs.may_cancel(person(OTHER), OTHER) is True
+    assert agent_jobs.may_cancel(person(OWNER), OTHER) is True
+    assert agent_jobs.may_cancel(person(DEV_TWO), OTHER) is False
+    assert agent_jobs.may_cancel(None, OTHER) is False
+    assert config_schema.find("agent.certified_role") is not None
 
 
 @pytest.mark.asyncio

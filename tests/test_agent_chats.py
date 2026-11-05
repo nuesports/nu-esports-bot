@@ -13,6 +13,7 @@ from test_agent_jobs import (
     BOT,
     DEV,
     DEV_TWO,
+    FAN,
     OTHER,
     OWNER,
     FakeBot,
@@ -73,9 +74,11 @@ class ChatWorker(FakeWorker):
         self.said = []
         self.answers = {}
         self.say_status = 202
+        self.can_pr = []
 
-    async def say(self, channel_id, message, author, message_id):
+    async def say(self, channel_id, message, author, message_id, can_pr=True):
         self.check()
+        self.can_pr.append(can_pr)
         if self.say_status != 202:
             return self.say_status, {"error": "still answering the last message"}
         n = sum(1 for s in self.said if s[0] == channel_id) + 1
@@ -440,7 +443,7 @@ async def test_the_pr_button_is_for_who_asked(clean_chats):
     other_dev = press(DEV_TWO)
     await cog.on_interaction(other_dev)
     assert other_dev.response.messages[0]["content"] == (
-        "Only the person who asked for it can start it."
+        "Only the bot dev who asked for it can start it."
     )
     assert worker.started == []
     await cog.on_interaction(press(DEV))
@@ -458,3 +461,19 @@ async def test_the_owner_can_press_anyones_button(clean_chats):
     press = await offered_by(cog, worker, DEV)
     await cog.on_interaction(press(OWNER))
     assert len(worker.started) == 1
+
+
+@pytest.mark.asyncio
+async def test_miku_certified_chat_but_never_get_a_pr(clean_chats):
+    worker = ChatWorker()
+    cog = chat_cog(worker)
+    first = ChatMessage(f"<@{BOT}> sing me something", author=FAN)
+    channel = first.channel
+    await say(cog, first)
+    worker.answers[(channel.id, 1)] = done("La la la ♪")
+    await settle(cog)
+    hers = channel.messages[channel.last_message_id]
+    # replying to her works for them too, still without PRs
+    await say(cog, ChatMessage("again!", channel=channel, author=FAN, replying_to=hers))
+    await say(cog, ChatMessage(f"<@{BOT}> add a coinflip", channel=channel, author=DEV))
+    assert worker.can_pr == [False, False, True]

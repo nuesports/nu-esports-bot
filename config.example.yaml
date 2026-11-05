@@ -108,3 +108,6 @@ agent:
   enabled: false
   # a role whose ping counts as @Miku (her own bot role always does)
   # role: <role_id>
+  # "Miku Certified": may chat with her, but only bot devs (roles.bot_devs, no admin
+  # bypass) get PRs. Everyone else gets a polite no.
+  # certified_role: <role_id>
