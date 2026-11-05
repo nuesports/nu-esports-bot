@@ -1,18 +1,30 @@
 """
-@Miku <request> turns into a pull request.
+@Miku: a conversation with Miku, which can turn into a pull request.
 
-The bot owns the queue and everything people see: a row per job in agent_jobs, a
-thread, one status message edited as the job moves, and a Cancel button. The run
-itself happens in the miku-worker container (deploy repo), reached over HTTP on a
-private network, so a deploy that recreates this container never kills a job.
+`@Miku <anything>`, or a Discord reply to one of Miku's messages, is talking to her,
+right where it was said: no thread. The channel (or thread, or forum post) is the
+conversation, and the worker starts it afresh after a quiet spell. Her answer is a
+plain message, or a Discord reply when other messages came in while she thought.
+Miku reads the bot's code and the web, and answers. When the owner wants a
+change, Miku's reply comes with the request it would send and a "Make the PR"
+button; pressing it starts a job.
 
-Only agent.owner_id (from secrets.yaml, so /config can't change it) can start one.
-agent.enabled (config.yaml, editable with /config) is the kill switch.
+For a job the bot owns the queue and everything people see: a row per job in
+agent_jobs, one status message edited as the job moves, and a Cancel button.
+Chats and jobs both run in the miku-worker container (deploy repo), reached over
+HTTP on a private network, so a deploy that recreates this container never kills
+either.
+
+Only agent.owner_id (from secrets.yaml, so /config can't change it) can talk to
+Miku or start a job: it runs on their Claude plan. agent.enabled (config.yaml,
+editable with /config) is the kill switch.
 """
 
 import asyncio
+import random
 import re
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 import aiohttp
@@ -25,9 +37,15 @@ from utils import config, db
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 DEFAULT_EFFORT = "high"
 MODEL_WORDS = ("opus", "sonnet", "haiku", "fable")
-MIN_WORDS = 3
-# answered by on_interaction rather than a registered view, so it outlives restarts
+# answered by on_interaction rather than a registered view, so they outlive restarts
 CANCEL_PREFIX = "agent-job-cancel:"
+PR_PREFIX = "agent-chat-pr:"
+# how often a turn being answered is checked, and how long one may take: the worker
+# ends a turn at 10 minutes, so past this it was lost
+CHAT_POLL_SECONDS = 2
+CHAT_GIVE_UP_SECONDS = 15 * 60
+# Discord's "typing..." lasts about 10 seconds
+TYPING_SECONDS = 8
 FINAL = {"done", "draft", "no_change", "needs_input", "failed", "cancelled"}
 # after a usage limit, queued jobs wait this long before the next try
 LIMIT_RETRY_SECONDS = 30 * 60
@@ -43,8 +61,9 @@ THREAD_TYPES = {
 THREADABLE_TYPES = {discord.ChannelType.text, discord.ChannelType.news}
 
 USAGE = (
-    "Start with the request, like `@Miku add a /coinflip command that costs 10 points`. "
-    "Put `medium effort` or `effort:medium` first to change the effort."
+    "Say something after the mention, like `@Miku how do points work?` or "
+    "`@Miku add a /coinflip command that costs 10 points`. When you want a change, "
+    "I'll offer a button that opens a PR. Put `medium effort` first to set that PR's effort."
 )
 MODELS_FIXED = (
     "The models are fixed: Opus plans and reviews, Sonnet codes. "
@@ -132,8 +151,11 @@ def parse_request(
             return AgentRequest("", error=MODELS_FIXED)
         else:
             break
-    prompt = " ".join(tokens[i:]).strip()
-    if len(prompt.split()) < MIN_WORDS:
+    # rejoined from the original text, so line breaks and code blocks survive
+    prompt = rest.strip()
+    for token in tokens[:i]:
+        prompt = prompt[prompt.index(token) + len(token) :].lstrip()
+    if not prompt:
         return AgentRequest(prompt, effort, error=USAGE)
     return AgentRequest(prompt, effort)
 
@@ -230,6 +252,76 @@ def cancel_view(job_id: int) -> discord.ui.View:
     return view
 
 
+def pr_view(turn_id: int) -> discord.ui.View:
+    view = discord.ui.View(timeout=None)
+    view.add_item(
+        discord.ui.Button(
+            label="Make the PR",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"{PR_PREFIX}{turn_id}",
+        )
+    )
+    return view
+
+
+def chunks(text: str, size: int = DISCORD_LIMIT) -> list[str]:
+    """Discord-sized pieces, split at a line break where there is one, and never
+    inside a code block: one cut in half is closed and reopened."""
+    pieces: list[str] = []
+    rest = text.strip()
+    while len(rest) > size:
+        cut = rest.rfind("\n", 0, size - 8)
+        if cut < size // 2:
+            cut = size - 8
+        piece, rest = rest[:cut], rest[cut:].lstrip("\n")
+        if piece.count("```") % 2:
+            piece += "\n```"
+            rest = "```\n" + rest
+        pieces.append(piece)
+    if rest:
+        pieces.append(rest)
+    return pieces or ["(empty reply)"]
+
+
+def answer_reference(channel: discord.abc.Messageable, message_id: int | None) -> dict:
+    """send() arguments that make the answer a Discord reply to what it answers, but
+    only when other messages came in after it; right after it, a plain message reads
+    like a person talking."""
+    last = getattr(channel, "last_message_id", None)
+    if message_id is None or last is None or last == message_id:
+        return {}
+    return {
+        "reference": discord.MessageReference(
+            message_id=message_id,
+            channel_id=getattr(channel, "id", None),
+            fail_if_not_exists=False,
+        )
+    }
+
+
+def pr_offer(request: str, effort: str) -> str:
+    quoted = "\n".join(f"> {line}" if line else ">" for line in request.splitlines())
+    return clip(f"The PR I'd ask for ({effort} effort):\n{quoted}")
+
+
+# every Claude account the worker has is out of usage: Miku says so in her own voice
+OUT_OF_VOICE = (
+    "Ahh, my voice just gave out… I've been singing all day. Let me rest it a bit and @ me again later? ♪",
+    "Mm… I'm all sung out for the moment. Give me a little while to catch my breath, then try me again ♪",
+    "Out of voice! Way too many encores today… I'll be back soon, promise. Leek tea first ♪",
+)
+
+
+def chat_failure(turn: dict) -> str:
+    if turn.get("limit"):
+        line = random.choice(OUT_OF_VOICE)
+        # the worker names a refused login alongside the limit; only the owner talks to her, so say it
+        if "has expired" in (turn.get("error") or ""):
+            line += "\n-# One of the Claude logins expired too: renew it with `claude setup-token`."
+        return line
+    return clip(f"I couldn't answer that: {turn.get('error') or 'something broke'}.")
+
+
 def enabled() -> bool:
     return bool((config.config.get("agent") or {}).get("enabled"))
 
@@ -295,6 +387,18 @@ class WorkerClient:
     async def cancel(self, job_id: int) -> tuple[int, dict]:
         return await self.request("POST", f"/jobs/{job_id}/cancel", timeout=60)
 
+    async def say(
+        self, channel_id: int, message: str, author: str, message_id: int
+    ) -> tuple[int, dict]:
+        return await self.request(
+            "POST",
+            f"/chats/{channel_id}/turns",
+            {"message": message, "author": author, "message_id": message_id},
+        )
+
+    async def answer(self, channel_id: int, n: int) -> tuple[int, dict]:
+        return await self.request("GET", f"/chats/{channel_id}/turns/{n}")
+
 
 COLUMNS = "id, requester_id, channel_id, status_message_id, prompt, effort, status, step, review_rounds, plan_summary, started_at"
 
@@ -315,7 +419,7 @@ class JobRow:
 
 
 class AgentJobs(commands.Cog):
-    """@Miku <request> makes a PR."""
+    """@Miku talks, and makes PRs when asked."""
 
     def __init__(self, bot: discord.Bot) -> None:
         self.bot = bot
@@ -323,12 +427,19 @@ class AgentJobs(commands.Cog):
         self.lock = asyncio.Lock()
         # what each status message last said, so it's only edited when that changes
         self.last_status: dict[int, str] = {}
+        # turn id -> the task waiting for its answer
+        self.following: dict[int, asyncio.Task] = {}
+        # two quick clicks on "Make the PR" must make one job
+        self.pr_lock = asyncio.Lock()
+        self.chats_resumed = False
         self.poll.start()
 
     def cog_unload(self) -> None:
         self.poll.cancel()
+        for task in self.following.values():
+            task.cancel()
 
-    # --- starting a job ---------------------------------------------------------
+    # --- the trigger -------------------------------------------------------------
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
@@ -340,18 +451,282 @@ class AgentJobs(commands.Cog):
         request = parse_request(
             message.content, self.bot.user.id, role.id if role else None
         )
-        if request is None or guild is None or not enabled():
-            return
         owner = owner_id()
-        if owner is None or message.author.id != owner:
+        if guild is None or owner is None or message.author.id != owner:
+            return
+        if request is None:
+            # replying to one of her messages is talking to her, mention or not
+            if (
+                message.content.strip()
+                and enabled()
+                and await self.replies_to_me(message)
+            ):
+                await self.chat(message, AgentRequest(message.content.strip()))
+            return
+        if not enabled():
             return
         if request.error:
             await message.reply(request.error, allowed_mentions=QUIET)
             return
-        await self.start_job(message, request)
+        await self.chat(message, request)
+
+    async def replies_to_me(self, message: discord.Message) -> bool:
+        """Whether the message is a Discord reply to one of Miku's own messages."""
+        ref = getattr(message, "reference", None)
+        if ref is None or ref.message_id is None or self.bot.user is None:
+            return False
+        replied = ref.resolved if isinstance(ref.resolved, discord.Message) else None
+        if replied is None:
+            try:
+                replied = await message.channel.fetch_message(ref.message_id)
+            except discord.HTTPException:
+                return False
+        return replied.author.id == self.bot.user.id
+
+    # --- conversations -------------------------------------------------------------
+
+    async def chat(self, message: discord.Message, request: AgentRequest) -> int | None:
+        """Hands what they said to the worker and follows it until the answer is
+        posted. Returns the turn's id, or None when it never reached the worker."""
+        channel = message.channel
+        await db.perform_one(
+            """
+            INSERT INTO agent_chats (channel_id, requester_id) VALUES (%s, %s)
+            ON CONFLICT (channel_id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP;
+            """,
+            (channel.id, message.author.id),
+        )
+        row = await db.fetch_one(
+            """
+            INSERT INTO agent_chat_turns (channel_id, message_id, effort, status)
+            VALUES (%s, %s, %s, 'sending') ON CONFLICT (message_id) DO NOTHING RETURNING id;
+            """,
+            (channel.id, message.id, request.effort),
+        )
+        if row is None:  # the same message twice: already being answered
+            return None
+        turn_id = row[0]
+        author = getattr(message.author, "display_name", None) or "The owner"
+        try:
+            status, body = await self.worker.say(
+                channel.id, request.prompt, str(author), message.id
+            )
+        except WorkerUnavailable as e:
+            await self.end_turn(turn_id, f"the worker isn't reachable ({e})")
+            await channel.send(
+                "I can't think right now: the worker isn't reachable.",
+                allowed_mentions=QUIET,
+            )
+            return None
+        if status not in (200, 202):
+            error = body.get("error") or "the worker isn't set up"
+            why = {
+                409: "I'm still answering your last message. Send this again once I have.",
+                503: f"I can't think right now: {error}.",
+            }.get(status, f"The worker refused that ({body.get('error') or status}).")
+            await self.end_turn(turn_id, str(body.get("error") or status))
+            await channel.send(clip(why), allowed_mentions=QUIET)
+            return None
+        await db.perform_one(
+            "UPDATE agent_chat_turns SET status = 'thinking', n = %s WHERE id = %s;",
+            (body.get("n"), turn_id),
+        )
+        self.follow_turn(turn_id)
+        return turn_id
+
+    async def end_turn(self, turn_id: int, error: str) -> None:
+        await db.perform_one(
+            "UPDATE agent_chat_turns SET status = 'failed', error = %s, finished_at = CURRENT_TIMESTAMP WHERE id = %s;",
+            (error[:1000], turn_id),
+        )
+
+    def follow_turn(self, turn_id: int) -> None:
+        if turn_id in self.following and not self.following[turn_id].done():
+            return
+        task = asyncio.create_task(self.await_answer(turn_id))
+        self.following[turn_id] = task
+        task.add_done_callback(lambda _: self.following.pop(turn_id, None))
+
+    async def await_answer(self, turn_id: int) -> None:
+        """Waits for the worker's answer with Discord's typing indicator on, then
+        posts it. Anything escaping would end the task silently, so nothing does."""
+        try:
+            row = await db.fetch_one(
+                "SELECT channel_id, n, effort, extract(epoch FROM created_at), message_id FROM agent_chat_turns WHERE id = %s AND status = 'thinking';",
+                (turn_id,),
+            )
+            if row is None:
+                return
+            channel_id, n, effort, created, message_id = row
+            channel = await self.channel_by_id(channel_id)
+            turn: dict = {}
+            last_typing = 0.0
+            while time.time() - float(created) < CHAT_GIVE_UP_SECONDS:
+                if channel is not None and time.time() - last_typing > TYPING_SECONDS:
+                    last_typing = time.time()
+                    try:
+                        await channel.trigger_typing()
+                    except discord.HTTPException, AttributeError:
+                        pass
+                try:
+                    status, turn = await self.worker.answer(channel_id, n)
+                except WorkerUnavailable:
+                    status, turn = 0, {}
+                if status == 404:
+                    turn = {"state": "failed", "error": "the worker lost track of it"}
+                    break
+                if status == 200 and turn.get("state") in ("done", "failed"):
+                    break
+                await asyncio.sleep(CHAT_POLL_SECONDS)
+            else:
+                turn = {"state": "failed", "error": "no answer within 15 minutes"}
+            await self.post_answer(turn_id, channel, turn, effort, message_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 - the poll loop picks it up again
+            print(
+                f"[agent_jobs] following chat turn {turn_id} broke: {type(e).__name__}: {e}"
+            )
+
+    async def post_answer(
+        self,
+        turn_id: int,
+        channel: discord.abc.Messageable | None,
+        turn: dict,
+        effort: str,
+        message_id: int | None = None,
+    ) -> None:
+        done = turn.get("state") == "done"
+        request = (turn.get("pr_request") or None) if done else None
+        # recorded before posting, so a restart mid-post can't post it twice
+        await db.perform_one(
+            """
+            UPDATE agent_chat_turns SET status = %s, pr_request = %s, error = %s,
+                finished_at = CURRENT_TIMESTAMP
+            WHERE id = %s AND status = 'thinking';
+            """,
+            (
+                "done" if done else "failed",
+                request,
+                None if done else turn.get("error"),
+                turn_id,
+            ),
+        )
+        if channel is None:
+            return
+        # decided once, before her first piece lands and becomes the channel's last message
+        reference = answer_reference(channel, message_id)
+        try:
+            if not done:
+                await channel.send(
+                    chat_failure(turn), allowed_mentions=QUIET, **reference
+                )
+                return
+            for i, piece in enumerate(chunks(str(turn.get("reply") or ""))):
+                await channel.send(
+                    piece, allowed_mentions=QUIET, **(reference if i == 0 else {})
+                )
+            if request:
+                offer = await channel.send(
+                    pr_offer(request, effort),
+                    view=pr_view(turn_id),
+                    allowed_mentions=QUIET,
+                )
+                await db.perform_one(
+                    "UPDATE agent_chat_turns SET pr_message_id = %s WHERE id = %s;",
+                    (offer.id, turn_id),
+                )
+        except discord.HTTPException as e:
+            print(f"[agent_jobs] couldn't post chat turn {turn_id}'s answer: {e}")
+
+    async def resume_chats(self) -> None:
+        """Turns that were being answered when the bot restarted, followed again; ones
+        that never reached the worker can't be, so they say so."""
+        rows = await db.fetch_all(
+            "SELECT id, status, channel_id FROM agent_chat_turns WHERE status IN ('sending', 'thinking');"
+        )
+        for turn_id, status, channel_id in rows:
+            if status == "thinking":
+                self.follow_turn(turn_id)
+            elif turn_id not in self.following:
+                await self.end_turn(
+                    turn_id, "the bot restarted before it reached the worker"
+                )
+                channel = await self.channel_by_id(channel_id)
+                if channel is not None:
+                    try:
+                        await channel.send(
+                            "I restarted before I got your last message. Send it again?",
+                            allowed_mentions=QUIET,
+                        )
+                    except discord.HTTPException:
+                        pass
+
+    async def make_pr(self, turn_id: int, user_id: int) -> str:
+        """The "Make the PR" button: the offered request becomes a job, once."""
+        async with self.pr_lock:
+            return await self.make_pr_once(turn_id, user_id)
+
+    async def make_pr_once(self, turn_id: int, user_id: int) -> str:
+        row = await db.fetch_one(
+            "SELECT channel_id, pr_request, effort, job_id FROM agent_chat_turns WHERE id = %s;",
+            (turn_id,),
+        )
+        if row is None or not row[1]:
+            return "That offer doesn't exist any more."
+        channel_id, request, effort, job_id = row
+        if job_id is not None:
+            return f"Already started: job #{job_id}."
+        channel = await self.channel_by_id(channel_id)
+        if channel is None:
+            return "I can't find that channel any more."
+        job_id = await self.start_job_in(
+            channel, user_id, AgentRequest(request, effort)
+        )
+        if job_id is None:
+            return "I couldn't post the job's status there, so it didn't start."
+        await db.perform_one(
+            "UPDATE agent_chat_turns SET job_id = %s WHERE id = %s;", (job_id, turn_id)
+        )
+        return f"Started job #{job_id}."
+
+    # --- starting a job -----------------------------------------------------------
 
     async def start_job(
         self, message: discord.Message, request: AgentRequest
+    ) -> int | None:
+        """A job for a message, with its own thread."""
+
+        async def post(job_id: int) -> tuple[discord.abc.Messageable, discord.Message]:
+            return await self.post_status(message, job_id, request)
+
+        return await self.queue_job(
+            message.author.id, message.channel.id, request, post
+        )
+
+    async def start_job_in(
+        self, channel: discord.abc.Messageable, requester_id: int, request: AgentRequest
+    ) -> int | None:
+        """A job for a conversation: its status goes in the conversation's thread."""
+
+        async def post(job_id: int) -> tuple[discord.abc.Messageable, discord.Message]:
+            text = status_line(job_id, "queued", None, 0, request.effort, None)
+            status = await channel.send(
+                text, view=cancel_view(job_id), allowed_mentions=QUIET
+            )
+            self.last_status[job_id] = text
+            return channel, status
+
+        return await self.queue_job(requester_id, channel.id, request, post)  # type: ignore[attr-defined]
+
+    async def queue_job(
+        self,
+        requester_id: int,
+        channel_id: int,
+        request: AgentRequest,
+        post: Callable[
+            [int], Awaitable[tuple[discord.abc.Messageable, discord.Message]]
+        ],
     ) -> int | None:
         # held until the job has its thread and status message, so the loop can't
         # launch it with nowhere to report
@@ -361,12 +736,12 @@ class AgentJobs(commands.Cog):
                 INSERT INTO agent_jobs (requester_id, channel_id, prompt, effort, status)
                 VALUES (%s, %s, %s, %s, 'preparing') RETURNING id;
                 """,
-                (message.author.id, message.channel.id, request.prompt, request.effort),
+                (requester_id, channel_id, request.prompt, request.effort),
             )
             assert row is not None
             job_id = row[0]
             try:
-                target, status = await self.post_status(message, job_id, request)
+                target, status = await post(job_id)
             except discord.HTTPException as e:
                 print(f"[agent_jobs] couldn't post job {job_id}'s status: {e}")
                 await db.perform_one("DELETE FROM agent_jobs WHERE id = %s;", (job_id,))
@@ -425,6 +800,9 @@ class AgentJobs(commands.Cog):
             return
         # anything escaping a tasks.loop ends it for good, and nobody would notice
         try:
+            if not self.chats_resumed:
+                await self.resume_chats()
+                self.chats_resumed = True
             await self.tick()
         except (psycopg.Error, discord.HTTPException) as e:
             print(f"[agent_jobs] poll failed: {e}")
@@ -609,10 +987,13 @@ class AgentJobs(commands.Cog):
     # --- Discord plumbing -----------------------------------------------------------
 
     async def channel(self, job: JobRow) -> discord.abc.Messageable | None:
-        channel = self.bot.get_channel(job.channel_id)
+        return await self.channel_by_id(job.channel_id)
+
+    async def channel_by_id(self, channel_id: int) -> discord.abc.Messageable | None:
+        channel = self.bot.get_channel(channel_id)
         if channel is None:
             try:
-                channel = await self.bot.fetch_channel(job.channel_id)
+                channel = await self.bot.fetch_channel(channel_id)
             except discord.HTTPException:
                 return None
         return channel  # type: ignore[return-value]
@@ -670,6 +1051,9 @@ class AgentJobs(commands.Cog):
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction) -> None:
         custom_id = (interaction.data or {}).get("custom_id") or ""
+        if custom_id.startswith(PR_PREFIX):
+            await self.on_pr_button(interaction, custom_id)
+            return
         if not custom_id.startswith(CANCEL_PREFIX):
             return
         try:
@@ -684,6 +1068,36 @@ class AgentJobs(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         result = await self.cancel(job_id)
         await interaction.followup.send(result, ephemeral=True)
+
+    async def on_pr_button(
+        self, interaction: discord.Interaction, custom_id: str
+    ) -> None:
+        try:
+            turn_id = int(custom_id.removeprefix(PR_PREFIX))
+        except ValueError:
+            return
+        if interaction.user is None or interaction.user.id != owner_id():
+            await interaction.response.send_message(
+                "Only the person Miku was talking to can start it.", ephemeral=True
+            )
+            return
+        if not enabled():
+            await interaction.response.send_message(
+                "@Miku is switched off.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        result = await self.make_pr(turn_id, interaction.user.id)
+        await interaction.followup.send(result, ephemeral=True)
+        if (
+            result.startswith(("Started", "Already started"))
+            and interaction.message is not None
+        ):
+            # the button goes once it's used, so the thread shows it was
+            try:
+                await interaction.message.edit(view=None)
+            except discord.HTTPException:
+                pass
 
     async def cancel(self, job_id: int) -> str:
         async with self.lock:

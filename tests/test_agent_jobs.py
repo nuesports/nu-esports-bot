@@ -83,8 +83,8 @@ def test_model_options_and_bad_efforts_get_one_line(content):
     assert request is not None and request.error == agent_jobs.MODELS_FIXED
 
 
-@pytest.mark.parametrize("content", ["", "hi", "you there?", "medium effort hi"])
-def test_short_requests_get_usage(content):
+@pytest.mark.parametrize("content", ["", "   ", "medium effort", "effort:low"])
+def test_nothing_after_the_mention_gets_usage(content):
     request = parse_request(f"<@{BOT}> {content}", BOT, ROLE)
     assert request is not None and request.error == agent_jobs.USAGE
 
@@ -251,6 +251,9 @@ def make_cog(bot=None, worker=None):
     cog.worker = worker or FakeWorker()
     cog.lock = agent_jobs.asyncio.Lock()
     cog.last_status = {}
+    cog.following = {}
+    cog.pr_lock = agent_jobs.asyncio.Lock()
+    cog.chats_resumed = False
     return cog
 
 
@@ -282,10 +285,11 @@ async def test_the_right_nothing(agent_settings, message):
     cog = make_cog()
     msg = message()
 
-    async def no_job(*args):
-        raise AssertionError("started a job")
+    async def no_chat(*args):
+        raise AssertionError("started a chat")
 
-    cog.start_job = no_job
+    cog.chat = no_chat
+    cog.start_job = no_chat
     await cog.on_message(msg)
     assert msg.replies == []
 
@@ -294,10 +298,11 @@ async def test_the_right_nothing(agent_settings, message):
 async def test_off_or_no_owner_means_nothing(agent_settings, monkeypatch):
     cog = make_cog()
 
-    async def no_job(*args):
-        raise AssertionError("started a job")
+    async def no_chat(*args):
+        raise AssertionError("started a chat")
 
-    cog.start_job = no_job
+    cog.chat = no_chat
+    cog.start_job = no_chat
     monkeypatch.setitem(config.config, "agent", {"enabled": False})
     await cog.on_message(FakeDiscordMessage(f"<@{BOT}> add a coinflip command"))
     monkeypatch.delitem(config.config, "agent")
@@ -310,7 +315,7 @@ async def test_off_or_no_owner_means_nothing(agent_settings, monkeypatch):
 @pytest.mark.asyncio
 async def test_usage_and_option_errors_answer_one_line(agent_settings):
     cog = make_cog()
-    short = FakeDiscordMessage(f"<@{BOT}> hi")
+    short = FakeDiscordMessage(f"<@{BOT}>")
     model = FakeDiscordMessage(f"<@{BOT}> use sonnet, add a coinflip command")
     await cog.on_message(short)
     await cog.on_message(model)
