@@ -122,9 +122,10 @@ def _role_ids(value: int | list[int] | None) -> set[int]:
     return set(value)
 
 
-def _in_role_group(member: discord.Member, group: dict) -> bool:
-    """True for admins, or if member is in the group's explicit user list or holds its role(s)."""
-    if member.guild_permissions.administrator:
+def _in_role_group(member: discord.Member, group: dict, admins: bool = True) -> bool:
+    """True for admins (unless admins=False), or if member is in the group's explicit
+    user list or holds its role(s)."""
+    if admins and member.guild_permissions.administrator:
         return True
     if member.id in (group.get("users") or []):
         return True
@@ -132,9 +133,14 @@ def _in_role_group(member: discord.Member, group: dict) -> bool:
     return bool(member_role_ids & _role_ids(group.get("role")))
 
 
-def is_bot_dev(member: discord.Member, cfg: dict | None = None) -> bool:
-    """cfg checks against a proposed config instead of the live one."""
-    return _in_role_group(member, (config if cfg is None else cfg)["roles"]["bot_devs"])
+def is_bot_dev(
+    member: discord.Member, cfg: dict | None = None, *, admins: bool = True
+) -> bool:
+    """cfg checks against a proposed config instead of the live one. admins=False
+    counts only the role and the user list, for things admins shouldn't get for free."""
+    return _in_role_group(
+        member, (config if cfg is None else cfg)["roles"]["bot_devs"], admins
+    )
 
 
 def is_gameroom_staff(member: discord.Member) -> bool:

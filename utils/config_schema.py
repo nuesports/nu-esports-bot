@@ -59,6 +59,11 @@ SETTINGS: list[Setting] = [
     ),
     Setting("antiscam.exempt_staff", Kind.BOOL, "Never hold leadership and bot devs"),
     Setting("config_log.channel", Kind.CHANNEL, "Where /config changes get posted"),
+    Setting("agent.enabled", Kind.BOOL, "@Miku makes PRs (off is the kill switch)"),
+    Setting("agent.role", Kind.ROLE, "Role whose ping talks to Miku, like @Miku"),
+    Setting(
+        "agent.certified_role", Kind.ROLE, "Miku Certified: may chat with Miku, no PRs"
+    ),
     Setting("fun.hannah", Kind.USER, "hannah"),
     Setting("fun.hannah-haters", Kind.ROLE, "hannah haters"),
     Setting("fun.stickers.*", Kind.NUMBER, "Sticker id"),

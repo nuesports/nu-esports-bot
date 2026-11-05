@@ -102,3 +102,12 @@ antiscam:
   # warning at load if it is set, and this file's real counterpart is gitignored.
   #test_account_ages:
   #  <your_discord_id>: 180
+
+agent:
+  # @Miku talks with bot devs and makes PRs (cogs/agent_jobs.py). Off unless set true; it's the kill switch too
+  enabled: false
+  # a role whose ping counts as @Miku (her own bot role always does)
+  # role: <role_id>
+  # "Miku Certified": may chat with her, but only bot devs (roles.bot_devs, no admin
+  # bypass) get PRs. Everyone else gets a polite no.
+  # certified_role: <role_id>
