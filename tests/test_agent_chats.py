@@ -77,6 +77,8 @@ class ChatWorker(FakeWorker):
         self.can_pr = []
         self.contexts = []
         self.admins = []
+        self.edit_calls = []
+        self.edit_status = 200
 
     async def say(
         self,
@@ -98,6 +100,21 @@ class ChatWorker(FakeWorker):
         self.said.append((channel_id, message, author, message_id))
         self.answers.setdefault((channel_id, n), {"state": "thinking"})
         return 202, {"chat_id": channel_id, "n": n, "state": "thinking"}
+
+    async def apply_edit(self, edit_id, by):
+        self.check()
+        self.edit_calls.append(("apply", edit_id, by))
+        return self.edit_status, {"version": "00001-" + edit_id, "error": "nope"}
+
+    async def discard_edit(self, edit_id):
+        self.check()
+        self.edit_calls.append(("discard", edit_id))
+        return self.edit_status, {"discarded": True, "error": "nope"}
+
+    async def undo_edit(self, version):
+        self.check()
+        self.edit_calls.append(("undo", version))
+        return self.edit_status, {"version": version, "error": "a newer edit is on top"}
 
     async def answer(self, channel_id, n):
         self.check()
@@ -708,3 +725,103 @@ async def test_she_knows_when_an_admin_bot_dev_is_talking(clean_chats):
     await say(cog, ChatMessage(f"<@{BOT}> do it", author=DEV_TWO))
     await say(cog, ChatMessage(f"<@{BOT}> do it"))
     assert worker.admins == [True, False, True]
+
+
+# --- editing herself ----------------------------------------------------------------
+
+
+EDIT = {
+    "id": "abc123",
+    "summary": "say no gently",
+    "diff": "-**Saying no, as me.**\n+**Saying no, gently.**",
+}
+
+
+async def offered_edit(cog, worker):
+    message = ChatMessage(f"<@{BOT}> be gentler when you say no", author=DEV)
+    channel = message.channel
+    await say(cog, message)
+    worker.answers[(channel.id, 1)] = {
+        **done("I'd say no more gently ♪"),
+        "persona_edit": EDIT,
+    }
+    await settle(cog)
+    offer = channel.messages[max(channel.messages)]
+
+    def press(user, admin=False, which=None):
+        interaction = FakeInteraction(person(user, admin=admin))
+        interaction.user.display_name = "alex" if user == OWNER else "dev"
+        view = offer.edit_calls[-1]["view"] if offer.edit_calls else channel.views[-1]
+        button = view.children[which or 0]
+        interaction.data = {"custom_id": button.custom_id}
+        interaction.message = offer
+        return interaction
+
+    return channel, offer, press
+
+
+@pytest.mark.asyncio
+async def test_her_edit_to_herself_waits_for_an_admin_bot_dev(clean_chats):
+    worker = ChatWorker()
+    cog = chat_cog(worker)
+    channel, offer, press = await offered_edit(cog, worker)
+    assert channel.sent[0] == "I'd say no more gently ♪"
+    assert offer.content.startswith("Change to myself: say no gently\n```diff\n")
+    assert [b.label for b in channel.views[-1].children] == ["Apply", "Discard"]
+    # a bot dev who isn't an admin, and an admin who isn't a bot dev, can't
+    for user, admin in ((DEV, False), (OTHER, True)):
+        nope = press(user, admin)
+        await cog.on_interaction(nope)
+        assert (
+            nope.response.messages[0]["content"]
+            == "Only an admin bot dev can change how I work."
+        )
+    assert worker.edit_calls == []
+    boss = press(DEV, admin=True)
+    await cog.on_interaction(boss)
+    assert worker.edit_calls == [("apply", "abc123", "dev")]
+    assert offer.content.endswith("\n-# Applied by dev.")
+    assert [b.label for b in offer.edit_calls[-1]["view"].children] == ["Undo"]
+    undo = press(OWNER)
+    await cog.on_interaction(undo)
+    assert worker.edit_calls[-1] == ("undo", "00001-abc123")
+    assert offer.content.endswith("\n-# Undone by alex.")
+    assert "Applied by" not in offer.content
+    assert offer.edit_calls[-1]["view"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_discard_or_a_refused_undo_says_so(clean_chats):
+    worker = ChatWorker()
+    cog = chat_cog(worker)
+    _, offer, press = await offered_edit(cog, worker)
+    await cog.on_interaction(press(OWNER, which=1))
+    assert worker.edit_calls == [("discard", "abc123")]
+    assert offer.content.endswith("\n-# Discarded by alex.")
+    worker.edit_status = 409
+    late = FakeInteraction(person(OWNER))
+    late.data = {"custom_id": f"{agent_jobs.EDIT_UNDO_PREFIX}00001-abc123"}
+    late.message = offer
+    await cog.on_interaction(late)
+    assert (
+        late.followup.send_calls[0]["content"]
+        == "That didn't work: a newer edit is on top."
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_edit_that_didnt_fit_is_a_small_note(clean_chats):
+    worker = ChatWorker()
+    cog = chat_cog(worker)
+    message = ChatMessage(f"<@{BOT}> rewrite all of yourself", author=DEV)
+    channel = message.channel
+    await say(cog, message)
+    worker.answers[(channel.id, 1)] = {
+        **done("Trying!"),
+        "persona_edit_error": "it's over her 5500-token budget",
+    }
+    await settle(cog)
+    assert channel.sent == [
+        "Trying!",
+        "-# I tried to change my own notes, but it didn't fit: it's over her 5500-token budget",
+    ]

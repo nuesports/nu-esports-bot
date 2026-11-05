@@ -46,6 +46,10 @@ MODEL_WORDS = ("opus", "sonnet", "haiku", "fable")
 # answered by on_interaction rather than a registered view, so they outlive restarts
 CANCEL_PREFIX = "agent-job-cancel:"
 PR_PREFIX = "agent-chat-pr:"
+# an edit Miku proposed to her own persona: applied, discarded or undone by an admin bot dev
+EDIT_APPLY_PREFIX = "agent-persona-apply:"
+EDIT_DISCARD_PREFIX = "agent-persona-discard:"
+EDIT_UNDO_PREFIX = "agent-persona-undo:"
 # how often a turn being answered is checked, and how long one may take: the worker
 # ends a turn at 10 minutes, so past this it was lost
 CHAT_POLL_SECONDS = 2
@@ -254,6 +258,45 @@ def cancel_view(job_id: int) -> discord.ui.View:
             label="Cancel",
             style=discord.ButtonStyle.secondary,
             custom_id=f"{CANCEL_PREFIX}{job_id}",
+        )
+    )
+    return view
+
+
+def edit_offer(edit: dict) -> str:
+    diff = str(edit.get("diff") or "").replace("```", "'''")
+    return clip(
+        f"Change to myself: {edit.get('summary') or 'an edit'}\n```diff\n{diff}\n```"
+        "-# An admin bot dev can apply it; it can be undone."
+    )
+
+
+def edit_view(edit_id: str) -> discord.ui.View:
+    view = discord.ui.View(timeout=None)
+    view.add_item(
+        discord.ui.Button(
+            label="Apply",
+            style=discord.ButtonStyle.success,
+            custom_id=f"{EDIT_APPLY_PREFIX}{edit_id}",
+        )
+    )
+    view.add_item(
+        discord.ui.Button(
+            label="Discard",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"{EDIT_DISCARD_PREFIX}{edit_id}",
+        )
+    )
+    return view
+
+
+def undo_view(version: str) -> discord.ui.View:
+    view = discord.ui.View(timeout=None)
+    view.add_item(
+        discord.ui.Button(
+            label="Undo",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"{EDIT_UNDO_PREFIX}{version}",
         )
     )
     return view
@@ -588,6 +631,19 @@ class WorkerClient:
 
     async def answer(self, channel_id: int, n: int) -> tuple[int, dict]:
         return await self.request("GET", f"/chats/{channel_id}/turns/{n}")
+
+    async def apply_edit(self, edit_id: str, by: str) -> tuple[int, dict]:
+        return await self.request(
+            "POST", f"/persona/edits/{edit_id}/apply", {"by": by}, timeout=60
+        )
+
+    async def discard_edit(self, edit_id: str) -> tuple[int, dict]:
+        return await self.request("POST", f"/persona/edits/{edit_id}/discard", {})
+
+    async def undo_edit(self, version: str) -> tuple[int, dict]:
+        return await self.request(
+            "POST", "/persona/undo", {"version": version}, timeout=60
+        )
 
 
 COLUMNS = "id, requester_id, channel_id, status_message_id, prompt, effort, status, step, review_rounds, plan_summary, started_at"
@@ -1002,6 +1058,20 @@ class AgentJobs(commands.Cog):
                 await db.perform_one(
                     "UPDATE agent_chat_turns SET pr_message_id = %s WHERE id = %s;",
                     (offer.id, turn_id),
+                )
+            edit = turn.get("persona_edit")
+            if isinstance(edit, dict) and edit.get("id"):
+                await channel.send(
+                    edit_offer(edit),
+                    view=edit_view(str(edit["id"])),
+                    allowed_mentions=QUIET,
+                )
+            elif turn.get("persona_edit_error"):
+                await channel.send(
+                    clip(
+                        f"-# I tried to change my own notes, but it didn't fit: {turn['persona_edit_error']}"
+                    ),
+                    allowed_mentions=QUIET,
                 )
         except discord.HTTPException as e:
             print(f"[agent_jobs] couldn't post chat turn {turn_id}'s answer: {e}")
@@ -1421,6 +1491,11 @@ class AgentJobs(commands.Cog):
         if custom_id.startswith(PR_PREFIX):
             await self.on_pr_button(interaction, custom_id)
             return
+        if custom_id.startswith(
+            (EDIT_APPLY_PREFIX, EDIT_DISCARD_PREFIX, EDIT_UNDO_PREFIX)
+        ):
+            await self.on_edit_button(interaction, custom_id)
+            return
         if not custom_id.startswith(CANCEL_PREFIX):
             return
         try:
@@ -1438,6 +1513,62 @@ class AgentJobs(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         result = await self.cancel(job_id)
         await interaction.followup.send(result, ephemeral=True)
+
+    async def on_edit_button(
+        self, interaction: discord.Interaction, custom_id: str
+    ) -> None:
+        """Apply, Discard and Undo on an edit Miku proposed to herself: admin bot
+        devs only, since it changes how she behaves for everyone."""
+        if not is_admin_dev(interaction.user):
+            await interaction.response.send_message(
+                "Only an admin bot dev can change how I work.", ephemeral=True
+            )
+            return
+        user = interaction.user
+        who = getattr(user, "display_name", None) or getattr(user, "name", "someone")
+        await interaction.response.defer(ephemeral=True)
+        message = interaction.message
+        try:
+            if custom_id.startswith(EDIT_APPLY_PREFIX):
+                status, body = await self.worker.apply_edit(
+                    custom_id.removeprefix(EDIT_APPLY_PREFIX), str(who)
+                )
+                note, view = (
+                    f"-# Applied by {who}.",
+                    (undo_view(str(body.get("version"))) if status == 200 else None),
+                )
+            elif custom_id.startswith(EDIT_DISCARD_PREFIX):
+                status, body = await self.worker.discard_edit(
+                    custom_id.removeprefix(EDIT_DISCARD_PREFIX)
+                )
+                note, view = f"-# Discarded by {who}.", None
+            else:
+                status, body = await self.worker.undo_edit(
+                    custom_id.removeprefix(EDIT_UNDO_PREFIX)
+                )
+                note, view = f"-# Undone by {who}.", None
+        except WorkerUnavailable as e:
+            await interaction.followup.send(
+                f"The worker isn't reachable ({e}).", ephemeral=True
+            )
+            return
+        if status != 200:
+            await interaction.followup.send(
+                clip(f"That didn't work: {body.get('error') or status}."),
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send(note.removeprefix("-# "), ephemeral=True)
+        if message is not None:
+            # the offer shows what happened to it, and keeps only the button that's left
+            content = str(getattr(message, "content", "") or "")
+            kept = content.rsplit("\n-# ", 1)[0]
+            try:
+                await message.edit(
+                    content=clip(f"{kept}\n{note}"), view=view, allowed_mentions=QUIET
+                )
+            except discord.HTTPException:
+                pass
 
     async def on_pr_button(
         self, interaction: discord.Interaction, custom_id: str
