@@ -104,5 +104,7 @@ antiscam:
   #  <your_discord_id>: 180
 
 agent:
-  # @Miku <request> makes a PR (cogs/agent_jobs.py). Off unless set true; it's the kill switch too
+  # @Miku talks with bot devs and makes PRs (cogs/agent_jobs.py). Off unless set true; it's the kill switch too
   enabled: false
+  # a role whose ping counts as @Miku (her own bot role always does)
+  # role: <role_id>

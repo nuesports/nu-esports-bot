@@ -11,6 +11,8 @@ import pytest_asyncio
 from conftest import FakeInteraction
 from test_agent_jobs import (
     BOT,
+    DEV,
+    DEV_TWO,
     OTHER,
     OWNER,
     FakeBot,
@@ -19,6 +21,7 @@ from test_agent_jobs import (
     FakeWorker,
     agent_settings,  # noqa: F401 - a fixture, used by name
     make_cog,
+    person,
 )
 
 from cogs import agent_jobs
@@ -49,9 +52,8 @@ class ChatMessage(FakeDiscordMessage):
     def __init__(self, content, replying_to=None, **kwargs):
         kwargs.setdefault("channel", ChatChannel(8000 + FakeDiscordMessage._next + 1))
         super().__init__(content, **kwargs)
-        self.author = SimpleNamespace(
-            id=self.author.id, bot=self.author.bot, display_name="alex"
-        )
+        self.author = person(self.author.id, bot=self.author.bot)
+        self.author.display_name = "alex" if self.author.id == OWNER else "dev"
         # a Discord reply; resolved is left empty, as it is when the message isn't cached
         self.reference = (
             SimpleNamespace(message_id=replying_to.id, resolved=None)
@@ -252,7 +254,7 @@ async def test_a_down_or_busy_worker_says_so_in_one_line(clean_chats):
     worker.down = False
     worker.say_status = 409
     await say(cog, ChatMessage(f"<@{BOT}> and now?", channel=channel))
-    assert channel.sent[-1].startswith("I'm still answering your last message")
+    assert channel.sent[-1].startswith("I'm still answering the last message here")
 
 
 @pytest.mark.asyncio
@@ -302,8 +304,8 @@ async def test_a_restart_follows_turns_again_and_owns_up_to_lost_ones(clean_chat
         task.cancel()
     # one that was mid-POST when the bot died
     await db.perform_one(
-        "INSERT INTO agent_chat_turns (channel_id, message_id, effort, status) VALUES (%s, 1, 'high', 'sending')",
-        (channel.id,),
+        "INSERT INTO agent_chat_turns (channel_id, message_id, requester_id, effort, status) VALUES (%s, 1, %s, 'high', 'sending')",
+        (channel.id, OWNER),
     )
 
     second = make_cog(bot=first.bot, worker=worker)
@@ -350,7 +352,7 @@ async def test_a_change_comes_with_a_button_that_makes_one_job(clean_chats):
     assert button.custom_id == f"{agent_jobs.PR_PREFIX}{turn_id}"
 
     def press(user=OWNER):
-        interaction = FakeInteraction(SimpleNamespace(id=user))
+        interaction = FakeInteraction(person(user))
         interaction.data = {"custom_id": button.custom_id}
         interaction.message = channel.messages[max(channel.messages)]
         return interaction
@@ -387,3 +389,72 @@ async def test_no_change_means_no_button(clean_chats):
     worker.answers[(channel.id, 1)] = done("There isn't one yet.")
     await settle(cog)
     assert channel.sent == ["There isn't one yet."] and channel.views == [None]
+
+
+# --- bot devs ---------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bot_devs_talk_to_her_and_strangers_dont(clean_chats):
+    worker = ChatWorker()
+    cog = chat_cog(worker)
+    first = ChatMessage(f"<@{BOT}> how do points work?", author=DEV)
+    channel = first.channel
+    await say(cog, first)
+    worker.answers[(channel.id, 1)] = done("Like this.")
+    await settle(cog)
+    hers = channel.messages[channel.last_message_id]
+    # another dev joins the same conversation by replying; a stranger can't
+    await say(
+        cog,
+        ChatMessage("and the shop?", channel=channel, author=DEV_TWO, replying_to=hers),
+    )
+    await say(cog, ChatMessage(f"<@{BOT}> hi", channel=channel, author=OTHER))
+    assert [(s[1], s[2]) for s in worker.said] == [
+        ("how do points work?", "dev"),
+        ("and the shop?", "dev"),
+    ]
+
+
+async def offered_by(cog, worker, author):
+    message = ChatMessage(f"<@{BOT}> add a coinflip command", author=author)
+    channel = message.channel
+    await say(cog, message)
+    worker.answers[(channel.id, 1)] = done("Sure.", "Add a /coinflip command.")
+    await settle(cog)
+
+    def press(user):
+        interaction = FakeInteraction(person(user))
+        interaction.data = {"custom_id": channel.views[1].children[0].custom_id}
+        interaction.message = channel.messages[max(channel.messages)]
+        return interaction
+
+    return press
+
+
+@pytest.mark.asyncio
+async def test_the_pr_button_is_for_who_asked(clean_chats):
+    worker = ChatWorker()
+    cog = chat_cog(worker)
+    press = await offered_by(cog, worker, DEV)
+    other_dev = press(DEV_TWO)
+    await cog.on_interaction(other_dev)
+    assert other_dev.response.messages[0]["content"] == (
+        "Only the person who asked for it can start it."
+    )
+    assert worker.started == []
+    await cog.on_interaction(press(DEV))
+    assert len(worker.started) == 1
+    requester = await db.fetch_one(
+        "SELECT requester_id FROM agent_jobs WHERE id = %s", (worker.started[0][0],)
+    )
+    assert requester == (DEV,)
+
+
+@pytest.mark.asyncio
+async def test_the_owner_can_press_anyones_button(clean_chats):
+    worker = ChatWorker()
+    cog = chat_cog(worker)
+    press = await offered_by(cog, worker, DEV)
+    await cog.on_interaction(press(OWNER))
+    assert len(worker.started) == 1

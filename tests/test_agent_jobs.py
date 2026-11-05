@@ -16,6 +16,19 @@ BOT = 1111
 ROLE = 2222
 OWNER = 3333
 OTHER = 4444
+DEV = 5555
+DEV_TWO = 6666
+DEVS = {DEV, DEV_TWO}
+
+
+def person(user_id, bot=False):
+    """A server member: bot devs are told apart by id (agent_settings)."""
+    return SimpleNamespace(
+        id=user_id,
+        bot=bot,
+        roles=[],
+        guild_permissions=SimpleNamespace(administrator=False),
+    )
 
 
 # --- the trigger --------------------------------------------------------------
@@ -25,12 +38,25 @@ OTHER = 4444
     "mention", [f"<@{BOT}>", f"<@!{BOT}>", f"<@&{ROLE}>", f"  <@{BOT}>"]
 )
 def test_every_mention_form_at_the_start(mention):
-    request = parse_request(f"{mention} add a coinflip command", BOT, ROLE)
+    request = parse_request(f"{mention} add a coinflip command", BOT, {ROLE})
     assert request == AgentRequest("add a coinflip command")
 
 
 def test_role_mention_needs_the_role():
-    assert parse_request(f"<@&{ROLE}> add a coinflip command", BOT, None) is None
+    assert parse_request(f"<@&{ROLE}> add a coinflip command", BOT) is None
+
+
+def test_her_roles_are_her_own_and_agent_role(monkeypatch):
+    guild = SimpleNamespace(self_role=SimpleNamespace(id=ROLE))
+    monkeypatch.setitem(config.config, "agent", {"enabled": True})
+    assert agent_jobs.role_ids(guild) == {ROLE}
+    monkeypatch.setitem(config.config, "agent", {"role": 7777})
+    assert agent_jobs.role_ids(guild) == {ROLE, 7777}
+    monkeypatch.setitem(config.config, "agent", {"role": [7777, 8888, True, "9"]})
+    assert agent_jobs.role_ids(guild) == {ROLE, 7777, 8888}
+    assert agent_jobs.role_ids(SimpleNamespace(self_role=None)) == {7777, 8888}
+    assert agent_jobs.role_ids(None) == {7777, 8888}
+    assert config_schema.find("agent.role") is not None
 
 
 @pytest.mark.parametrize(
@@ -43,7 +69,7 @@ def test_role_mention_needs_the_role():
     ],
 )
 def test_only_the_start_counts(content):
-    assert parse_request(content, BOT, ROLE) is None
+    assert parse_request(content, BOT, {ROLE}) is None
 
 
 @pytest.mark.parametrize(
@@ -64,7 +90,7 @@ def test_only_the_start_counts(content):
     ],
 )
 def test_effort_forms_and_near_misses(content, effort, prompt):
-    request = parse_request(f"<@{BOT}> {content}", BOT, ROLE)
+    request = parse_request(f"<@{BOT}> {content}", BOT, {ROLE})
     assert request == AgentRequest(prompt, effort)
 
 
@@ -79,13 +105,13 @@ def test_effort_forms_and_near_misses(content, effort, prompt):
     ],
 )
 def test_model_options_and_bad_efforts_get_one_line(content):
-    request = parse_request(f"<@{BOT}> {content}", BOT, ROLE)
+    request = parse_request(f"<@{BOT}> {content}", BOT, {ROLE})
     assert request is not None and request.error == agent_jobs.MODELS_FIXED
 
 
 @pytest.mark.parametrize("content", ["", "   ", "medium effort", "effort:low"])
 def test_nothing_after_the_mention_gets_usage(content):
-    request = parse_request(f"<@{BOT}> {content}", BOT, ROLE)
+    request = parse_request(f"<@{BOT}> {content}", BOT, {ROLE})
     assert request is not None and request.error == agent_jobs.USAGE
 
 
@@ -148,7 +174,7 @@ class FakeDiscordMessage:
         FakeDiscordMessage._next += 1
         self.id = FakeDiscordMessage._next
         self.content = content
-        self.author = SimpleNamespace(id=author, bot=bot)
+        self.author = person(author, bot=bot)
         self.channel = channel or FakeChannel(8000 + self.id)
         self.guild = (
             SimpleNamespace(id=77, self_role=SimpleNamespace(id=ROLE))
@@ -265,6 +291,9 @@ def agent_settings(monkeypatch):
         "agent",
         {"worker_url": "http://w", "worker_token": "t", "owner_id": OWNER},
     )
+    monkeypatch.setattr(
+        config, "is_bot_dev", lambda member, cfg=None: member.id in DEVS
+    )
 
 
 # --- the guards: these never touch the database ---------------------------------
@@ -292,6 +321,29 @@ async def test_the_right_nothing(agent_settings, message):
     cog.start_job = no_chat
     await cog.on_message(msg)
     assert msg.replies == []
+
+
+@pytest.mark.asyncio
+async def test_bot_devs_and_the_owner_get_in(agent_settings, monkeypatch):
+    cog = make_cog()
+    heard = []
+
+    async def chat(message, request):
+        heard.append((message.author.id, request.prompt))
+
+    cog.chat = chat
+    await cog.on_message(FakeDiscordMessage(f"<@{BOT}> hi", author=DEV))
+    await cog.on_message(FakeDiscordMessage(f"<@&{ROLE}> hey", author=DEV_TWO))
+    await cog.on_message(FakeDiscordMessage(f"<@{BOT}> yo"))
+    await cog.on_message(FakeDiscordMessage(f"<@{BOT}> hm", author=OTHER))
+    # agent.role pings her too
+    monkeypatch.setitem(config.config, "agent", {"enabled": True, "role": 7777})
+    await cog.on_message(FakeDiscordMessage("<@&7777> sup", author=DEV))
+    assert heard == [(DEV, "hi"), (DEV_TWO, "hey"), (OWNER, "yo"), (DEV, "sup")]
+    # someone who isn't a member any more has no roles, so only the owner passes
+    assert agent_jobs.can_use(SimpleNamespace(id=DEV)) is False
+    assert agent_jobs.can_use(SimpleNamespace(id=OWNER)) is True
+    assert agent_jobs.can_use(None) is False
 
 
 @pytest.mark.asyncio
@@ -393,7 +445,7 @@ async def row(job_id):
 async def start(cog, message):
     cog.bot.remember(message.channel)
     message.bot = cog.bot
-    return await cog.start_job(message, parse_request(message.content, BOT, ROLE))
+    return await cog.start_job(message, parse_request(message.content, BOT, {ROLE}))
 
 
 @pytest.mark.asyncio
@@ -621,7 +673,7 @@ async def test_no_thread_permission_answers_in_place(clean_jobs):
 
 
 def press(job_id, user=OWNER):
-    interaction = FakeInteraction(SimpleNamespace(id=user))
+    interaction = FakeInteraction(person(user))
     interaction.data = {"custom_id": f"{agent_jobs.CANCEL_PREFIX}{job_id}"}
     return interaction
 
@@ -653,15 +705,26 @@ async def test_cancel_a_queued_job_after_a_restart(clean_jobs):
 
 
 @pytest.mark.asyncio
-async def test_only_the_owner_can_cancel(clean_jobs):
+async def test_only_who_asked_or_the_owner_can_cancel(clean_jobs):
     worker = FakeWorker()
     cog = make_cog(worker=worker)
-    job_id = await start(cog, FakeDiscordMessage(f"<@{BOT}> add a coinflip command"))
-    interaction = press(job_id, user=OTHER)
-    await cog.on_interaction(interaction)
-    assert interaction.response.messages[0]["ephemeral"] is True
+    job_id = await start(
+        cog, FakeDiscordMessage(f"<@{BOT}> add a coinflip command", author=DEV)
+    )
+    for user in (OTHER, DEV_TWO):
+        interaction = press(job_id, user=user)
+        await cog.on_interaction(interaction)
+        assert interaction.response.messages[0]["ephemeral"] is True
     assert worker.cancelled == []
     assert (await row(job_id))[0] == "running"
+    await cog.on_interaction(press(job_id, user=DEV))
+    assert worker.cancelled == [job_id]
+
+    other = await start(
+        cog, FakeDiscordMessage(f"<@{BOT}> add a dice command", author=DEV_TWO)
+    )
+    await cog.on_interaction(press(other, user=OWNER))
+    assert (await row(other))[0] == "cancelled"
 
 
 @pytest.mark.asyncio
@@ -688,10 +751,10 @@ async def test_a_reused_job_number_fails_instead_of_borrowing_an_old_pr(clean_jo
 
 
 def test_use_a_model_for_something_is_a_request():
-    request = parse_request(f"<@{BOT}> use haiku for the /poem command", BOT, ROLE)
+    request = parse_request(f"<@{BOT}> use haiku for the /poem command", BOT, {ROLE})
     assert request == AgentRequest("use haiku for the /poem command")
     assert parse_request(
-        f"<@{BOT}> use sonnet, add a coinflip command", BOT, ROLE
+        f"<@{BOT}> use sonnet, add a coinflip command", BOT, {ROLE}
     ).error
 
 

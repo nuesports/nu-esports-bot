@@ -1,13 +1,14 @@
 """
 @Miku: a conversation with Miku, which can turn into a pull request.
 
-`@Miku <anything>`, or a Discord reply to one of Miku's messages, is talking to her,
-right where it was said: no thread. The channel (or thread, or forum post) is the
-conversation, and the worker starts it afresh after a quiet spell. Her answer is a
-plain message, or a Discord reply when other messages came in while she thought.
-Miku reads the bot's code and the web, and answers. When the owner wants a
-change, Miku's reply comes with the request it would send and a "Make the PR"
-button; pressing it starts a job.
+`@Miku <anything>` (or a ping of agent.role), or a Discord reply to one of Miku's
+messages, is talking to her, right where it was said: no thread. The channel (or
+thread, or forum post) is the conversation, shared by everyone in it, and the
+worker starts it afresh after a quiet spell. Her answer is a plain message, or a
+Discord reply when other messages came in while she thought. Miku reads the bot's
+code and the web, and answers. When someone wants a change, Miku's reply comes
+with the request it would send and a "Make the PR" button; pressing it starts a
+job.
 
 For a job the bot owns the queue and everything people see: a row per job in
 agent_jobs, one status message edited as the job moves, and a Cancel button.
@@ -15,17 +16,20 @@ Chats and jobs both run in the miku-worker container (deploy repo), reached over
 HTTP on a private network, so a deploy that recreates this container never kills
 either.
 
-Only agent.owner_id (from secrets.yaml, so /config can't change it) can talk to
-Miku or start a job: it runs on their Claude plan. agent.enabled (config.yaml,
-editable with /config) is the kill switch.
+Bot devs (roles.bot_devs, admins included) and agent.owner_id can talk to Miku and
+start jobs; everyone else is ignored. It all runs on the owner's Claude plan, so
+the owner (from secrets.yaml, so /config can't change it) can also cancel anyone's
+job or press anyone's PR button. agent.enabled (config.yaml, editable with
+/config) is the kill switch.
 """
 
 import asyncio
 import random
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass
+from typing import cast
 
 import aiohttp
 import discord
@@ -97,13 +101,14 @@ class AgentRequest:
     error: str | None = None  # an option it couldn't read, answered with one line
 
 
-def mention_prefix(content: str, bot_id: int, role_id: int | None) -> str | None:
-    """What follows a mention of Miku at the very start, or None. Only the start
-    counts, unlike user.mentioned_in, which also fires on reply pings and passing
-    mentions."""
+def mention_prefix(
+    content: str, bot_id: int, role_ids: Collection[int] = ()
+) -> str | None:
+    """What follows a mention of Miku (or one of her roles) at the very start, or
+    None. Only the start counts, unlike user.mentioned_in, which also fires on reply
+    pings and passing mentions."""
     forms = [rf"<@!?{bot_id}>"]
-    if role_id:
-        forms.append(rf"<@&{role_id}>")
+    forms += [rf"<@&{role_id}>" for role_id in role_ids if role_id]
     match = re.match(rf"\s*(?:{'|'.join(forms)})", content)
     return content[match.end() :] if match else None
 
@@ -113,10 +118,10 @@ def _word(token: str) -> str:
 
 
 def parse_request(
-    content: str, bot_id: int, role_id: int | None
+    content: str, bot_id: int, role_ids: Collection[int] = ()
 ) -> AgentRequest | None:
     """The request if the message starts by mentioning Miku, else None."""
-    rest = mention_prefix(content, bot_id, role_id)
+    rest = mention_prefix(content, bot_id, role_ids)
     if rest is None:
         return None
     tokens = rest.split()
@@ -315,7 +320,8 @@ OUT_OF_VOICE = (
 def chat_failure(turn: dict) -> str:
     if turn.get("limit"):
         line = random.choice(OUT_OF_VOICE)
-        # the worker names a refused login alongside the limit; only the owner talks to her, so say it
+        # the worker names a refused login alongside the limit; only bot devs talk to
+        # her, and one of them can tell the owner
         if "has expired" in (turn.get("error") or ""):
             line += "\n-# One of the Claude logins expired too: renew it with `claude setup-token`."
         return line
@@ -329,6 +335,38 @@ def enabled() -> bool:
 def owner_id() -> int | None:
     value = (config.secrets.get("agent") or {}).get("owner_id")
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def role_ids(guild: discord.Guild | None) -> set[int]:
+    """The roles whose ping talks to Miku: her own bot role, and agent.role."""
+    ids: set[int] = set()
+    if guild is not None and guild.self_role is not None:
+        ids.add(guild.self_role.id)
+    value = (config.config.get("agent") or {}).get("role")
+    for role_id in value if isinstance(value, list) else [value]:
+        if isinstance(role_id, int) and not isinstance(role_id, bool):
+            ids.add(role_id)
+    return ids
+
+
+def can_use(user: discord.abc.User | None) -> bool:
+    """Bot devs (admins count) and the owner may talk to Miku and start jobs."""
+    if user is None:
+        return False
+    if user.id == owner_id():
+        return True
+    # a member of the server; a bare User (someone who left, a DM) has no roles to check
+    if getattr(user, "roles", None) is None:
+        return False
+    return config.is_bot_dev(cast(discord.Member, user))
+
+
+def may_act_for(user: discord.abc.User | None, requester_id: int | None) -> bool:
+    """Cancel and "Make the PR" belong to whoever asked, and to the owner, whose
+    plan pays for it. They must still be allowed to use Miku at all."""
+    if user is None or not can_use(user):
+        return False
+    return user.id == owner_id() or user.id == requester_id
 
 
 class WorkerUnavailable(Exception):
@@ -446,13 +484,9 @@ class AgentJobs(commands.Cog):
         if message.author.bot or self.bot.user is None:
             return
         guild = message.guild
-        role = guild.self_role if guild is not None else None
         # first, because with no channel limit this runs on every message in the server
-        request = parse_request(
-            message.content, self.bot.user.id, role.id if role else None
-        )
-        owner = owner_id()
-        if guild is None or owner is None or message.author.id != owner:
+        request = parse_request(message.content, self.bot.user.id, role_ids(guild))
+        if guild is None or not can_use(message.author):
             return
         if request is None:
             # replying to one of her messages is talking to her, mention or not
@@ -498,15 +532,15 @@ class AgentJobs(commands.Cog):
         )
         row = await db.fetch_one(
             """
-            INSERT INTO agent_chat_turns (channel_id, message_id, effort, status)
-            VALUES (%s, %s, %s, 'sending') ON CONFLICT (message_id) DO NOTHING RETURNING id;
+            INSERT INTO agent_chat_turns (channel_id, message_id, requester_id, effort, status)
+            VALUES (%s, %s, %s, %s, 'sending') ON CONFLICT (message_id) DO NOTHING RETURNING id;
             """,
-            (channel.id, message.id, request.effort),
+            (channel.id, message.id, message.author.id, request.effort),
         )
         if row is None:  # the same message twice: already being answered
             return None
         turn_id = row[0]
-        author = getattr(message.author, "display_name", None) or "The owner"
+        author = getattr(message.author, "display_name", None) or message.author.name
         try:
             status, body = await self.worker.say(
                 channel.id, request.prompt, str(author), message.id
@@ -521,7 +555,7 @@ class AgentJobs(commands.Cog):
         if status not in (200, 202):
             error = body.get("error") or "the worker isn't set up"
             why = {
-                409: "I'm still answering your last message. Send this again once I have.",
+                409: "I'm still answering the last message here. Send this again once I have.",
                 503: f"I can't think right now: {error}.",
             }.get(status, f"The worker refused that ({body.get('error') or status}).")
             await self.end_turn(turn_id, str(body.get("error") or status))
@@ -1060,7 +1094,10 @@ class AgentJobs(commands.Cog):
             job_id = int(custom_id.removeprefix(CANCEL_PREFIX))
         except ValueError:
             return
-        if interaction.user is None or interaction.user.id != owner_id():
+        requester = await db.fetch_one(
+            "SELECT requester_id FROM agent_jobs WHERE id = %s;", (job_id,)
+        )
+        if not may_act_for(interaction.user, requester[0] if requester else None):
             await interaction.response.send_message(
                 "Only the person who asked can cancel it.", ephemeral=True
             )
@@ -1076,9 +1113,12 @@ class AgentJobs(commands.Cog):
             turn_id = int(custom_id.removeprefix(PR_PREFIX))
         except ValueError:
             return
-        if interaction.user is None or interaction.user.id != owner_id():
+        requester = await db.fetch_one(
+            "SELECT requester_id FROM agent_chat_turns WHERE id = %s;", (turn_id,)
+        )
+        if not may_act_for(interaction.user, requester[0] if requester else None):
             await interaction.response.send_message(
-                "Only the person Miku was talking to can start it.", ephemeral=True
+                "Only the person who asked for it can start it.", ephemeral=True
             )
             return
         if not enabled():
