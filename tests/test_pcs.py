@@ -1193,7 +1193,7 @@ async def test_an_edit_rebuilds_the_link_and_the_embed(booked, staff_ping):
     fields = {field.name: field for field in edited["embed"].fields}
     assert fields["Team"].value == "Valorant White"
     assert fields["Date"].value == "Wednesday, September 30, 2026"
-    assert fields["Time"].value == "05:00 PM - 07:30 PM CST"
+    assert fields["Time"].value == "05:00 PM - 07:30 PM CT"
     assert fields["PCs"].value == "Back Room: Streaming, PC 14\nMain Room: PC 3"
     assert fields["✏️ Edited"].value.startswith("by <@42> ")
     # the rest of the ping is what was booked, edited fields keep their place
@@ -1211,7 +1211,7 @@ async def test_an_edit_rounds_its_times_to_quarter_hours(booked, staff_ping):
 
     edited = interaction.response.edits[0]
     time = next(f for f in edited["embed"].fields if f.name == "Time")
-    assert time.value == "07:45 PM - 09:15 PM CST"
+    assert time.value == "07:45 PM - 09:15 PM CT"
     start, end = pcs.decode_ggleap_booking_url(edited["view"].children[0].url)[2:4]
     assert (start.strftime("%H:%M"), end.strftime("%H:%M")) == ("19:45", "21:15")
 
@@ -1399,7 +1399,7 @@ async def test_staff_get_quarter_hours_while_the_booking_keeps_its_minutes(
     assert "12:08 PM - 01:52 PM" in interaction.followup.send_calls[0]["content"]
     posted = channel.sent[0]
     time = next(f for f in posted["embed"].fields if f.name == "Time")
-    assert time.value == "12:15 PM - 01:45 PM CST"
+    assert time.value == "12:15 PM - 01:45 PM CT"
     button, _edit = posted["view"].children
     _, payload = decode_booking_url(button.url)
     assert (payload["start"], payload["duration"]) == ("2026-09-28T12:15:00", 90)
@@ -1550,3 +1550,100 @@ def test_out_of_service_pc_is_grey_whatever_its_state(monkeypatch):
     assert pcs.PCs.get_entry_icon_color(broken) == "grey"
     assert pcs.PCs.get_entry_icon_color(streaming) == "grey"
     assert pcs.PCs.get_entry_icon_color(fine) == "green"
+
+
+# --- times leave the db in UTC and are printed in Central --------------------
+
+UTC = pcs.UTC
+
+
+def utc(month, day, hour, minute):
+    return datetime(2026, month, day, hour, minute, tzinfo=UTC)
+
+
+# 9:45 PM Central on Nov 18 is already Nov 19 in UTC, and July is daylight time
+UTC_ROWS = [
+    pytest.param(
+        utc(11, 19, 3, 45),
+        utc(11, 19, 5, 0),
+        "Wednesday, November 18, 2026",
+        "09:45 PM - 11:00 PM CT",
+        id="winter, a day behind UTC",
+    ),
+    pytest.param(
+        utc(7, 15, 0, 30),
+        utc(7, 15, 2, 0),
+        "Tuesday, July 14, 2026",
+        "07:30 PM - 09:00 PM CT",
+        id="summer, daylight time",
+    ),
+]
+
+
+class FrozenDatetime(datetime):
+    """Before every row in UTC_ROWS, so /cancel-reservation still lets them go."""
+
+    @classmethod
+    def now(cls, tz=None):
+        return datetime(2026, 7, 1, 12, 0, tzinfo=UTC).astimezone(tz)
+
+
+@pytest.mark.parametrize(("start", "end", "day", "clock"), UTC_ROWS)
+def test_clock_range_prints_utc_in_central(start, end, day, clock):
+    assert pcs.clock_range(start, end) == clock
+    assert pcs.date_and_clock_range(start, end) == f"{day} {clock}"
+
+
+def test_a_naive_time_is_read_as_utc():
+    naive = datetime(2026, 11, 19, 3, 45)  # noqa: DTZ001 - naive is the point
+    assert pcs.to_central(naive) == utc(11, 19, 3, 45)
+    assert pcs.to_central(naive).strftime("%I:%M %p") == "09:45 PM"
+
+
+@pytest.mark.parametrize(("start", "end", "day", "clock"), UTC_ROWS)
+def test_staff_ping_fields_print_utc_in_central(start, end, day, clock):
+    fields = pcs.booking_fields("Valorant White", [1], start, end)
+    assert (fields["Date"], fields["Time"]) == (day, clock)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("start", "end", "day", "clock"), UTC_ROWS)
+async def test_cancel_reservation_prints_the_db_row_in_central(
+    cog, monkeypatch, start, end, day, clock
+):
+    async def fetch_one(sql, params):
+        return (7, "Valorant White", [1, 2], start, end, "lilac", False)
+
+    async def perform_one(sql, params):
+        return None
+
+    monkeypatch.setattr(pcs.db, "fetch_one", fetch_one)
+    monkeypatch.setattr(pcs.db, "perform_one", perform_one)
+    monkeypatch.setattr(pcs.config, "is_bot_dev", lambda member: False)
+    monkeypatch.setattr(pcs.config, "can_reserve", lambda member: True)
+    monkeypatch.setattr(pcs, "staff_list", list)
+    monkeypatch.setattr(pcs, "datetime", FrozenDatetime)
+    channel = FakeReservationsChannel()
+    cog.bot = SimpleNamespace(get_channel=lambda channel_id: channel)
+
+    ctx = FakeApplicationContext(FakeBooker())
+    await pcs.PCs.cancel_reservation.callback(cog, ctx, "7")
+
+    confirm = ctx.followup.send_calls[0]["content"]
+    assert f"**Time:** {day} {clock}" in confirm
+    fields = {field.name: field.value for field in channel.sent[0]["embed"].fields}
+    assert (fields["Date"], fields["Time"]) == (day, clock)
+
+
+@pytest.mark.asyncio
+async def test_cancel_autocomplete_lists_reservations_in_central(monkeypatch):
+    async def fetch_all(sql, params):
+        return [(7, "Valorant White", utc(11, 19, 3, 45))]
+
+    monkeypatch.setattr(pcs.db, "fetch_all", fetch_all)
+    ctx = SimpleNamespace(interaction=SimpleNamespace(user=FakeBooker()))
+
+    [choice] = await pcs.reservation_autocomplete(ctx)
+
+    assert choice.name == "Valorant White - Wed, Nov 18 @ 09:45 PM"
+    assert choice.value == "7"
