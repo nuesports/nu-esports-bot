@@ -1517,3 +1517,36 @@ async def test_external_refuses_when_something_already_holds_a_pc(external, cog)
     body = interaction.followup.send_calls[0]["content"]
     assert "Cannot reserve all PCs" in body
     assert "Valorant White" in body
+
+
+@pytest.mark.parametrize(
+    "reservations",
+    [None, {}, {"out_of_service": None}, {"out_of_service": []}],
+)
+def test_out_of_service_defaults_to_none(monkeypatch, reservations):
+    cfg = dict(pcs.config.config)
+    cfg.pop("reservations", None)
+    if reservations is not None:
+        cfg["reservations"] = reservations
+    monkeypatch.setattr(pcs.config, "config", cfg)
+    assert pcs.out_of_service_pcs() == set()
+    assert pcs.reservable_pcs() == pcs.BACK_ROOM_PCS + pcs.MAIN_ROOM_PCS
+
+
+def test_reservable_pcs_skips_out_of_service(monkeypatch):
+    cfg = {**pcs.config.config, "reservations": {"out_of_service": [14, 3]}}
+    monkeypatch.setattr(pcs.config, "config", cfg)
+    assert pcs.reservable_pcs() == [0, 15, 1, 2, 4, 5, 6, 7, 8, 9, 10]
+    assert pcs.reservable_pcs(include_back_room=False) == [1, 2, 4, 5, 6, 7, 8, 9, 10]
+
+
+def test_out_of_service_pc_is_grey_whatever_its_state(monkeypatch):
+    cfg = {**pcs.config.config, "reservations": {"out_of_service": [3, 0]}}
+    monkeypatch.setattr(pcs.config, "config", cfg)
+    broken = {"pc_num": 3, "state": "ReadyForUser", "currently_reserved": True}
+    # Streaming has no pc_num (there's no 0.png), it's matched by name
+    streaming = {"short": "Streaming", "pc_num": None, "state": "ReadyForUser"}
+    fine = {"pc_num": 4, "state": "ReadyForUser"}
+    assert pcs.PCs.get_entry_icon_color(broken) == "grey"
+    assert pcs.PCs.get_entry_icon_color(streaming) == "grey"
+    assert pcs.PCs.get_entry_icon_color(fine) == "green"

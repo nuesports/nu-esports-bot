@@ -140,7 +140,55 @@ def show(setting: config_schema.Setting, value: Any) -> str:
         return ", ".join(f"<@{user_id}>" for user_id in value)
     if kind == Kind.EMAIL_MAP:
         return "\n".join(f"`{name}`: {email}" for name, email in value.items())
+    if kind == Kind.PC_LIST:
+        return ", ".join(pc_name(pc) for pc in sorted(value))
     return f"`{str(value).lower() if kind == Kind.BOOL else value}`"
+
+
+def pc_name(pc: int) -> str:
+    """How cogs/pcs.py names a PC."""
+    return "Streaming" if pc == 0 else f"PC {pc}"
+
+
+OUT_OF_SERVICE_CHOICE = "Out of service"
+AVAILABLE_CHOICE = "Available"
+# how many upcoming reservations a warning lists before saying there are more
+UPCOMING_SHOWN = 10
+
+
+async def upcoming_on(pc: int) -> list[tuple[int, str, Any]]:
+    """Reservations not yet over that already hold pc, soonest first."""
+    return await db.fetch_all(
+        """
+        SELECT id, team, start_time FROM reservations
+        WHERE %s = ANY(pcs) AND end_time > now()
+        ORDER BY start_time LIMIT %s;
+        """,
+        (pc, UPCOMING_SHOWN + 1),
+    )
+
+
+async def upcoming_warning(pc: int) -> str:
+    """What a reservation that already has pc means for whoever just took it out."""
+    try:
+        rows = await upcoming_on(pc)
+    except psycopg.Error as error:
+        print(f"[config] couldn't check reservations on {pc_name(pc)}: {error}")
+        return (
+            "\n⚠️ Couldn't check for reservations already on it, look in /reservations."
+        )
+    if not rows:
+        return ""
+    lines = [
+        f"- **{team}** <t:{int(start.timestamp())}:f> (#{reservation_id})"
+        for reservation_id, team, start in rows[:UPCOMING_SHOWN]
+    ]
+    if len(rows) > UPCOMING_SHOWN:
+        lines.append("- and more, see /reservations")
+    return (
+        f"\n⚠️ Already reserved with {pc_name(pc)}, move these by hand:\n"
+        + "\n".join(lines)
+    )
 
 
 def _as_list(current: Any) -> CommentedSeq:
@@ -498,6 +546,72 @@ class ConfigEditor(commands.Cog):
             return roster
 
         await self.apply(ctx, path, (Kind.EMAIL_MAP,), change)
+
+    @commands.slash_command(
+        name="pc-service",
+        description="Take a PC out of service, or put it back",
+        guild_ids=[GUILD_ID],
+    )
+    async def pc_service(
+        self,
+        ctx: discord.ApplicationContext,
+        pc: int = discord.Option(
+            int,
+            name="pc",
+            choices=[
+                discord.OptionChoice(pc_name(number), number)
+                for number in config_schema.PC_NUMBERS
+            ],
+        ),
+        status: str = discord.Option(
+            str, name="status", choices=[OUT_OF_SERVICE_CHOICE, AVAILABLE_CHOICE]
+        ),
+    ) -> None:
+        if not (config.is_bot_dev(ctx.author) or config.is_gameroom_staff(ctx.author)):
+            await ctx.respond(
+                "❌ Only gameroom staff and bot devs can change PC service.",
+                ephemeral=True,
+            )
+            return
+        taking_out = status == OUT_OF_SERVICE_CHOICE
+        path = config_schema.OUT_OF_SERVICE
+
+        def change(current: Any) -> CommentedSeq:
+            pcs = _as_list(current)
+            if taking_out:
+                if pc in pcs:
+                    raise config_edit.EditRefused(
+                        f"{pc_name(pc)} is already out of service"
+                    )
+                pcs.append(pc)
+            else:
+                if pc not in pcs:
+                    raise config_edit.EditRefused(f"{pc_name(pc)} isn't out of service")
+                pcs.remove(pc)
+            return pcs
+
+        try:
+            saved = await config_edit.edit(ctx.author, path, change)
+        except config_edit.EditRefused as refused:
+            await ctx.respond(f"❌ Not saved: {refused}", ephemeral=True)
+            return
+        except OSError as error:
+            await ctx.respond(f"❌ Couldn't write the config: {error}", ephemeral=True)
+            return
+        print(f"[config] {ctx.author.name} set {pc_name(pc)} {status.lower()}")
+        note = "took out" if taking_out else "put back"
+        revision = await self.committed(
+            ctx.author, "edit", path, saved, note=f"{note} {pc_name(pc)} on"
+        )
+        if taking_out:
+            content = (
+                f"✅ {pc_name(pc)} is out of service, new reservations won't get it"
+                f"{revision_tag(revision)}{await upcoming_warning(pc)}"
+            )
+        else:
+            content = f"✅ {pc_name(pc)} is available again{revision_tag(revision)}"
+        # team names are capped at 50, so ten of them always fit one message
+        await ctx.respond(content, ephemeral=True, allowed_mentions=QUIET)
 
     @config_group.command(
         name="reload", description="Pick up edits made to the file directly"

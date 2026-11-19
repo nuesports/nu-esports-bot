@@ -179,7 +179,8 @@ async def edit(
         introduced = [p for p in config_schema.problems(after) if p not in old_problems]
         if introduced:
             raise EditRefused("; ".join(introduced))
-        if not config.is_bot_dev(member, after):
+        # gameroom staff edit some settings without /config, they have none to lose
+        if config.is_bot_dev(member, before) and not config.is_bot_dev(member, after):
             raise EditRefused("that would take away your own access to /config")
 
         _write(new_text, old_text)

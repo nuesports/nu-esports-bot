@@ -18,6 +18,7 @@ class Kind(StrEnum):
     BOOL = "bool"
     USER_LIST = "user list"
     EMAIL_MAP = "email roster"
+    PC_LIST = "pc list"
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,13 @@ class Setting:
     description: str
     minimum: int | None = None
     maximum: int | None = None
+    # the only values a list may hold, when it can't take just any number
+    choices: tuple[int, ...] | None = None
+
+
+# cogs/pcs.py's BACK_ROOM_PCS + MAIN_ROOM_PCS (0 is Streaming), a test keeps them equal
+PC_NUMBERS = (0, *range(1, 11), 14, 15)
+OUT_OF_SERVICE = "reservations.out_of_service"
 
 
 SETTINGS: list[Setting] = [
@@ -42,6 +50,12 @@ SETTINGS: list[Setting] = [
     Setting("roles.stream_team.role", Kind.ROLE, "Stream team role"),
     Setting("roles.gameheads.*", Kind.ROLE, "Gamehead role for a game"),
     Setting("reservations.channel", Kind.CHANNEL, "Where reservations get posted"),
+    Setting(
+        OUT_OF_SERVICE,
+        Kind.PC_LIST,
+        "PCs out of service, never given to a reservation",
+        choices=PC_NUMBERS,
+    ),
     Setting("gameheads.*", Kind.EMAIL_MAP, "Username to email, for reservations"),
     Setting("github_backlog.pr_channel", Kind.CHANNEL, "Where PRs get pinned"),
     Setting("github_backlog.issue_channel", Kind.CHANNEL, "Where issues get pinned"),
@@ -145,6 +159,14 @@ def check(setting: Setting, value: Any) -> str | None:
         isinstance(value, list) and all(_is_id(v) for v in value)
     ):
         return "must be a list of user ids"
+    if kind == Kind.PC_LIST:
+        if not (isinstance(value, list) and all(_is_id(v) for v in value)):
+            return "must be a list of PC numbers"
+        unknown = [v for v in value if setting.choices and v not in setting.choices]
+        if unknown:
+            return f"has {', '.join(map(str, unknown))}, which isn't a PC"
+        if len(set(value)) != len(value):
+            return "lists a PC twice"
     if kind == Kind.EMAIL_MAP:
         if not isinstance(value, dict):
             return "must be username: email pairs"

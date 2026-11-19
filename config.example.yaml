@@ -48,6 +48,8 @@ roles:
 reservations:
   # where the outputs of reservations gets sent to (ie gameroom staff channel)
   channel: #<channel_id>
+  # PC numbers never handed to a reservation (0 is Streaming), set with /pc-service
+  out_of_service: []
 
 gameheads:
   # gameroom workers, so their reservations carry an email too

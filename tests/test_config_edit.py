@@ -1,5 +1,5 @@
 import dataclasses
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -763,3 +763,223 @@ def test_a_long_view_is_clipped():
     content = config_editor.clip("x" * 5000)
     assert len(content) <= config_editor.DISCORD_LIMIT
     assert content.endswith("narrow the path to see the rest")
+
+
+# --- /pc-service --------------------------------------------------------------
+
+STAFF = {"id": 20, "roles": (3,), "name": "desk"}
+
+
+def test_pc_numbers_match_the_pcs_cog():
+    from cogs import pcs
+
+    assert sorted(config_schema.PC_NUMBERS) == sorted(
+        pcs.BACK_ROOM_PCS + pcs.MAIN_ROOM_PCS
+    )
+    assert all(
+        config_editor.pc_name(pc) == pcs.PCs.format_pc(pc)
+        for pc in config_schema.PC_NUMBERS
+    )
+
+
+def test_out_of_service_only_takes_real_pcs():
+    setting = config_schema.find("reservations.out_of_service")
+    assert config_schema.check(setting, []) is None
+    assert config_schema.check(setting, [0, 3, 15]) is None
+    assert config_schema.check(setting, [3, 12]) == "has 12, which isn't a PC"
+    # a duplicate would make "Available" leave the PC out while saying it's back
+    assert config_schema.check(setting, [3, 3]) == "lists a PC twice"
+    assert config_schema.check(setting, "3") == "must be a list of PC numbers"
+    assert config_schema.check(setting, [True]) == "must be a list of PC numbers"
+
+
+@pytest.fixture
+def no_reservations(monkeypatch):
+    async def none(pc):
+        return []
+
+    monkeypatch.setattr(config_editor, "upcoming_on", none)
+
+
+async def pc_service(cog, member, pc, status):
+    ctx = FakeApplicationContext(member)
+    await config_editor.ConfigEditor.pc_service.callback(cog, ctx, pc, status)
+    return ctx.replies[-1]
+
+
+@pytest.mark.asyncio
+async def test_staff_can_take_a_pc_out(live_config, history, no_reservations):
+    bot = FakeBot()
+    reply = await pc_service(
+        config_editor.ConfigEditor(bot), FakeMember(**STAFF), 3, "Out of service"
+    )
+
+    assert reply == "✅ PC 3 is out of service, new reservations won't get it · #1"
+    assert config.config["reservations"]["out_of_service"] == [3]
+    assert "out_of_service:\n    - 3\n" in text(live_config)
+    assert bot.dispatched == ["config_changed"]
+    assert history.revisions[0].user_name == "desk"
+
+
+@pytest.mark.asyncio
+async def test_putting_the_last_pc_back_leaves_an_empty_list(
+    live_config, no_reservations
+):
+    cog = editor()
+    await pc_service(cog, FakeMember(), 0, "Out of service")
+
+    reply = await pc_service(cog, FakeMember(), 0, "Available")
+
+    assert reply == "✅ Streaming is available again · #2"
+    assert config.config["reservations"]["out_of_service"] == []
+    assert config_schema.problems(config.config) == []
+
+
+@pytest.mark.asyncio
+async def test_a_pc_cant_go_out_twice_or_back_twice(live_config, no_reservations):
+    cog = editor()
+    await pc_service(cog, FakeMember(), 3, "Out of service")
+
+    assert await pc_service(cog, FakeMember(), 3, "Out of service") == (
+        "❌ Not saved: PC 3 is already out of service"
+    )
+    assert await pc_service(cog, FakeMember(), 5, "Available") == (
+        "❌ Not saved: PC 5 isn't out of service"
+    )
+    assert config.config["reservations"]["out_of_service"] == [3]
+
+
+@pytest.mark.asyncio
+async def test_everyone_else_is_turned_away(live_config, history):
+    reply = await pc_service(editor(), FakeMember(id=5), 3, "Out of service")
+
+    assert reply.startswith("❌ Only gameroom staff and bot devs")
+    assert text(live_config) == SAMPLE
+    assert history.revisions == []
+
+
+@pytest.mark.asyncio
+async def test_reservations_already_on_it_are_listed(live_config, monkeypatch):
+    start = datetime(2026, 11, 20, 1, 0, tzinfo=UTC)
+    asked = []
+
+    async def booked(pc):
+        asked.append(pc)
+        return [(12, "Valorant White", start)]
+
+    monkeypatch.setattr(config_editor, "upcoming_on", booked)
+
+    reply = await pc_service(editor(), FakeMember(), 3, "Out of service")
+
+    assert asked == [3]
+    assert reply.endswith(
+        "\n⚠️ Already reserved with PC 3, move these by hand:\n"
+        f"- **Valorant White** <t:{int(start.timestamp())}:f> (#12)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_long_list_of_reservations_is_cut_short(live_config, monkeypatch):
+    start = datetime(2026, 11, 20, 1, 0, tzinfo=UTC)
+
+    async def booked(pc):
+        return [(n, "Apex Purple", start) for n in range(11)]
+
+    monkeypatch.setattr(config_editor, "upcoming_on", booked)
+
+    reply = await pc_service(editor(), FakeMember(), 3, "Out of service")
+
+    assert reply.count("**Apex Purple**") == 10
+    assert reply.endswith("- and more, see /reservations")
+
+
+@pytest.mark.asyncio
+async def test_a_database_error_still_saves_and_says_so(live_config, monkeypatch):
+    async def broken(pc):
+        raise config_editor.psycopg.OperationalError("down")
+
+    monkeypatch.setattr(config_editor, "upcoming_on", broken)
+
+    reply = await pc_service(editor(), FakeMember(), 3, "Out of service")
+
+    assert config.config["reservations"]["out_of_service"] == [3]
+    assert reply.endswith(
+        "Couldn't check for reservations already on it, look in /reservations."
+    )
+
+
+@pytest.mark.asyncio
+async def test_putting_one_back_never_checks_reservations(live_config, monkeypatch):
+    live_config.write_text(
+        SAMPLE + "reservations:\n  out_of_service:\n    - 3\n", encoding="utf-8"
+    )
+
+    async def unexpected(pc):
+        raise AssertionError("only taking a PC out needs the warning")
+
+    monkeypatch.setattr(config_editor, "upcoming_on", unexpected)
+
+    reply = await pc_service(editor(), FakeMember(**STAFF), 3, "Available")
+
+    assert reply == "✅ PC 3 is available again · #1"
+
+
+@pytest.mark.asyncio
+async def test_a_pc_service_change_is_logged_and_undoable(
+    live_config, history, no_reservations
+):
+    live_config.write_text(SAMPLE + "config_log:\n  channel: 5\n", encoding="utf-8")
+    channel = FakeChannel()
+    cog = editor(channel)
+    await pc_service(cog, FakeMember(**STAFF), 3, "Out of service")
+
+    assert channel.sent[0]["content"].startswith(
+        "📝 **desk** took out PC 3 on **reservations.out_of_service** · #1"
+    )
+    ctx = FakeApplicationContext(FakeMember())
+    await config_editor.ConfigEditor.undo_command.callback(cog, ctx, 1)
+    assert "out_of_service" not in config.config.get("reservations", {})
+
+
+@pytest.mark.asyncio
+async def test_staff_still_cant_use_config_itself(live_config):
+    ctx = FakeApplicationContext(FakeMember(**STAFF))
+
+    await config_editor.ConfigEditor.view.callback(
+        editor(), ctx, "reservations.out_of_service"
+    )
+
+    assert "Only bot devs" in ctx.replies[-1]
+
+
+def test_show_names_pcs():
+    setting = config_schema.find("reservations.out_of_service")
+    assert config_editor.show(setting, [14, 0, 3]) == "Streaming, PC 3, PC 14"
+    assert config_editor.show(setting, []) == "*unset*"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("migrated_db")
+async def test_upcoming_on_finds_only_live_reservations_with_that_pc():
+    from utils import db
+
+    now = datetime.now(UTC)
+    hour = timedelta(hours=1)
+    ids = []
+    for team, pcs, start, end in [
+        ("Soon", [3, 4], now + hour, now + 2 * hour),
+        ("Now", [3], now - hour, now + hour),
+        ("Over", [3], now - 3 * hour, now - 2 * hour),
+        ("Elsewhere", [4], now + hour, now + 2 * hour),
+    ]:
+        row = await db.fetch_one(
+            "INSERT INTO reservations (team, pcs, start_time, end_time, manager) "
+            "VALUES (%s, %s, %s, %s, 'm') RETURNING id;",
+            (team, pcs, start, end),
+        )
+        ids.append(row[0])
+    try:
+        found = await config_editor.upcoming_on(3)
+        assert [team for rid, team, _ in found if rid in ids] == ["Now", "Soon"]
+    finally:
+        await db.perform_one("DELETE FROM reservations WHERE id = any(%s);", (ids,))

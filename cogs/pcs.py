@@ -71,9 +71,31 @@ def staff_list() -> list[int]:
     return config.config["roles"]["gameroom_staff"].get("users") or []
 
 
+def out_of_service_pcs() -> set[int]:
+    """PCs staff have marked unavailable, read per call so a /config edit lands at once.
+
+    Prod's config may not have the key, and a hand edit can leave it null.
+    """
+    return set((config.config.get("reservations") or {}).get("out_of_service") or [])
+
+
 def reservable_pcs(include_back_room: bool = True) -> list[int]:
     """Back room first, since allocation fills it before the main room."""
-    return (BACK_ROOM_PCS if include_back_room else []) + MAIN_ROOM_PCS
+    out = out_of_service_pcs()
+    pool = (BACK_ROOM_PCS if include_back_room else []) + MAIN_ROOM_PCS
+    return [pc for pc in pool if pc not in out]
+
+
+def too_many_pcs(cap: int) -> str:
+    """Why a reservation asking for more than cap PCs is refused."""
+    if out_of_service_pcs():
+        return f"❌ Only {cap} PCs can be reserved right now, some are out of service."
+    return f"❌ Only {cap} PCs can be reserved without the back room."
+
+
+def entry_pc(entry: dict) -> int | None:
+    """The PC number a /pcs entry stands for; Streaming is 0 but has no pc_num."""
+    return 0 if entry.get("short") == "Streaming" else entry.get("pc_num")
 
 
 # also the source of the /reserve team list, so the two can't drift
@@ -865,10 +887,7 @@ class PCs(commands.Cog):
         back_room = skip_backroom == "no"
         cap = len(reservable_pcs(back_room))
         if num_pcs > cap:
-            await ctx.respond(
-                f"❌ Only {cap} PCs can be reserved without the back room.",
-                ephemeral=True,
-            )
+            await ctx.respond(too_many_pcs(cap), ephemeral=True)
             return
 
         try:
@@ -1629,6 +1648,7 @@ class PCs(commands.Cog):
             "black": (67, 73, 82),
             "purple": (155, 89, 182),
             "orange": (250, 166, 26),
+            "grey": (116, 127, 141),
             "default": (220, 221, 222),
         }
 
@@ -1849,7 +1869,11 @@ class PCs(commands.Cog):
         cells = []
         for entry in entries:
             state = entry["state"]
-            emoji = STATE_TO_EMOJI.get(state, ":white_large_square:")
+            emoji = (
+                ":white_large_square:"
+                if entry_pc(entry) in out_of_service_pcs()
+                else STATE_TO_EMOJI.get(state, ":white_large_square:")
+            )
             short = entry["short"]
             hours = entry["hours"]
             minutes = entry["minutes"]
@@ -1889,6 +1913,8 @@ class PCs(commands.Cog):
 
     @staticmethod
     def get_entry_icon_color(entry: dict) -> str:
+        if entry_pc(entry) in out_of_service_pcs():
+            return "grey"
         if entry.get("should_bold"):
             return "orange"
         if entry.get("currently_reserved"):
@@ -1972,6 +1998,7 @@ class PCs(commands.Cog):
             "black": 0,
             "purple": 0,
             "orange": 0,
+            "grey": 0,
         }
         for entry in entries:
             color = self.get_entry_icon_color(entry)
@@ -1988,6 +2015,8 @@ class PCs(commands.Cog):
             legend_parts.append(f"🟪 Reserved ({color_counts['purple']})")
         if color_counts["orange"] > 0:
             legend_parts.append(f"🟧 Kickable ({color_counts['orange']})")
+        if color_counts["grey"] > 0:
+            legend_parts.append(f"⬜ Out of service ({color_counts['grey']})")
         legend = "\n".join(legend_parts)
 
         embed = discord.Embed(
@@ -2308,10 +2337,7 @@ class PCs(commands.Cog):
         back_room = skip_backroom == "no"
         cap = len(reservable_pcs(back_room))
         if num_pcs > cap:
-            await ctx.respond(
-                f"❌ Only {cap} PCs can be reserved without the back room.",
-                ephemeral=True,
-            )
+            await ctx.respond(too_many_pcs(cap), ephemeral=True)
             return
 
         # Show modal for time input
@@ -3411,7 +3437,8 @@ class ExternalReservationTimeModal(discord.ui.Modal):
         # Skip gameroom hours check for external reservations (special events may be outside hours)
 
         # External reservations reserve ALL PCs
-        all_pcs = BACK_ROOM_PCS + MAIN_ROOM_PCS  # 13 total PCs
+        # out-of-service PCs too, so one put back mid-event isn't handed to a team
+        all_pcs = BACK_ROOM_PCS + MAIN_ROOM_PCS
 
         # Check for ANY existing reservations in the time slot
         overlapping = await self.cog.get_reservations_in_range(start_time, end_time)
