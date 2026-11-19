@@ -31,6 +31,8 @@ BACK_ROOM_SKIPPED_LINE = "Back Room: skipped"
 
 # Constants - Use ZoneInfo for proper DST handling
 CENTRAL_TZ = ZoneInfo("America/Chicago")
+# CST in winter, CDT in summer, so the label that's right all year
+TZ_LABEL = "CT"
 ADVANCE_BOOKING_DAYS = 2
 BACK_ROOM_PCS = [0, 14, 15]  # 0 = Streaming, 14 = Back Room 1, 15 = Back Room 2
 MAIN_ROOM_PCS = list(range(1, 11))
@@ -77,6 +79,26 @@ def out_of_service_pcs() -> set[int]:
     Prod's config may not have the key, and a hand edit can leave it null.
     """
     return set((config.config.get("reservations") or {}).get("out_of_service") or [])
+
+
+def to_central(dt: datetime) -> datetime:
+    """Central wall clock for display. The db hands TIMESTAMPTZ back in UTC, and a
+    naive time is taken as UTC too."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(CENTRAL_TZ)
+
+
+def clock_range(start_time: datetime, end_time: datetime) -> str:
+    """'09:45 PM - 11:00 PM CT', in Central whatever zone the times arrive in."""
+    start, end = to_central(start_time), to_central(end_time)
+    return f"{start.strftime('%I:%M %p')} - {end.strftime('%I:%M %p')} {TZ_LABEL}"
+
+
+def date_and_clock_range(start_time: datetime, end_time: datetime) -> str:
+    """'Wednesday, November 18, 2026 09:45 PM - 11:00 PM CT', in Central."""
+    day = to_central(start_time).strftime("%A, %B %d, %Y")
+    return f"{day} {clock_range(start_time, end_time)}"
 
 
 def reservable_pcs(include_back_room: bool = True) -> list[int]:
@@ -172,7 +194,7 @@ async def reservation_autocomplete(
     for row in rows:
         res_id, team, start_time = row
         # Format: "Team - Mon, Jan 01 @ 2:00 PM"
-        display = f"{team} - {start_time.strftime('%a, %b %d @ %I:%M %p')}"
+        display = f"{team} - {to_central(start_time).strftime('%a, %b %d @ %I:%M %p')}"
         choices.append(discord.OptionChoice(name=display, value=str(res_id)))
 
     return choices
@@ -220,10 +242,7 @@ def first_weekly_date(weekday: int, clock: time, now: datetime) -> date:
 def describe_weekly(slot: WeeklySlot, day: date) -> str:
     start = weekly_datetime(day, slot.start_time)
     end = weekly_datetime(day, slot.end_time)
-    return (
-        f"{slot.team}, {start.strftime('%A, %B %d')} "
-        f"({start.strftime('%I:%M %p')} - {end.strftime('%I:%M %p')} CST)"
-    )
+    return f"{slot.team}, {start.strftime('%A, %B %d')} ({clock_range(start, end)})"
 
 
 def weekly_skip_view(weekly_id: int, day: date) -> discord.ui.View:
@@ -958,8 +977,7 @@ class PCs(commands.Cog):
         first_end = weekly_datetime(first_date, end_clock)
         await ctx.followup.send(
             f"🔁 **{team}** is on every {day}, "
-            f"{first_start.strftime('%I:%M %p')} - {first_end.strftime('%I:%M %p')} "
-            "CST.\n"
+            f"{clock_range(first_start, first_end)}.\n"
             f"First one: {first_start.strftime('%A, %B %d')}. You'll get a reminder in "
             f"DMs {WEEKLY_HEADS_UP_LEAD.days} days before each reservation.",
             ephemeral=True,
@@ -1029,9 +1047,7 @@ class PCs(commands.Cog):
     @staticmethod
     def to_central_time(dt: datetime) -> datetime:
         """Convert a datetime to Central Time for display/comparison"""
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=UTC)
-        return dt.astimezone(CENTRAL_TZ)
+        return to_central(dt)
 
     def get_gameroom_hours_for_date(
         self, target_date: date, overrides: dict
@@ -1185,12 +1201,12 @@ class PCs(commands.Cog):
             embed.add_field(name="Cancelled By", value=cancelled_by, inline=False)
             embed.add_field(
                 name="Date",
-                value=start_time.strftime("%A, %B %d, %Y"),
+                value=to_central(start_time).strftime("%A, %B %d, %Y"),
                 inline=False,
             )
             embed.add_field(
                 name="Time",
-                value=f"{start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')} CST",
+                value=clock_range(start_time, end_time),
                 inline=True,
             )
             embed.add_field(name="PCs", value="\n".join(room_info), inline=False)
@@ -1260,7 +1276,7 @@ class PCs(commands.Cog):
         return start_time.hour < NORRIS_OPEN_HOUR
 
     def parse_time_range(self, time_str: str) -> tuple[datetime, datetime]:
-        """Parse time range string like '2025-10-10 7:00PM-9:00PM' into datetime objects (CST)"""
+        """Parse time range string like '2025-10-10 7:00PM-9:00PM' into datetime objects (Central)"""
         # Split date and time range
         try:
             date_part, time_range = time_str.strip().split(" ", 1)
@@ -1957,7 +1973,10 @@ class PCs(commands.Cog):
         if not hours or not (hours[0] <= now <= hours[1]):
             next_open = await self.get_next_open_time(now)
             if next_open:
-                next_open_text = next_open.strftime("%A, %B %d at %I:%M %p CST")
+                next_open_text = (
+                    to_central(next_open).strftime("%A, %B %d at %I:%M %p")
+                    + f" {TZ_LABEL}"
+                )
                 description = f"Check back after we open at {next_open_text}."
             else:
                 description = "Check back later for updated hours."
@@ -2414,6 +2433,8 @@ class PCs(commands.Cog):
             return
 
         _res_id, team, pcs, start_time, end_time, manager, is_prime_time = row
+        # the row comes back in UTC, everything below prints it for people in Central
+        start_time, end_time = to_central(start_time), to_central(end_time)
 
         # Format current user's username
         user = ctx.author
@@ -2457,7 +2478,7 @@ class PCs(commands.Cog):
             f"Reservation cancelled successfully.\n\n"
             f"**Team:** {team}\n"
             f"**PCs:** {pc_list}\n"
-            f"**Time:** {start_time.strftime('%A, %B %d, %Y %I:%M %p')} - {end_time.strftime('%I:%M %p')} CST"
+            f"**Time:** {date_and_clock_range(start_time, end_time)}"
             f"{prime_time_note}",
             ephemeral=True,
         )
@@ -2735,8 +2756,8 @@ def booking_fields(
     """The staff ping fields an edit can change, so posting and editing agree."""
     return {
         "Team": team,
-        "Date": start_time.strftime("%A, %B %d, %Y"),
-        "Time": f"{start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')} CST",
+        "Date": to_central(start_time).strftime("%A, %B %d, %Y"),
+        "Time": clock_range(start_time, end_time),
         "PCs": format_rooms(pcs, back_room_skipped),
     }
 
@@ -2781,6 +2802,7 @@ def warn_prime_quota(used_count: int, quota: int) -> str:
 
 def format_slot(start_time: datetime, end_time: datetime) -> str:
     """The date and timeframe line every reservation prompt prints."""
+    start_time, end_time = to_central(start_time), to_central(end_time)
     return (
         f"{start_time.strftime('%A, %B %d, %Y')}\n"
         f"{start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')}"
@@ -2810,6 +2832,7 @@ def build_warnings_embed(
     resolved: list[str],
 ) -> discord.Embed:
     """Confirm prompt for a broken policy, green once every warning is struck through."""
+    start_time, end_time = to_central(start_time), to_central(end_time)
     hours = config.gameroom_data["default_hours"][start_time.weekday()]
     # re-parse the day's hours so they print like the request does
     open_time, close_time = cog.parse_time_range(
@@ -3060,7 +3083,7 @@ class ReservationTimeModal(discord.ui.Modal):
             f"✅ Reservation confirmed!\n\n"
             f"**Team:** {self.team}\n"
             f"**PCs:** {pc_list}\n"
-            f"**Time:** {start_time.strftime('%A, %B %d, %Y %I:%M %p')} - {end_time.strftime('%I:%M %p')} CST\n"
+            f"**Time:** {date_and_clock_range(start_time, end_time)}\n"
             f"**Manager:** {manager}\n"
             f"{prime_time_status}\n"
             f"{test_status}\n"
@@ -3476,7 +3499,7 @@ class ExternalReservationTimeModal(discord.ui.Modal):
             f"✅ External reservation confirmed!\n\n"
             f"**Event Type:** External Event\n"
             f"**PCs:** {pc_list}\n"
-            f"**Time:** {start_time.strftime('%A, %B %d, %Y %I:%M %p')} - {end_time.strftime('%I:%M %p')} CST\n"
+            f"**Time:** {date_and_clock_range(start_time, end_time)}\n"
             f"**Reserved by:** {manager}",
             ephemeral=True,
         )
@@ -3543,7 +3566,7 @@ class ReservationView(discord.ui.View):
                 field_value = (
                     f"**Team:** {res['team']}\n"
                     f"**PCs:** {pc_list}\n"
-                    f"**Time:** {start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')} CST\n"
+                    f"**Time:** {clock_range(start_time, end_time)}\n"
                     f"**Manager:** {res['manager']}"
                 )
                 if not res["confirmed"]:
